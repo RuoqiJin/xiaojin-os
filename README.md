@@ -27,7 +27,24 @@ Available commands:
 - `pcie reset-pins`
 - `pcie status`
 - `pcie phy-status`
+- `pcie phy-init confirm`
 - `pcie apb-status confirm`
+- `pcie cfg-probe confirm`
+- `pcie iatu-probe confirm`
+- `pcie cfg-scan confirm`
+- `pcie bar-scan confirm`
+- `pcie bar-map confirm`
+- `pcie rtl-probe confirm`
+- `pcie rtl-facts confirm`
+- `pcie rtl-init confirm`
+- `pcie rtl-tx-test confirm`
+- `pcie rtl-rx-poll confirm`
+- `pcie cru-status`
+- `pcie cru-enable confirm`
+- `pcie rc-init confirm`
+- `pcie ltssm-enable confirm`
+- `pcie ltssm-disable confirm`
+- `pcie link-start confirm`
 - `pcie reset-deassert confirm`
 - `pcie reset-assert confirm`
 - `xload <addr|auto> <size> <crc32> [go]`
@@ -93,8 +110,35 @@ they only drive the RJ45-related `pcie3x1` and `pcie3x2` reset GPIOs. `pcie
 phy-status` reads the PCIe3 PHY GRF configuration/status words and decodes the
 PHY SRAM init-done bit. `pcie apb-status confirm` reads only the two RJ45-related
 PCIe controller APB status windows and decodes coarse RC/LTSSM/link state.
-`pcie init` is still a read-only preflight; PCIe DBI/config reads stay disabled
-until reset, clocks, and PHY state are verified on hardware.
+`pcie phy-init confirm` writes the shared PCIe3 PHY GRF lane/bifurcation bits and
+polls the PHY SRAM init-done bit. `pcie rc-init confirm` writes the two
+RJ45-related PCIe controller APB windows into RC pre-LTSSM mode. `pcie
+cru-status` reads the PCIe-related CRU/PMUCRU clock gate and reset bits. `pcie
+cru-enable confirm` enables the PCIe3 clock gates and deasserts the PCIe3 PHY and
+controller resets. `pcie init` is still a read-only preflight. `pcie
+ltssm-enable confirm` enables link training on both RJ45-related PCIe controllers
+and polls for link-up; `pcie ltssm-disable confirm` clears the same bit. PCIe
+DBI/config reads stay disabled until reset, clocks, PHY, and link state are
+verified on hardware. `pcie link-start confirm` runs the validated bring-up
+sequence: hold the RJ45 PCIe devices, enable CRU clocks/resets, initialize PHY,
+set RC/LTSSM, release the devices, then poll for link-up.
+`pcie cfg-probe confirm` reads only a few PCIe DBI/config probe words after the
+link is up; if the config window is not mapped yet, the next step is DWC iATU
+setup. `pcie iatu-probe confirm` reads the DWC iATU mode/status registers.
+`pcie cfg-scan confirm` programs outbound iATU region 0 as CFG0/CFG1 and scans
+the first few bus/device/function slots for endpoint vendor IDs. `pcie bar-scan
+confirm` sizes the visible endpoint BARs and restores the original values.
+`pcie bar-map confirm` assigns the RTL8125 BAR2/BAR4 MMIO windows inside each
+controller's 32-bit outbound memory aperture and enables PCI Memory + BusMaster
+in the endpoint command register. `pcie rtl-probe confirm` reads a small set of
+mapped RTL8125 BAR2 MMIO probe words. `pcie rtl-facts confirm` decodes the
+RTL8125 backup MAC address, chip XID/family, command bits, interrupt status, and
+basic PHY link flags. `pcie rtl-init confirm` resets the RTL8125 MACs, assigns
+local-admin test MAC addresses, initializes static TX/RX descriptor rings, and
+enables polling-mode RX/TX without interrupts. `pcie rtl-tx-test confirm` sends
+one raw broadcast Ethernet test frame per initialized controller; on current R5C
+hardware, `pcie3x2` has been observed to complete the descriptor. `pcie
+rtl-rx-poll confirm` polls RX descriptors once and re-arms any consumed buffers.
 
 ## Network Bring-Up Plan
 
@@ -118,7 +162,23 @@ pcie facts
 pcie reset-pins
 pcie status
 pcie phy-status
+pcie phy-init confirm
 pcie apb-status confirm
+pcie cfg-probe confirm
+pcie iatu-probe confirm
+pcie cfg-scan confirm
+pcie bar-scan confirm
+pcie bar-map confirm
+pcie rtl-probe confirm
+pcie rtl-facts confirm
+pcie rtl-init confirm
+pcie rtl-tx-test confirm
+pcie rtl-rx-poll confirm
+pcie cru-status
+pcie cru-enable confirm
+pcie rc-init confirm
+pcie ltssm-enable confirm
+pcie link-start confirm
 pcie reset-deassert confirm
 pcie status
 mmio list
@@ -144,9 +204,19 @@ observed to stall instead of producing a recoverable data abort.
   - PCIe 3.0 x2 domain 2: DBI `0x00000003c0800000`, APB `0xfe280000`
   - PCIe 3.0 PHY: `0xfe8c0000`
 - R5C PCIe reset GPIOs:
-  - `pcie3x1`: `gpio0 PA0`, active high
-  - `pcie3x2`: `gpio0 PB6`, active high
+  - `pcie3x1`: `gpio0 PA0`, release-high behavior validated by link-up
+  - `pcie3x2`: `gpio0 PB6`, release-high behavior validated by link-up
   - `pcie2x1`: `gpio3 PC1`, active high
+- R5C RTL8125 facts:
+  - `pcie3x1` endpoint: PCI vendor/device `0x812510ec`, chip XID `0x641`
+    (`RTL8125B`)
+  - `pcie3x2` endpoint: PCI vendor/device `0x812510ec`, chip XID `0x641`
+    (`RTL8125B`)
+  - local-admin test MACs assigned by Xiaojin OS:
+    - `pcie3x1`: `02:58:4a:52:35:c0`
+    - `pcie3x2`: `02:58:4a:52:35:c1`
+  - `pcie3x2` raw TX descriptor completion has been observed after
+    `pcie rtl-init confirm` and `pcie rtl-tx-test confirm`
 - U-Boot default kernel address: `0x00280000`
 - FDT address: `0x08300000`
 - Usable DRAM banks:

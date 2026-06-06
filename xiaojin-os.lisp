@@ -39,7 +39,7 @@
       :domain 1
       :bus-range [0x10 0x1f]
       :num-lanes 1
-      :reset-gpio "gpio0 A0 active-high"
+      :reset-gpio "gpio0 A0 release-high-observed"
       :dbi [0x00000003c0400000 0x00000003c0800000]
       :apb [0xfe270000 0xfe280000]
       :config [0xf2000000 0xf2100000]
@@ -50,7 +50,7 @@
       :domain 2
       :bus-range [0x20 0x2f]
       :num-lanes 1
-      :reset-gpio "gpio0 B6 active-high"
+      :reset-gpio "gpio0 B6 release-high-observed"
       :dbi [0x00000003c0800000 0x00000003c0c00000]
       :apb [0xfe280000 0xfe290000]
       :config [0xf0000000 0xf0100000]
@@ -76,11 +76,15 @@
       :commands [net facts pcie facts mmio read32]
       :purpose "Expose R5C network and PCIe facts from the board profile.")
     (stage pcie-enumeration
-      :status next
-      :implemented [reset-gpio-read reset-gpio-deassert-confirm phy-grf-status apb-ltssm-status]
+      :status implemented
+      :implemented [reset-gpio-read reset-gpio-deassert-confirm phy-grf-status phy-grf-init cru-clock-reset-status cru-clock-reset-enable apb-ltssm-status rc-mode-init ltssm-control link-start cfg-probe iatu-probe cfg-scan bar-scan]
       :purpose "Reset, power, PHY, link training, and config-space enumeration.")
     (stage rtl8125-driver
-      :status planned
+      :status in-progress
+      :implemented [bar-map rtl-mmio-probe rtl-facts rx-tx-ring-init raw-tx-test rx-poll]
+      :observed [pcie3x2-raw-tx-descriptor-complete]
+      :blocked-by [physical-ethernet-link-required-for-host-validation]
+      :next [arp-ipv4-udp-loader]
       :purpose "Map BAR, initialize RX/TX rings, and poll packets.")
     (stage udp-xload
       :status planned
@@ -115,11 +119,11 @@
       :subcommands [facts]
       :purpose "Show wired-network bring-up facts and staging.")
     (command pcie
-      :subcommands [facts reset-pins status phy-status apb-status init reset-deassert reset-assert]
+      :subcommands [facts reset-pins status phy-status phy-init apb-status cfg-probe iatu-probe cfg-scan bar-scan bar-map rtl-probe rtl-facts rtl-init rtl-tx-test rtl-rx-poll cru-status cru-enable rc-init ltssm-enable ltssm-disable link-start init reset-deassert reset-assert]
       :init-mode "read-only-preflight"
-      :write-commands [reset-deassert reset-assert]
-      :confirmed-read-commands [apb-status]
-      :write-scope "pcie3x1 and pcie3x2 reset GPIOs only; requires confirm"
+      :write-commands [phy-init cru-enable rc-init ltssm-enable ltssm-disable link-start reset-deassert reset-assert bar-map rtl-init rtl-tx-test]
+      :confirmed-read-commands [apb-status cfg-probe iatu-probe cfg-scan bar-scan rtl-probe rtl-facts rtl-rx-poll]
+      :write-scope "PCIe3 PHY GRF, PCIe3 CRU clock/reset bits, pcie3x1/pcie3x2 APB RC/LTSSM mode, pcie3x1/pcie3x2 reset GPIOs, DWC iATU windows, RTL8125 PCI command/BAR registers, and RTL8125 polling descriptor rings only; requires confirm"
       :purpose "Show R5C PCIe controller facts, inspect PHY/APB status, and control RJ45 PCIe reset GPIOs.")
     (command xload
       :args [addr-or-auto size crc32 go]
