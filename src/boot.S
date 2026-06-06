@@ -129,3 +129,54 @@ EXCEPTION_ENTRY __exception_lower_a32_sync, 12
 EXCEPTION_ENTRY __exception_lower_a32_irq, 13
 EXCEPTION_ENTRY __exception_lower_a32_fiq, 14
 EXCEPTION_ENTRY __exception_lower_a32_serror, 15
+
+.section .text.trampoline, "ax"
+.balign 64
+.global reload_trampoline_start
+.global reload_trampoline_end
+.type reload_trampoline_start, %function
+
+reload_trampoline_start:
+    // x0 = dst, x1 = src, x2 = size, x3 = entry
+    mov x4, x0
+    mov x5, x1
+    mov x6, x2
+
+1:
+    cbz x6, 2f
+    ldrb w7, [x5], #1
+    strb w7, [x4], #1
+    subs x6, x6, #1
+    b.ne 1b
+
+2:
+    mov x4, x0
+    add x5, x0, x2
+    bic x4, x4, #63
+
+3:
+    cmp x4, x5
+    b.hs 4f
+    dc cvau, x4
+    add x4, x4, #64
+    b 3b
+
+4:
+    dsb ish
+    mov x4, x0
+    add x5, x0, x2
+    bic x4, x4, #63
+
+5:
+    cmp x4, x5
+    b.hs 6f
+    ic ivau, x4
+    add x4, x4, #64
+    b 5b
+
+6:
+    dsb ish
+    isb
+    br x3
+
+reload_trampoline_end:

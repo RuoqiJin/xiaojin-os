@@ -44,6 +44,7 @@ const XLOAD_SLOT0_ADDR: u64 = 0x0408_0000;
 const XLOAD_SLOT1_ADDR: u64 = 0x0508_0000;
 const XLOAD_SLOT_SIZE: u64 = 0x0080_0000;
 const XLOAD_MAX_IMAGE_SIZE: u64 = XLOAD_SLOT_SIZE / 2;
+const XLOAD_TRAMPOLINE_ADDR: u64 = XLOAD_SLOT1_ADDR + XLOAD_SLOT_SIZE - 0x1000;
 const XLOAD_BYTE_TIMEOUT_MS: u64 = 5_000;
 const PSCI_SYSTEM_RESET: u64 = 0x8400_0009;
 const ESR_EC_SHIFT: u64 = 26;
@@ -245,6 +246,8 @@ fn handle_command(uart: &mut Uart, input: &str) {
 
     if command.eq_ignore_ascii_case("help") || command == "?" {
         print_help(uart);
+    } else if command.eq_ignore_ascii_case("caps") {
+        print_caps(uart);
     } else if command.eq_ignore_ascii_case("about") {
         print_about(uart);
     } else if command.eq_ignore_ascii_case("mem") {
@@ -290,6 +293,7 @@ fn handle_command(uart: &mut Uart, input: &str) {
 fn print_help(uart: &mut Uart) {
     uart.put_str("commands:\n");
     uart.put_str("  help                 show this command list\n");
+    uart.put_str("  caps                 show machine-readable feature flags\n");
     uart.put_str("  about                show kernel and board identity\n");
     uart.put_str("  mem                  show current memory map facts\n");
     uart.put_str("  regs                 show selected CPU registers\n");
@@ -309,6 +313,17 @@ fn print_help(uart: &mut Uart) {
     uart.put_str("  fault                trigger BRK to test exception vectors\n");
     uart.put_str("  abort confirm        trigger fatal data abort test\n");
     uart.put_str("  reboot               request PSCI system reset\n");
+}
+
+fn print_caps(uart: &mut Uart) {
+    uart.put_str("caps:\n");
+    uart.put_str("  xload auto-reload yes\n");
+    uart.put_str("  xload reload-mode copy-down-trampoline\n");
+    let _ = writeln!(uart, "  xload link-address 0x{LOAD_ADDR:016x}");
+    let _ = writeln!(
+        uart,
+        "  xload trampoline-address 0x{XLOAD_TRAMPOLINE_ADDR:016x}"
+    );
 }
 
 fn print_about(uart: &mut Uart) {
@@ -685,8 +700,16 @@ where
         "\nXLOAD OK addr=0x{addr:016x} size={size} crc32=0x{actual_crc:08x}"
     );
     if go {
-        let _ = writeln!(uart, "XLOAD GO 0x{addr:016x}");
-        jump_to(addr);
+        if addr == LOAD_ADDR {
+            let _ = writeln!(uart, "XLOAD GO 0x{addr:016x}");
+            jump_to(addr);
+        } else {
+            let _ = writeln!(
+                uart,
+                "XLOAD RELOAD src=0x{addr:016x} dst=0x{LOAD_ADDR:016x} size={size}"
+            );
+            reload_to_link_address(addr, size);
+        }
     }
 }
 
@@ -1023,6 +1046,38 @@ fn flush_loaded_image(addr: u64, len: u64) {
     unsafe {
         asm!("dsb ish");
         asm!("isb");
+    }
+}
+
+fn reload_to_link_address(src: u64, size: u64) -> ! {
+    extern "C" {
+        static reload_trampoline_start: u8;
+        static reload_trampoline_end: u8;
+    }
+
+    let trampoline_start = unsafe { &reload_trampoline_start as *const u8 as usize };
+    let trampoline_end = unsafe { &reload_trampoline_end as *const u8 as usize };
+    let trampoline_len = trampoline_end.saturating_sub(trampoline_start);
+    if trampoline_len == 0 || trampoline_len > 0x1000 {
+        loop {
+            core::hint::spin_loop();
+        }
+    }
+
+    for offset in 0..trampoline_len {
+        let byte = unsafe { read_volatile((trampoline_start + offset) as *const u8) };
+        unsafe {
+            write_volatile((XLOAD_TRAMPOLINE_ADDR as usize + offset) as *mut u8, byte);
+        }
+    }
+    flush_loaded_image(XLOAD_TRAMPOLINE_ADDR, trampoline_len as u64);
+
+    unsafe {
+        asm!("dsb sy");
+        asm!("isb");
+        let trampoline: extern "C" fn(u64, u64, u64, u64) -> ! =
+            core::mem::transmute(XLOAD_TRAMPOLINE_ADDR as usize);
+        trampoline(LOAD_ADDR, src, size, LOAD_ADDR);
     }
 }
 

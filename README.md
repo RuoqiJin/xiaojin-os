@@ -14,6 +14,7 @@ xj>
 Available commands:
 
 - `help`
+- `caps`
 - `about`
 - `mem`
 - `regs`
@@ -45,6 +46,15 @@ interrupt-driven timers and scheduling can build on the same counter path later.
 can receive another raw image over UART, validate CRC32, flush caches, and jump
 to it. The `auto` target uses two ping-pong slots, `0x04080000` and
 `0x05080000`, so later development loops can avoid repeated SD-card copies.
+Because the current image is statically linked at `0x04080000`, `auto ... go`
+does not run directly from the alternate slot. Instead, Xiaojin OS copies a
+small reload trampoline to `0x0587f000`; the trampoline copies the newly received
+image back down to `0x04080000`, flushes caches, and branches to the link
+address.
+
+`caps` prints machine-readable feature flags for host tools. `xjctl dev` uses
+`xload auto-reload yes` to confirm that this copy-down reload path exists before
+using hot reload.
 
 The kernel installs an AArch64 exception vector table at boot. The `fault`
 command executes `BRK #0x123`, prints decoded `ESR_EL2` fields, `ELR_EL2`,
@@ -105,6 +115,8 @@ observed to stall instead of producing a recoverable data abort.
 - Serial xload slots:
   - `0x04080000..0x04880000`
   - `0x05080000..0x05880000`
+- Serial xload trampoline:
+  - `0x0587f000..0x05880000`
 - R5C wired Ethernet path:
   - PCIe 3.0 x1 domain 1: DBI `0x00000003c0400000`, APB `0xfe270000`
   - PCIe 3.0 x2 domain 2: DBI `0x00000003c0800000`, APB `0xfe280000`

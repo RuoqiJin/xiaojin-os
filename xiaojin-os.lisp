@@ -19,6 +19,7 @@
     (region kernel-load :start 0x04080000)
     (region xload-slot0 :start 0x04080000 :end 0x04880000)
     (region xload-slot1 :start 0x05080000 :end 0x05880000)
+    (region xload-trampoline :start 0x0587f000 :end 0x05880000)
     (mmio-region uart2
       :start 0xfe660000
       :end 0xfe660100
@@ -80,6 +81,8 @@
     :prompt "xj> "
     (command help
       :purpose "List shell commands.")
+    (command caps
+      :purpose "Print machine-readable feature flags for xjctl.")
     (command about
       :purpose "Show kernel and board identity.")
     (command mem
@@ -109,7 +112,8 @@
       :args [addr-or-auto size crc32 go]
       :default-target auto
       :max-image-bytes 4194304
-      :purpose "Receive a raw serial-loaded image, validate CRC32, and optionally jump.")
+      :reload-mode "copy-down-trampoline"
+      :purpose "Receive a raw serial-loaded image, validate CRC32, and optionally reload to the static link address.")
     (command hexdump
       :alias hd
       :args [addr len]
