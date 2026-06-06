@@ -17,6 +17,10 @@ Available commands:
 - `about`
 - `mem`
 - `regs`
+- `time`
+- `uptime`
+- `sleep <ms>`
+- `bench [iters]`
 - `hexdump <addr> [n]`
 - `peek32 <addr>`
 - `mmio list`
@@ -29,6 +33,10 @@ Available commands:
 `xiaojin-os.lisp` is the current thin authoring SSOT for board facts and shell
 commands. The kernel does not parse Lisp at runtime; those facts are mirrored in
 Rust constants until a generated ABI exists.
+
+`time`, `uptime`, `sleep`, and `bench` use the ARM generic timer registers
+`CNTFRQ_EL0` and `CNTPCT_EL0`. This is the first timebase for the kernel:
+interrupt-driven timers and scheduling can build on the same counter path later.
 
 The kernel installs an AArch64 exception vector table at boot. The `fault`
 command executes `BRK #0x123`, prints decoded `ESR_EL2` fields, `ELR_EL2`,

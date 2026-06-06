@@ -32,6 +32,19 @@
       :purpose "Print board memory facts and linker-owned regions.")
     (command regs
       :purpose "Print selected AArch64 system registers.")
+    (command time
+      :purpose "Print generic timer registers and uptime.")
+    (command uptime
+      :purpose "Print elapsed kernel time from boot CNTPCT.")
+    (command sleep
+      :args [ms]
+      :max-ms 10000
+      :purpose "Busy-wait using the ARM generic timer.")
+    (command bench
+      :args [iters]
+      :default-iters 1000000
+      :max-iters 20000000
+      :purpose "Run timer-backed CPU microbenchmarks.")
     (command hexdump
       :alias hd
       :args [addr len]

@@ -22,6 +22,9 @@ const DRAM_BANK1_START: u64 = 0x0940_0000;
 const DRAM_BANK1_END: u64 = 0xf000_0000;
 const MAX_LINE_LEN: usize = 128;
 const MAX_HEXDUMP_LEN: usize = 256;
+const MAX_SLEEP_MS: u64 = 10_000;
+const DEFAULT_BENCH_ITERS: u64 = 1_000_000;
+const MAX_BENCH_ITERS: u64 = 20_000_000;
 const PSCI_SYSTEM_RESET: u64 = 0x8400_0009;
 const ESR_EC_SHIFT: u64 = 26;
 const ESR_IL_SHIFT: u64 = 25;
@@ -70,6 +73,7 @@ impl ExceptionSnapshot {
 }
 
 static mut LAST_EXCEPTION: ExceptionSnapshot = ExceptionSnapshot::empty();
+static mut BOOT_CNTPCT: u64 = 0;
 
 struct MmioRegion {
     name: &'static str,
@@ -130,6 +134,7 @@ impl Write for Uart {
 #[no_mangle]
 pub extern "C" fn kernel_main() -> ! {
     let mut uart = Uart::new(UART2_BASE);
+    init_timebase();
 
     uart.put_str("\n");
     uart.put_str("========================================\n");
@@ -204,6 +209,14 @@ fn handle_command(uart: &mut Uart, input: &str) {
         print_memory_map(uart);
     } else if command.eq_ignore_ascii_case("regs") {
         print_registers(uart);
+    } else if command.eq_ignore_ascii_case("time") {
+        command_time(uart);
+    } else if command.eq_ignore_ascii_case("uptime") {
+        command_uptime(uart);
+    } else if command.eq_ignore_ascii_case("sleep") {
+        command_sleep(uart, parts.next());
+    } else if command.eq_ignore_ascii_case("bench") {
+        command_bench(uart, parts.next());
     } else if command.eq_ignore_ascii_case("hexdump") || command.eq_ignore_ascii_case("hd") {
         command_hexdump(uart, parts.next(), parts.next());
     } else if command.eq_ignore_ascii_case("peek32") {
@@ -232,6 +245,10 @@ fn print_help(uart: &mut Uart) {
     uart.put_str("  about                show kernel and board identity\n");
     uart.put_str("  mem                  show current memory map facts\n");
     uart.put_str("  regs                 show selected CPU registers\n");
+    uart.put_str("  time                 show generic timer registers and uptime\n");
+    uart.put_str("  uptime               show elapsed kernel time\n");
+    uart.put_str("  sleep <ms>           busy-wait with generic timer, max 10000\n");
+    uart.put_str("  bench [iters]        run timer-backed CPU microbenchmarks\n");
     uart.put_str("  hexdump <addr> [n]   dump DRAM bytes, max 256\n");
     uart.put_str("  peek32 <addr>        read one safe 32-bit word\n");
     uart.put_str("  mmio list            list whitelisted MMIO regions\n");
@@ -304,6 +321,94 @@ fn print_registers(uart: &mut Uart) {
     let _ = writeln!(uart, "VBAR_EL2         0x{vbar:016x}");
     let _ = writeln!(uart, "CNTFRQ_EL0       0x{cntfrq:016x} ({cntfrq} Hz)");
     let _ = writeln!(uart, "CNTPCT_EL0       0x{cntpct:016x}");
+}
+
+fn command_time(uart: &mut Uart) {
+    let freq = read_cntfrq();
+    let now = read_cntpct();
+    let boot = boot_cntpct();
+    let elapsed = now.wrapping_sub(boot);
+
+    let _ = writeln!(uart, "CNTFRQ_EL0       0x{freq:016x} ({freq} Hz)");
+    let _ = writeln!(uart, "CNTPCT_EL0       0x{now:016x}");
+    let _ = writeln!(uart, "boot CNTPCT      0x{boot:016x}");
+    let _ = writeln!(uart, "elapsed ticks    0x{elapsed:016x} ({elapsed})");
+    print_duration_us(uart, "uptime", ticks_to_us(elapsed, freq));
+}
+
+fn command_uptime(uart: &mut Uart) {
+    let freq = read_cntfrq();
+    let elapsed = read_cntpct().wrapping_sub(boot_cntpct());
+
+    print_duration_us(uart, "uptime", ticks_to_us(elapsed, freq));
+    let _ = writeln!(uart, "ticks            {elapsed}");
+}
+
+fn command_sleep(uart: &mut Uart, ms_token: Option<&str>) {
+    let Some(ms) = ms_token.and_then(parse_u64) else {
+        uart.put_str("usage: sleep <ms>\n");
+        return;
+    };
+    if ms > MAX_SLEEP_MS {
+        let _ = writeln!(uart, "sleep is capped at {MAX_SLEEP_MS} ms");
+        return;
+    }
+
+    let freq = read_cntfrq();
+    let Some(target_ticks) = ms_to_ticks(ms, freq) else {
+        uart.put_str("timer frequency is invalid\n");
+        return;
+    };
+
+    let _ = writeln!(uart, "sleeping for {ms} ms ({target_ticks} timer ticks)...");
+    let start = read_cntpct();
+    while read_cntpct().wrapping_sub(start) < target_ticks {
+        core::hint::spin_loop();
+    }
+    let elapsed_ticks = read_cntpct().wrapping_sub(start);
+    let elapsed_us = ticks_to_us(elapsed_ticks, freq);
+
+    let _ = writeln!(uart, "slept ticks      {elapsed_ticks}");
+    print_duration_us(uart, "slept", elapsed_us);
+}
+
+fn command_bench(uart: &mut Uart, iters_token: Option<&str>) {
+    let iters = iters_token
+        .and_then(parse_u64)
+        .unwrap_or(DEFAULT_BENCH_ITERS);
+    if iters == 0 || iters > MAX_BENCH_ITERS {
+        let _ = writeln!(uart, "usage: bench [iters], range: 1..={MAX_BENCH_ITERS}");
+        return;
+    }
+
+    let freq = read_cntfrq();
+    if freq == 0 {
+        uart.put_str("timer frequency is invalid\n");
+        return;
+    }
+
+    let _ = writeln!(uart, "bench iters      {iters}");
+    let counter_iters = if iters > 200_000 { 200_000 } else { iters };
+    let mut timer_mix = 0u64;
+    let timer_start = read_cntpct();
+    for _ in 0..counter_iters {
+        timer_mix ^= read_cntpct();
+    }
+    let timer_ticks = read_cntpct().wrapping_sub(timer_start);
+    core::hint::black_box(timer_mix);
+    print_bench_result(uart, "cntpct read", counter_iters, timer_ticks, freq);
+
+    let mut x = 0x243f_6a88_85a3_08d3u64;
+    let int_start = read_cntpct();
+    for i in 0..iters {
+        x = x.rotate_left(9);
+        x = x.wrapping_mul(0x9e37_79b9_7f4a_7c15);
+        x = x.wrapping_add(i ^ 0xbf58_476d_1ce4_e5b9);
+    }
+    let int_ticks = read_cntpct().wrapping_sub(int_start);
+    core::hint::black_box(x);
+    print_bench_result(uart, "integer mix", iters, int_ticks, freq);
+    let _ = writeln!(uart, "bench checksum   0x{x:016x}");
 }
 
 fn command_hexdump(uart: &mut Uart, addr_token: Option<&str>, len_token: Option<&str>) {
@@ -505,6 +610,83 @@ fn parse_u64(token: &str) -> Option<u64> {
     } else {
         token.parse::<u64>().ok()
     }
+}
+
+fn init_timebase() {
+    unsafe {
+        BOOT_CNTPCT = read_cntpct();
+    }
+}
+
+fn boot_cntpct() -> u64 {
+    unsafe { BOOT_CNTPCT }
+}
+
+fn ms_to_ticks(ms: u64, freq: u64) -> Option<u64> {
+    if freq == 0 {
+        return None;
+    }
+    let ticks = (ms as u128).checked_mul(freq as u128)?.checked_add(999)? / 1000;
+    if ticks > u64::MAX as u128 {
+        None
+    } else {
+        Some(ticks as u64)
+    }
+}
+
+fn ticks_to_us(ticks: u64, freq: u64) -> u64 {
+    if freq == 0 {
+        return 0;
+    }
+    let micros = (ticks as u128).saturating_mul(1_000_000) / freq as u128;
+    if micros > u64::MAX as u128 {
+        u64::MAX
+    } else {
+        micros as u64
+    }
+}
+
+fn ticks_to_ns_per_iter(ticks: u64, freq: u64, iters: u64) -> u64 {
+    if freq == 0 || iters == 0 {
+        return 0;
+    }
+    let nanos = (ticks as u128).saturating_mul(1_000_000_000);
+    let per_iter = nanos / freq as u128 / iters as u128;
+    if per_iter > u64::MAX as u128 {
+        u64::MAX
+    } else {
+        per_iter as u64
+    }
+}
+
+fn iters_per_second(iters: u64, ticks: u64, freq: u64) -> u64 {
+    if ticks == 0 {
+        return u64::MAX;
+    }
+    let rate = (iters as u128).saturating_mul(freq as u128) / ticks as u128;
+    if rate > u64::MAX as u128 {
+        u64::MAX
+    } else {
+        rate as u64
+    }
+}
+
+fn print_duration_us(uart: &mut Uart, label: &str, us: u64) {
+    let seconds = us / 1_000_000;
+    let micros = us % 1_000_000;
+    let _ = writeln!(uart, "{label:<16}{seconds}.{micros:06} s");
+}
+
+fn print_bench_result(uart: &mut Uart, name: &str, iters: u64, ticks: u64, freq: u64) {
+    let elapsed_us = ticks_to_us(ticks, freq);
+    let ns_iter = ticks_to_ns_per_iter(ticks, freq, iters);
+    let rate = iters_per_second(iters, ticks, freq);
+
+    let _ = writeln!(uart, "{name}:");
+    let _ = writeln!(uart, "  ticks          {ticks}");
+    print_duration_us(uart, "  elapsed", elapsed_us);
+    let _ = writeln!(uart, "  ns/iter        {ns_iter}");
+    let _ = writeln!(uart, "  iter/s         {rate}");
 }
 
 fn is_dram_range(addr: u64, len: u64) -> bool {
