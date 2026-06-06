@@ -24,6 +24,10 @@ Available commands:
 - `bench [iters]`
 - `net facts`
 - `pcie facts`
+- `pcie reset-pins`
+- `pcie status`
+- `pcie reset-deassert confirm`
+- `pcie reset-assert confirm`
 - `xload <addr|auto> <size> <crc32> [go]`
 - `hexdump <addr> [n]`
 - `peek32 <addr>`
@@ -80,6 +84,13 @@ NanoPi R5C Ethernet path is PCIe first: the board exposes its 2.5G RJ45 ports
 through Realtek RTL8125-family PCIe NICs, so the kernel must enumerate PCIe
 before it can write a native Ethernet driver.
 
+`pcie reset-pins` and `pcie status` read the RK3568 GPIO bank version, GPIO
+external port values, and the R5C PCIe reset GPIO levels. `pcie reset-deassert
+confirm` and `pcie reset-assert confirm` are the first controlled write commands:
+they only drive the RJ45-related `pcie3x1` and `pcie3x2` reset GPIOs. `pcie
+init` is still a read-only preflight; PCIe DBI/config reads stay disabled until
+reset, clocks, and PHY state are verified on hardware.
+
 ## Network Bring-Up Plan
 
 The goal is to replace UART development with an Ethernet loader, while keeping
@@ -99,6 +110,10 @@ Useful first probes after booting the latest kernel:
 ```text
 net facts
 pcie facts
+pcie reset-pins
+pcie status
+pcie reset-deassert confirm
+pcie status
 mmio list
 mmio read32 uart2 0x14
 ```
@@ -121,6 +136,10 @@ observed to stall instead of producing a recoverable data abort.
   - PCIe 3.0 x1 domain 1: DBI `0x00000003c0400000`, APB `0xfe270000`
   - PCIe 3.0 x2 domain 2: DBI `0x00000003c0800000`, APB `0xfe280000`
   - PCIe 3.0 PHY: `0xfe8c0000`
+- R5C PCIe reset GPIOs:
+  - `pcie3x1`: `gpio0 PA0`, active high
+  - `pcie3x2`: `gpio0 PB6`, active high
+  - `pcie2x1`: `gpio3 PC1`, active high
 - U-Boot default kernel address: `0x00280000`
 - FDT address: `0x08300000`
 - Usable DRAM banks:

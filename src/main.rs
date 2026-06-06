@@ -29,6 +29,15 @@ const PCIE3X1_DBI_BASE: u64 = 0x0000_0003_c040_0000;
 const PCIE3X2_DBI_BASE: u64 = 0x0000_0003_c080_0000;
 const PCIE3X1_MEM64_BASE: u64 = 0x0000_0003_4000_0000;
 const PCIE3X2_MEM64_BASE: u64 = 0x0000_0003_8000_0000;
+const GPIO0_BASE: u64 = 0xfdd6_0000;
+const GPIO3_BASE: u64 = 0xfe76_0000;
+const GPIO_V2_PORT_DR: u64 = 0x00;
+const GPIO_V2_PORT_DDR: u64 = 0x08;
+const GPIO_V2_EXT_PORT: u64 = 0x70;
+const GPIO_V2_VERSION_ID: u64 = 0x78;
+const GPIO_TYPE_V2: u32 = 0x0100_0c2b;
+const GPIO_TYPE_V2_1: u32 = 0x0101_157c;
+const PCIE_ETH_RESET_COUNT: usize = 2;
 
 const LOAD_ADDR: u64 = 0x0408_0000;
 const DRAM_BANK0_START: u64 = 0x0020_0000;
@@ -105,12 +114,77 @@ struct MmioRegion {
     description: &'static str,
 }
 
-const MMIO_REGIONS: &[MmioRegion] = &[MmioRegion {
-    name: "uart2",
-    start: UART2_BASE as u64,
-    end: UART2_BASE as u64 + 0x100,
-    description: "RK3568 debug UART2",
-}];
+#[derive(Clone, Copy)]
+struct GpioBank {
+    name: &'static str,
+    base: u64,
+}
+
+struct PcieResetPin {
+    controller: &'static str,
+    bank: GpioBank,
+    pin: u8,
+    label: &'static str,
+    active_high: bool,
+    source: &'static str,
+}
+
+const MMIO_REGIONS: &[MmioRegion] = &[
+    MmioRegion {
+        name: "uart2",
+        start: UART2_BASE as u64,
+        end: UART2_BASE as u64 + 0x100,
+        description: "RK3568 debug UART2",
+    },
+    MmioRegion {
+        name: "gpio0",
+        start: GPIO0_BASE,
+        end: GPIO0_BASE + 0x100,
+        description: "RK3568 GPIO bank 0",
+    },
+    MmioRegion {
+        name: "gpio3",
+        start: GPIO3_BASE,
+        end: GPIO3_BASE + 0x100,
+        description: "RK3568 GPIO bank 3",
+    },
+];
+
+const GPIO0: GpioBank = GpioBank {
+    name: "gpio0",
+    base: GPIO0_BASE,
+};
+const GPIO3: GpioBank = GpioBank {
+    name: "gpio3",
+    base: GPIO3_BASE,
+};
+
+const PCIE_RESET_PINS: &[PcieResetPin] = &[
+    PcieResetPin {
+        controller: "pcie3x1",
+        bank: GPIO0,
+        pin: 0,
+        label: "PA0",
+        active_high: true,
+        source: "reset-gpios",
+    },
+    PcieResetPin {
+        controller: "pcie3x2",
+        bank: GPIO0,
+        pin: 14,
+        label: "PB6",
+        active_high: true,
+        source: "reset-gpios",
+    },
+    PcieResetPin {
+        controller: "pcie2x1",
+        bank: GPIO3,
+        pin: 17,
+        label: "PC1",
+        active_high: true,
+        source: "reset-gpios",
+    },
+];
 
 struct Uart {
     base: usize,
@@ -265,7 +339,7 @@ fn handle_command(uart: &mut Uart, input: &str) {
     } else if command.eq_ignore_ascii_case("net") {
         command_net(uart, parts.next());
     } else if command.eq_ignore_ascii_case("pcie") {
-        command_pcie(uart, parts.next());
+        command_pcie(uart, parts.next(), parts.next());
     } else if command.eq_ignore_ascii_case("xload") {
         command_xload(uart, parts);
     } else if command.eq_ignore_ascii_case("hexdump") || command.eq_ignore_ascii_case("hd") {
@@ -303,6 +377,10 @@ fn print_help(uart: &mut Uart) {
     uart.put_str("  bench [iters]        run timer-backed CPU microbenchmarks\n");
     uart.put_str("  net facts            show wired-network bring-up plan\n");
     uart.put_str("  pcie facts           show R5C PCIe controller facts\n");
+    uart.put_str("  pcie reset-pins      read PCIe reset GPIO levels\n");
+    uart.put_str("  pcie status          read PCIe bring-up status, no writes\n");
+    uart.put_str("  pcie reset-deassert confirm\n");
+    uart.put_str("                       release RJ45 PCIe reset GPIOs\n");
     uart.put_str("  xload <addr|auto> <size> <crc32> [go]\n");
     uart.put_str("                       receive a serial-loaded image\n");
     uart.put_str("  hexdump <addr> [n]   dump DRAM bytes, max 256\n");
@@ -357,12 +435,22 @@ fn print_net_facts(uart: &mut Uart) {
     uart.put_str("  rescue path      UART xload remains the fallback until UDP loader is stable\n");
 }
 
-fn command_pcie(uart: &mut Uart, action: Option<&str>) {
+fn command_pcie(uart: &mut Uart, action: Option<&str>, arg1: Option<&str>) {
     match action {
         None | Some("facts") => print_pcie_facts(uart),
+        Some("reset-pins") => print_pcie_reset_pins(uart),
+        Some("status") => print_pcie_status(uart),
+        Some("init") => command_pcie_init(uart),
+        Some("reset-deassert") => command_pcie_reset_write(uart, false, arg1),
+        Some("reset-assert") => command_pcie_reset_write(uart, true, arg1),
         _ => {
             uart.put_str("usage:\n");
             uart.put_str("  pcie facts\n");
+            uart.put_str("  pcie reset-pins\n");
+            uart.put_str("  pcie status\n");
+            uart.put_str("  pcie init\n");
+            uart.put_str("  pcie reset-deassert confirm\n");
+            uart.put_str("  pcie reset-assert confirm\n");
         }
     }
 }
@@ -447,6 +535,174 @@ fn print_pcie_facts(uart: &mut Uart) {
     uart.put_str("  raw read rule    do not read PCIe windows before controller init\n");
     uart.put_str("  observed limit   uninitialized DBI reads can stall instead of faulting\n");
     uart.put_str("  next driver step reset, clock, PHY, then config-space scan\n");
+}
+
+fn command_pcie_init(uart: &mut Uart) {
+    uart.put_str("pcie init stage: read-only preflight\n");
+    uart.put_str("  writes           disabled in this build\n");
+    uart.put_str("  reason           reset/clock/PHY writes need one more verified map pass\n");
+    uart.put_str("  next             validate GPIO levels, then add explicit reset control\n");
+    print_pcie_status(uart);
+}
+
+fn command_pcie_reset_write(uart: &mut Uart, assert_reset: bool, confirm: Option<&str>) {
+    if confirm != Some("confirm") {
+        uart.put_str("usage:\n");
+        uart.put_str("  pcie reset-deassert confirm\n");
+        uart.put_str("  pcie reset-assert confirm\n");
+        uart.put_str("scope: pcie3x1 and pcie3x2 RJ45 reset GPIOs only\n");
+        return;
+    }
+
+    for pin in &PCIE_RESET_PINS[..PCIE_ETH_RESET_COUNT] {
+        let level = if pin.active_high {
+            assert_reset
+        } else {
+            !assert_reset
+        };
+        gpio_v2_write_bit(pin.bank, GPIO_V2_PORT_DR, pin.pin, level);
+        gpio_v2_write_bit(pin.bank, GPIO_V2_PORT_DDR, pin.pin, true);
+    }
+
+    if assert_reset {
+        uart.put_str("pcie reset assert: pcie3x1/pcie3x2 driven high\n");
+    } else {
+        uart.put_str("pcie reset deassert: pcie3x1/pcie3x2 driven low\n");
+    }
+    print_pcie_reset_pins(uart);
+}
+
+fn print_pcie_status(uart: &mut Uart) {
+    uart.put_str("pcie status:\n");
+    uart.put_str("  mode            read-only\n");
+    print_gpio_bank_status(uart, GPIO0);
+    print_gpio_bank_status(uart, GPIO3);
+    print_pcie_reset_pins(uart);
+}
+
+fn print_gpio_bank_status(uart: &mut Uart, bank: GpioBank) {
+    let version = probe_read32(bank.base + GPIO_V2_VERSION_ID);
+    let ext = probe_read32(bank.base + GPIO_V2_EXT_PORT);
+
+    match (version, ext) {
+        (Ok(version), Ok(ext)) => {
+            let _ = writeln!(
+                uart,
+                "  {:<14} base=0x{:016x} version=0x{version:08x} ({}) ext=0x{ext:08x}",
+                bank.name,
+                bank.base,
+                gpio_version_name(version)
+            );
+        }
+        (version, ext) => {
+            let _ = writeln!(uart, "  {:<14} base=0x{:016x}", bank.name, bank.base);
+            print_probe_result(uart, "    version", version);
+            print_probe_result(uart, "    ext", ext);
+        }
+    }
+}
+
+fn print_pcie_reset_pins(uart: &mut Uart) {
+    uart.put_str("pcie reset pins:\n");
+    for pin in PCIE_RESET_PINS {
+        let direction = read_gpio_v2_direction(pin.bank, pin.pin);
+        let level = read_gpio_v2_level(pin.bank, pin.pin);
+        match (direction, level) {
+            (Ok(direction), Ok(level)) => {
+                let asserted = if pin.active_high { level } else { !level };
+                let _ = writeln!(
+                    uart,
+                    "  {:<8} {:<5} {:<3} bit={:<2} dir={:<3} level={} reset={} source={}",
+                    pin.controller,
+                    pin.bank.name,
+                    pin.label,
+                    pin.pin,
+                    gpio_direction_name(direction),
+                    bit_name(level),
+                    if asserted { "asserted" } else { "deasserted" },
+                    pin.source
+                );
+            }
+            (direction, level) => {
+                let _ = writeln!(
+                    uart,
+                    "  {:<8} {:<5} {:<3} bit={:<2}",
+                    pin.controller, pin.bank.name, pin.label, pin.pin
+                );
+                print_probe_result(uart, "    direction", direction.map(bool_to_u32));
+                print_probe_result(uart, "    level", level.map(bool_to_u32));
+            }
+        }
+    }
+    uart.put_str("  note            reset-gpios are active high; asserted means held in reset\n");
+}
+
+fn read_gpio_v2_direction(bank: GpioBank, pin: u8) -> Result<bool, ExceptionSnapshot> {
+    let reg = bank.base + GPIO_V2_PORT_DDR + if pin >= 16 { 4 } else { 0 };
+    let bit = pin % 16;
+    probe_read32(reg).map(|value| value & (1u32 << bit) != 0)
+}
+
+fn read_gpio_v2_level(bank: GpioBank, pin: u8) -> Result<bool, ExceptionSnapshot> {
+    probe_read32(bank.base + GPIO_V2_EXT_PORT).map(|value| value & (1u32 << pin) != 0)
+}
+
+fn gpio_v2_write_bit(bank: GpioBank, offset: u64, pin: u8, value: bool) {
+    let reg = bank.base + offset + if pin >= 16 { 4 } else { 0 };
+    let bit = pin % 16;
+    let mask = 1u32 << (bit + 16);
+    let data = if value { 1u32 << bit } else { 0 };
+    unsafe {
+        write_volatile(reg as usize as *mut u32, mask | data);
+    }
+}
+
+fn print_probe_result(uart: &mut Uart, label: &str, result: Result<u32, ExceptionSnapshot>) {
+    match result {
+        Ok(value) => {
+            let _ = writeln!(uart, "{label:<16}0x{value:08x}");
+        }
+        Err(snapshot) => {
+            let _ = writeln!(
+                uart,
+                "{label:<16}fault ec=0x{:02x} far=0x{:016x}",
+                snapshot.esr >> ESR_EC_SHIFT,
+                snapshot.far
+            );
+        }
+    }
+}
+
+fn gpio_version_name(version: u32) -> &'static str {
+    match version {
+        GPIO_TYPE_V2 => "v2",
+        GPIO_TYPE_V2_1 => "v2.1",
+        _ => "unknown",
+    }
+}
+
+fn gpio_direction_name(output: bool) -> &'static str {
+    if output {
+        "out"
+    } else {
+        "in"
+    }
+}
+
+fn bit_name(value: bool) -> &'static str {
+    if value {
+        "high"
+    } else {
+        "low"
+    }
+}
+
+fn bool_to_u32(value: bool) -> u32 {
+    if value {
+        1
+    } else {
+        0
+    }
 }
 
 fn print_memory_map(uart: &mut Uart) {
