@@ -21,6 +21,7 @@ Available commands:
 - `uptime`
 - `sleep <ms>`
 - `bench [iters]`
+- `xload <addr|auto> <size> <crc32> [go]`
 - `hexdump <addr> [n]`
 - `peek32 <addr>`
 - `mmio list`
@@ -37,6 +38,11 @@ Rust constants until a generated ABI exists.
 `time`, `uptime`, `sleep`, and `bench` use the ARM generic timer registers
 `CNTFRQ_EL0` and `CNTPCT_EL0`. This is the first timebase for the kernel:
 interrupt-driven timers and scheduling can build on the same counter path later.
+
+`xload` is the first resident serial loader. A kernel that was started from SD
+can receive another raw image over UART, validate CRC32, flush caches, and jump
+to it. The `auto` target uses two ping-pong slots, `0x04080000` and
+`0x05080000`, so later development loops can avoid repeated SD-card copies.
 
 The kernel installs an AArch64 exception vector table at boot. The `fault`
 command executes `BRK #0x123`, prints decoded `ESR_EL2` fields, `ELR_EL2`,
@@ -57,6 +63,9 @@ register reads.
 - UART baud: `1500000`
 - UART2 MMIO base: `0xfe660000`
 - Chosen load address: `0x04080000`
+- Serial xload slots:
+  - `0x04080000..0x04880000`
+  - `0x05080000..0x05880000`
 - U-Boot default kernel address: `0x00280000`
 - FDT address: `0x08300000`
 - Usable DRAM banks:

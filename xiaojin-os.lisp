@@ -17,6 +17,8 @@
     (dram-bank bank0 :start 0x00200000 :end 0x08400000)
     (dram-bank bank1 :start 0x09400000 :end 0xf0000000)
     (region kernel-load :start 0x04080000)
+    (region xload-slot0 :start 0x04080000 :end 0x04880000)
+    (region xload-slot1 :start 0x05080000 :end 0x05880000)
     (mmio-region uart2
       :start 0xfe660000
       :end 0xfe660100
@@ -45,6 +47,11 @@
       :default-iters 1000000
       :max-iters 20000000
       :purpose "Run timer-backed CPU microbenchmarks.")
+    (command xload
+      :args [addr-or-auto size crc32 go]
+      :default-target auto
+      :max-image-bytes 4194304
+      :purpose "Receive a raw serial-loaded image, validate CRC32, and optionally jump.")
     (command hexdump
       :alias hd
       :args [addr len]

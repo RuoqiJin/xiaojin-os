@@ -25,6 +25,11 @@ const MAX_HEXDUMP_LEN: usize = 256;
 const MAX_SLEEP_MS: u64 = 10_000;
 const DEFAULT_BENCH_ITERS: u64 = 1_000_000;
 const MAX_BENCH_ITERS: u64 = 20_000_000;
+const XLOAD_SLOT0_ADDR: u64 = 0x0408_0000;
+const XLOAD_SLOT1_ADDR: u64 = 0x0508_0000;
+const XLOAD_SLOT_SIZE: u64 = 0x0080_0000;
+const XLOAD_MAX_IMAGE_SIZE: u64 = XLOAD_SLOT_SIZE / 2;
+const XLOAD_BYTE_TIMEOUT_MS: u64 = 5_000;
 const PSCI_SYSTEM_RESET: u64 = 0x8400_0009;
 const ESR_EC_SHIFT: u64 = 26;
 const ESR_IL_SHIFT: u64 = 25;
@@ -114,6 +119,21 @@ impl Uart {
         }
     }
 
+    fn get_byte_timeout(&mut self, timeout_ms: u64) -> Option<u8> {
+        let freq = read_cntfrq();
+        let timeout_ticks = ms_to_ticks(timeout_ms, freq)?;
+        let start = read_cntpct();
+        loop {
+            if let Some(byte) = self.get_byte() {
+                return Some(byte);
+            }
+            if read_cntpct().wrapping_sub(start) >= timeout_ticks {
+                return None;
+            }
+            core::hint::spin_loop();
+        }
+    }
+
     fn put_str(&mut self, text: &str) {
         for byte in text.bytes() {
             if byte == b'\n' {
@@ -135,6 +155,7 @@ impl Write for Uart {
 pub extern "C" fn kernel_main() -> ! {
     let mut uart = Uart::new(UART2_BASE);
     init_timebase();
+    let (runtime_start, runtime_end) = resident_memory_range();
 
     uart.put_str("\n");
     uart.put_str("========================================\n");
@@ -142,7 +163,11 @@ pub extern "C" fn kernel_main() -> ! {
     uart.put_str("AArch64 bare-metal Rust control shell is running.\n");
     uart.put_str("Board profile: nanopi-r5c / rk3568\n");
     uart.put_str("UART2 MMIO base: 0xfe660000\n");
-    uart.put_str("Loaded at: 0x04080000\n");
+    let _ = writeln!(uart, "Link address: 0x{LOAD_ADDR:08x}");
+    let _ = writeln!(
+        uart,
+        "Runtime image: 0x{runtime_start:016x}..0x{runtime_end:016x}"
+    );
     uart.put_str("========================================\n");
     uart.put_str("Type `help` for commands.\n");
 
@@ -217,6 +242,8 @@ fn handle_command(uart: &mut Uart, input: &str) {
         command_sleep(uart, parts.next());
     } else if command.eq_ignore_ascii_case("bench") {
         command_bench(uart, parts.next());
+    } else if command.eq_ignore_ascii_case("xload") {
+        command_xload(uart, parts);
     } else if command.eq_ignore_ascii_case("hexdump") || command.eq_ignore_ascii_case("hd") {
         command_hexdump(uart, parts.next(), parts.next());
     } else if command.eq_ignore_ascii_case("peek32") {
@@ -249,6 +276,8 @@ fn print_help(uart: &mut Uart) {
     uart.put_str("  uptime               show elapsed kernel time\n");
     uart.put_str("  sleep <ms>           busy-wait with generic timer, max 10000\n");
     uart.put_str("  bench [iters]        run timer-backed CPU microbenchmarks\n");
+    uart.put_str("  xload <addr|auto> <size> <crc32> [go]\n");
+    uart.put_str("                       receive a serial-loaded image\n");
     uart.put_str("  hexdump <addr> [n]   dump DRAM bytes, max 256\n");
     uart.put_str("  peek32 <addr>        read one safe 32-bit word\n");
     uart.put_str("  mmio list            list whitelisted MMIO regions\n");
@@ -292,6 +321,16 @@ fn print_memory_map(uart: &mut Uart) {
         "dram bank1       0x{DRAM_BANK1_START:016x}..0x{DRAM_BANK1_END:016x}"
     );
     let _ = writeln!(uart, "uart2 mmio       0x{UART2_BASE:016x}");
+    let _ = writeln!(
+        uart,
+        "xload slot0      0x{XLOAD_SLOT0_ADDR:016x}..0x{:016x}",
+        XLOAD_SLOT0_ADDR + XLOAD_SLOT_SIZE
+    );
+    let _ = writeln!(
+        uart,
+        "xload slot1      0x{XLOAD_SLOT1_ADDR:016x}..0x{:016x}",
+        XLOAD_SLOT1_ADDR + XLOAD_SLOT_SIZE
+    );
     let _ = writeln!(uart, "exception table  0x{vectors:016x}");
     let _ = writeln!(
         uart,
@@ -409,6 +448,108 @@ fn command_bench(uart: &mut Uart, iters_token: Option<&str>) {
     core::hint::black_box(x);
     print_bench_result(uart, "integer mix", iters, int_ticks, freq);
     let _ = writeln!(uart, "bench checksum   0x{x:016x}");
+}
+
+fn command_xload<'a, I>(uart: &mut Uart, mut parts: I)
+where
+    I: Iterator<Item = &'a str>,
+{
+    let Some(addr_token) = parts.next() else {
+        uart.put_str("usage: xload <addr|auto> <size> <crc32> [go]\n");
+        uart.put_str("example: xload auto 39168 0x12345678 go\n");
+        return;
+    };
+    let Some(size) = parts.next().and_then(parse_u64) else {
+        uart.put_str("usage: xload <addr|auto> <size> <crc32> [go]\n");
+        return;
+    };
+    let Some(expected_crc) = parts.next().and_then(parse_u64) else {
+        uart.put_str("usage: xload <addr|auto> <size> <crc32> [go]\n");
+        return;
+    };
+    let go = match parts.next() {
+        None => false,
+        Some(flag) if flag.eq_ignore_ascii_case("go") || flag.eq_ignore_ascii_case("run") => true,
+        Some(_) => {
+            uart.put_str("usage: xload <addr|auto> <size> <crc32> [go]\n");
+            return;
+        }
+    };
+    if parts.next().is_some() {
+        uart.put_str("usage: xload <addr|auto> <size> <crc32> [go]\n");
+        return;
+    }
+
+    if size == 0 || size > XLOAD_MAX_IMAGE_SIZE {
+        let _ = writeln!(
+            uart,
+            "xload size must be in 1..={XLOAD_MAX_IMAGE_SIZE} bytes"
+        );
+        return;
+    }
+    if expected_crc > u32::MAX as u64 {
+        uart.put_str("xload crc32 must fit in 32 bits\n");
+        return;
+    }
+
+    let addr = if addr_token.eq_ignore_ascii_case("auto") {
+        let Some(addr) = choose_xload_auto_addr(size) else {
+            uart.put_str("xload refused: no safe auto slot is available\n");
+            return;
+        };
+        addr
+    } else {
+        let Some(addr) = parse_u64(addr_token) else {
+            uart.put_str("invalid xload address\n");
+            return;
+        };
+        addr
+    };
+
+    if let Err(reason) = validate_xload_target(addr, size) {
+        let _ = writeln!(uart, "xload refused: {reason}");
+        return;
+    }
+
+    let expected_crc = expected_crc as u32;
+    let _ = writeln!(
+        uart,
+        "XLOAD READY addr=0x{addr:016x} size={size} crc32=0x{expected_crc:08x} go={}",
+        yes_no(go)
+    );
+
+    let mut crc = 0xffff_ffffu32;
+    for offset in 0..size {
+        let Some(byte) = uart.get_byte_timeout(XLOAD_BYTE_TIMEOUT_MS) else {
+            let _ = writeln!(
+                uart,
+                "\nXLOAD ERR timeout offset={offset} expected_size={size}"
+            );
+            return;
+        };
+        unsafe {
+            write_volatile((addr + offset) as usize as *mut u8, byte);
+        }
+        crc = crc32_update(crc, byte);
+    }
+    let actual_crc = !crc;
+    if actual_crc != expected_crc {
+        let _ = writeln!(
+            uart,
+            "\nXLOAD ERR crc32 expected=0x{expected_crc:08x} actual=0x{actual_crc:08x}"
+        );
+        return;
+    }
+
+    flush_loaded_image(addr, size);
+    let _ = writeln!(
+        uart,
+        "\nXLOAD OK addr=0x{addr:016x} size={size} crc32=0x{actual_crc:08x}"
+    );
+    if go {
+        let _ = writeln!(uart, "XLOAD GO 0x{addr:016x}");
+        jump_to(addr);
+    }
 }
 
 fn command_hexdump(uart: &mut Uart, addr_token: Option<&str>, len_token: Option<&str>) {
@@ -612,6 +753,124 @@ fn parse_u64(token: &str) -> Option<u64> {
     }
 }
 
+fn choose_xload_auto_addr(size: u64) -> Option<u64> {
+    let (resident_start, _) = resident_memory_range();
+    let current_in_slot0 =
+        resident_start >= XLOAD_SLOT0_ADDR && resident_start < XLOAD_SLOT0_ADDR + XLOAD_SLOT_SIZE;
+    let candidates = if current_in_slot0 {
+        [XLOAD_SLOT1_ADDR, XLOAD_SLOT0_ADDR]
+    } else {
+        [XLOAD_SLOT0_ADDR, XLOAD_SLOT1_ADDR]
+    };
+
+    candidates
+        .into_iter()
+        .find(|addr| validate_xload_target(*addr, size).is_ok())
+}
+
+fn validate_xload_target(addr: u64, size: u64) -> Result<(), &'static str> {
+    if addr & 0xfff != 0 {
+        return Err("target address must be 4K aligned");
+    }
+    if !is_dram_range(addr, size) {
+        return Err("target range is outside known DRAM");
+    }
+
+    let (resident_start, resident_end) = resident_memory_range();
+    let guard_len = if size < 0x0008_0000 {
+        0x0008_0000
+    } else {
+        size
+    };
+    if ranges_overlap(addr, guard_len, resident_start, resident_end) {
+        return Err("target range overlaps the running loader");
+    }
+
+    Ok(())
+}
+
+fn resident_memory_range() -> (u64, u64) {
+    extern "C" {
+        static _start: u8;
+        static _boot_stack_top: u8;
+    }
+
+    let start = unsafe { &_start as *const u8 as u64 };
+    let stack_top = unsafe { &_boot_stack_top as *const u8 as u64 };
+    (start, stack_top.saturating_add(0x1000))
+}
+
+fn ranges_overlap(a_start: u64, a_len: u64, b_start: u64, b_end: u64) -> bool {
+    let Some(a_end) = a_start.checked_add(a_len) else {
+        return true;
+    };
+    a_start < b_end && b_start < a_end
+}
+
+fn crc32_update(mut crc: u32, byte: u8) -> u32 {
+    crc ^= byte as u32;
+    for _ in 0..8 {
+        if crc & 1 != 0 {
+            crc = (crc >> 1) ^ 0xedb8_8320;
+        } else {
+            crc >>= 1;
+        }
+    }
+    crc
+}
+
+fn flush_loaded_image(addr: u64, len: u64) {
+    let ctr = read_ctr_el0();
+    let dcache_line = cache_line_size(ctr, 16);
+    let icache_line = cache_line_size(ctr, 0);
+    let end = addr.saturating_add(len);
+
+    let mut current = align_down(addr, dcache_line);
+    while current < end {
+        unsafe {
+            asm!("dc cvau, {0}", in(reg) current);
+        }
+        current = current.saturating_add(dcache_line);
+    }
+    unsafe {
+        asm!("dsb ish");
+    }
+
+    current = align_down(addr, icache_line);
+    while current < end {
+        unsafe {
+            asm!("ic ivau, {0}", in(reg) current);
+        }
+        current = current.saturating_add(icache_line);
+    }
+    unsafe {
+        asm!("dsb ish");
+        asm!("isb");
+    }
+}
+
+fn cache_line_size(ctr_el0: u64, shift: u64) -> u64 {
+    let encoded = (ctr_el0 >> shift) & 0xf;
+    4u64 << encoded
+}
+
+fn align_down(value: u64, align: u64) -> u64 {
+    if align == 0 {
+        value
+    } else {
+        value & !(align - 1)
+    }
+}
+
+fn jump_to(addr: u64) -> ! {
+    unsafe {
+        asm!("dsb sy");
+        asm!("isb");
+        let entry: extern "C" fn() -> ! = core::mem::transmute(addr as usize);
+        entry();
+    }
+}
+
 fn init_timebase() {
     unsafe {
         BOOT_CNTPCT = read_cntpct();
@@ -751,6 +1010,14 @@ fn read_cntfrq() -> u64 {
     let value;
     unsafe {
         asm!("mrs {0}, CNTFRQ_EL0", out(reg) value);
+    }
+    value
+}
+
+fn read_ctr_el0() -> u64 {
+    let value;
+    unsafe {
+        asm!("mrs {0}, CTR_EL0", out(reg) value);
     }
     value
 }
