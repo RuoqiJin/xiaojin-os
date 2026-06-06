@@ -24,6 +24,58 @@
       :end 0xfe660100
       :description "RK3568 debug UART2"))
 
+  (pcie-map
+    :raw-read-rule "PCIe DBI/config/outbound windows must not be read before controller init."
+    (controller pcie3x1
+      :domain 1
+      :bus-range [0x10 0x1f]
+      :num-lanes 1
+      :reset-gpio "gpio0 A0 active-high"
+      :dbi [0x00000003c0400000 0x00000003c0800000]
+      :apb [0xfe270000 0xfe280000]
+      :config [0xf2000000 0xf2100000]
+      :io [0xf2100000 0xf2200000]
+      :mem32 [0xf2200000 0xf4000000]
+      :mem64 [0x0000000340000000 0x0000000380000000])
+    (controller pcie3x2
+      :domain 2
+      :bus-range [0x20 0x2f]
+      :num-lanes 1
+      :reset-gpio "gpio0 B6 active-high"
+      :dbi [0x00000003c0800000 0x00000003c0c00000]
+      :apb [0xfe280000 0xfe290000]
+      :config [0xf0000000 0xf0100000]
+      :io [0xf0100000 0xf0200000]
+      :mem32 [0xf0200000 0xf2000000]
+      :mem64 [0x0000000380000000 0x00000003c0000000])
+    (controller pcie2x1
+      :reset-gpio "gpio3 C1 active-high"
+      :role "enabled on R5C; likely not RJ45 path")
+    (phy pcie30phy
+      :base 0xfe8c0000
+      :end 0xfe8e0000
+      :grf-base 0xfdcb8000
+      :grf-end 0xfdcc8000
+      :data-lanes [1 2]))
+
+  (network-bringup
+    :target "wired-loader"
+    :strategy "PCIe first, RTL8125 second, UDP xload third"
+    :rescue-channel "UART xload"
+    (stage facts
+      :status implemented
+      :commands [net facts pcie facts mmio read32]
+      :purpose "Expose R5C network and PCIe facts from the board profile.")
+    (stage pcie-enumeration
+      :status next
+      :purpose "Reset, power, PHY, link training, and config-space enumeration.")
+    (stage rtl8125-driver
+      :status planned
+      :purpose "Map BAR, initialize RX/TX rings, and poll packets.")
+    (stage udp-xload
+      :status planned
+      :purpose "Receive Xiaojin OS images over Ethernet from xjctl."))
+
   (kernel-shell
     :prompt "xj> "
     (command help
@@ -47,6 +99,12 @@
       :default-iters 1000000
       :max-iters 20000000
       :purpose "Run timer-backed CPU microbenchmarks.")
+    (command net
+      :subcommands [facts]
+      :purpose "Show wired-network bring-up facts and staging.")
+    (command pcie
+      :subcommands [facts]
+      :purpose "Show R5C PCIe controller facts needed for Ethernet bring-up.")
     (command xload
       :args [addr-or-auto size crc32 go]
       :default-target auto

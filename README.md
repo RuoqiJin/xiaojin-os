@@ -21,6 +21,8 @@ Available commands:
 - `uptime`
 - `sleep <ms>`
 - `bench [iters]`
+- `net facts`
+- `pcie facts`
 - `xload <addr|auto> <size> <crc32> [go]`
 - `hexdump <addr> [n]`
 - `peek32 <addr>`
@@ -56,7 +58,44 @@ power-cycle the board afterward.
 
 `peek32` is intentionally conservative: it reads only known DRAM or whitelisted
 MMIO. Use `mmio list` and `mmio read32 uart2 0x14` for region-scoped device
-register reads.
+register reads. MMIO reads now use a fault-reporting probe path: a data abort
+during the read is captured, reported, and returned to the shell instead of
+halting the system. This does not make every device window safe to touch:
+uninitialized PCIe DBI/config reads can stall the bus instead of raising a
+recoverable exception, so PCIe windows are listed as facts but are not exposed
+through the generic `mmio read32` whitelist yet.
+
+`net facts` and `pcie facts` are the first wired-network bring-up commands. The
+NanoPi R5C Ethernet path is PCIe first: the board exposes its 2.5G RJ45 ports
+through Realtek RTL8125-family PCIe NICs, so the kernel must enumerate PCIe
+before it can write a native Ethernet driver.
+
+## Network Bring-Up Plan
+
+The goal is to replace UART development with an Ethernet loader, while keeping
+UART `xload` as the recovery path until the network path is stable.
+
+1. PCIe facts and fault-reporting MMIO probe. This is implemented by
+   `net facts`, `pcie facts`, `mmio list`, and `mmio read32` for whitelisted
+   windows.
+2. PCIe controller bring-up: reset GPIO, PCIe 3.0 PHY, link training, and config
+   space enumeration.
+3. RTL8125 driver: discover BARs, map MMIO, set RX/TX rings, and use polling
+   before interrupts.
+4. Minimal network stack: ARP, IPv4, UDP, and `xjctl net-dev` image loading.
+
+Useful first probes after booting the latest kernel:
+
+```text
+net facts
+pcie facts
+mmio list
+mmio read32 uart2 0x14
+```
+
+Do not raw-read PCIe DBI/config/outbound windows until a dedicated `pcie init`
+path exists. On the R5C, a direct DBI read before controller bring-up has been
+observed to stall instead of producing a recoverable data abort.
 
 ## Facts Discovered From U-Boot
 
@@ -66,6 +105,10 @@ register reads.
 - Serial xload slots:
   - `0x04080000..0x04880000`
   - `0x05080000..0x05880000`
+- R5C wired Ethernet path:
+  - PCIe 3.0 x1 domain 1: DBI `0x00000003c0400000`, APB `0xfe270000`
+  - PCIe 3.0 x2 domain 2: DBI `0x00000003c0800000`, APB `0xfe280000`
+  - PCIe 3.0 PHY: `0xfe8c0000`
 - U-Boot default kernel address: `0x00280000`
 - FDT address: `0x08300000`
 - Usable DRAM banks:

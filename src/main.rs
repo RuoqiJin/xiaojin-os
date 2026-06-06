@@ -6,6 +6,7 @@ use core::fmt::{self, Write};
 use core::panic::PanicInfo;
 use core::ptr::{read_volatile, write_volatile};
 use core::str;
+use core::sync::atomic::{AtomicBool, Ordering};
 
 global_asm!(include_str!("boot.S"));
 
@@ -14,6 +15,20 @@ const UART_RBR_THR: usize = 0x00;
 const UART_LSR: usize = 0x14;
 const UART_LSR_DR: u32 = 1 << 0;
 const UART_LSR_THRE: u32 = 1 << 5;
+const PCIE30_PHY_GRF_BASE: u64 = 0xfdcb_8000;
+const PCIE3X1_APB_BASE: u64 = 0xfe27_0000;
+const PCIE3X2_APB_BASE: u64 = 0xfe28_0000;
+const PCIE30_PHY_BASE: u64 = 0xfe8c_0000;
+const PCIE3X1_CFG_BASE: u64 = 0xf200_0000;
+const PCIE3X1_IO_BASE: u64 = 0xf210_0000;
+const PCIE3X1_MEM32_BASE: u64 = 0xf220_0000;
+const PCIE3X2_CFG_BASE: u64 = 0xf000_0000;
+const PCIE3X2_IO_BASE: u64 = 0xf010_0000;
+const PCIE3X2_MEM32_BASE: u64 = 0xf020_0000;
+const PCIE3X1_DBI_BASE: u64 = 0x0000_0003_c040_0000;
+const PCIE3X2_DBI_BASE: u64 = 0x0000_0003_c080_0000;
+const PCIE3X1_MEM64_BASE: u64 = 0x0000_0003_4000_0000;
+const PCIE3X2_MEM64_BASE: u64 = 0x0000_0003_8000_0000;
 
 const LOAD_ADDR: u64 = 0x0408_0000;
 const DRAM_BANK0_START: u64 = 0x0020_0000;
@@ -79,6 +94,8 @@ impl ExceptionSnapshot {
 
 static mut LAST_EXCEPTION: ExceptionSnapshot = ExceptionSnapshot::empty();
 static mut BOOT_CNTPCT: u64 = 0;
+static PROBE_ACTIVE: AtomicBool = AtomicBool::new(false);
+static PROBE_FAULTED: AtomicBool = AtomicBool::new(false);
 
 struct MmioRegion {
     name: &'static str,
@@ -242,6 +259,10 @@ fn handle_command(uart: &mut Uart, input: &str) {
         command_sleep(uart, parts.next());
     } else if command.eq_ignore_ascii_case("bench") {
         command_bench(uart, parts.next());
+    } else if command.eq_ignore_ascii_case("net") {
+        command_net(uart, parts.next());
+    } else if command.eq_ignore_ascii_case("pcie") {
+        command_pcie(uart, parts.next());
     } else if command.eq_ignore_ascii_case("xload") {
         command_xload(uart, parts);
     } else if command.eq_ignore_ascii_case("hexdump") || command.eq_ignore_ascii_case("hd") {
@@ -276,6 +297,8 @@ fn print_help(uart: &mut Uart) {
     uart.put_str("  uptime               show elapsed kernel time\n");
     uart.put_str("  sleep <ms>           busy-wait with generic timer, max 10000\n");
     uart.put_str("  bench [iters]        run timer-backed CPU microbenchmarks\n");
+    uart.put_str("  net facts            show wired-network bring-up plan\n");
+    uart.put_str("  pcie facts           show R5C PCIe controller facts\n");
     uart.put_str("  xload <addr|auto> <size> <crc32> [go]\n");
     uart.put_str("                       receive a serial-loaded image\n");
     uart.put_str("  hexdump <addr> [n]   dump DRAM bytes, max 256\n");
@@ -294,6 +317,121 @@ fn print_about(uart: &mut Uart) {
     uart.put_str("soc: rk3568\n");
     uart.put_str("kernel: AArch64 no_std Rust\n");
     uart.put_str("control: UART2 shell\n");
+    uart.put_str("network target: PCIe RTL8125 wired loader\n");
+}
+
+fn command_net(uart: &mut Uart, action: Option<&str>) {
+    match action {
+        None | Some("facts") => print_net_facts(uart),
+        _ => {
+            uart.put_str("usage:\n");
+            uart.put_str("  net facts\n");
+        }
+    }
+}
+
+fn print_net_facts(uart: &mut Uart) {
+    uart.put_str("wired network bring-up facts:\n");
+    uart.put_str("  board path       NanoPi R5C RJ45 ports sit behind PCIe NICs\n");
+    uart.put_str("  expected NIC     Realtek RTL8125B family 2.5G Ethernet\n");
+    uart.put_str("  not the path     RK3568 GMAC direct PHY driver is not enough here\n");
+    uart.put_str("  stage 1          PCIe facts + fault-reporting MMIO probe\n");
+    uart.put_str("  stage 2          PCIe reset, clock, PHY, link, config enumeration\n");
+    uart.put_str("  stage 3          RTL8125 MMIO BAR, RX/TX rings, interrupts/polling\n");
+    uart.put_str("  stage 4          ARP + IPv4 + UDP xload, then host xjctl net-dev\n");
+    uart.put_str("  rescue path      UART xload remains the fallback until UDP loader is stable\n");
+}
+
+fn command_pcie(uart: &mut Uart, action: Option<&str>) {
+    match action {
+        None | Some("facts") => print_pcie_facts(uart),
+        _ => {
+            uart.put_str("usage:\n");
+            uart.put_str("  pcie facts\n");
+        }
+    }
+}
+
+fn print_pcie_facts(uart: &mut Uart) {
+    uart.put_str("R5C PCIe facts from board profile:\n");
+    uart.put_str("  pcie3x1          enabled, domain=1, bus=0x10..0x1f, lanes=1\n");
+    uart.put_str("  pcie3x1 reset    gpio0 A0, active high\n");
+    let _ = writeln!(
+        uart,
+        "  pcie3x1 dbi      0x{PCIE3X1_DBI_BASE:016x}..0x{:016x}",
+        PCIE3X1_DBI_BASE + 0x0040_0000
+    );
+    let _ = writeln!(
+        uart,
+        "  pcie3x1 apb      0x{PCIE3X1_APB_BASE:016x}..0x{:016x}",
+        PCIE3X1_APB_BASE + 0x0001_0000
+    );
+    let _ = writeln!(
+        uart,
+        "  pcie3x1 cfg      0x{PCIE3X1_CFG_BASE:016x}..0x{:016x}",
+        PCIE3X1_CFG_BASE + 0x0010_0000
+    );
+    let _ = writeln!(
+        uart,
+        "  pcie3x1 io       0x{PCIE3X1_IO_BASE:016x}..0x{:016x}",
+        PCIE3X1_IO_BASE + 0x0010_0000
+    );
+    let _ = writeln!(
+        uart,
+        "  pcie3x1 mem32    0x{PCIE3X1_MEM32_BASE:016x}..0x{:016x}",
+        PCIE3X1_MEM32_BASE + 0x01e0_0000
+    );
+    let _ = writeln!(
+        uart,
+        "  pcie3x1 mem64    0x{PCIE3X1_MEM64_BASE:016x}..0x{:016x}",
+        PCIE3X1_MEM64_BASE + 0x4000_0000
+    );
+    uart.put_str("  pcie3x2          enabled, domain=2, bus=0x20..0x2f, lanes=1 on R5C\n");
+    uart.put_str("  pcie3x2 reset    gpio0 B6, active high\n");
+    let _ = writeln!(
+        uart,
+        "  pcie3x2 dbi      0x{PCIE3X2_DBI_BASE:016x}..0x{:016x}",
+        PCIE3X2_DBI_BASE + 0x0040_0000
+    );
+    let _ = writeln!(
+        uart,
+        "  pcie3x2 apb      0x{PCIE3X2_APB_BASE:016x}..0x{:016x}",
+        PCIE3X2_APB_BASE + 0x0001_0000
+    );
+    let _ = writeln!(
+        uart,
+        "  pcie3x2 cfg      0x{PCIE3X2_CFG_BASE:016x}..0x{:016x}",
+        PCIE3X2_CFG_BASE + 0x0010_0000
+    );
+    let _ = writeln!(
+        uart,
+        "  pcie3x2 io       0x{PCIE3X2_IO_BASE:016x}..0x{:016x}",
+        PCIE3X2_IO_BASE + 0x0010_0000
+    );
+    let _ = writeln!(
+        uart,
+        "  pcie3x2 mem32    0x{PCIE3X2_MEM32_BASE:016x}..0x{:016x}",
+        PCIE3X2_MEM32_BASE + 0x01e0_0000
+    );
+    let _ = writeln!(
+        uart,
+        "  pcie3x2 mem64    0x{PCIE3X2_MEM64_BASE:016x}..0x{:016x}",
+        PCIE3X2_MEM64_BASE + 0x4000_0000
+    );
+    uart.put_str("  pcie2x1          enabled on R5C, reset gpio3 C1, likely not RJ45 path\n");
+    let _ = writeln!(
+        uart,
+        "  pcie30phy        0x{PCIE30_PHY_BASE:016x}..0x{:016x}, data-lanes=<1 2>",
+        PCIE30_PHY_BASE + 0x0002_0000
+    );
+    let _ = writeln!(
+        uart,
+        "  pcie30phy-grf    0x{PCIE30_PHY_GRF_BASE:016x}..0x{:016x}",
+        PCIE30_PHY_GRF_BASE + 0x0001_0000
+    );
+    uart.put_str("  raw read rule    do not read PCIe windows before controller init\n");
+    uart.put_str("  observed limit   uninitialized DBI reads can stall instead of faulting\n");
+    uart.put_str("  next driver step reset, clock, PHY, then config-space scan\n");
 }
 
 fn print_memory_map(uart: &mut Uart) {
@@ -618,8 +756,15 @@ fn command_peek32(uart: &mut Uart, addr_token: Option<&str>) {
         return;
     }
 
-    let value = unsafe { read_volatile(addr as usize as *const u32) };
-    let _ = writeln!(uart, "0x{addr:016x}: 0x{value:08x}");
+    match probe_read32(addr) {
+        Ok(value) => {
+            let _ = writeln!(uart, "0x{addr:016x}: 0x{value:08x}");
+        }
+        Err(snapshot) => {
+            let _ = writeln!(uart, "0x{addr:016x}: read faulted");
+            print_exception_snapshot(uart, &snapshot);
+        }
+    }
 }
 
 fn command_mmio(
@@ -644,7 +789,7 @@ fn list_mmio_regions(uart: &mut Uart) {
     for region in MMIO_REGIONS {
         let _ = writeln!(
             uart,
-            "  {:<8} 0x{:016x}..0x{:016x}  {}",
+            "  {:<14} 0x{:016x}..0x{:016x}  {}",
             region.name, region.start, region.end, region.description
         );
     }
@@ -675,12 +820,44 @@ fn command_mmio_read32(uart: &mut Uart, region_token: Option<&str>, offset_token
         return;
     }
 
-    let value = unsafe { read_volatile(addr as usize as *const u32) };
-    let _ = writeln!(
-        uart,
-        "{}+0x{offset:x} @ 0x{addr:016x}: 0x{value:08x}",
-        region.name
-    );
+    match probe_read32(addr) {
+        Ok(value) => {
+            let _ = writeln!(
+                uart,
+                "{}+0x{offset:x} @ 0x{addr:016x}: 0x{value:08x}",
+                region.name
+            );
+        }
+        Err(snapshot) => {
+            let _ = writeln!(
+                uart,
+                "{}+0x{offset:x} @ 0x{addr:016x}: read faulted",
+                region.name
+            );
+            print_exception_snapshot(uart, &snapshot);
+        }
+    }
+}
+
+fn probe_read32(addr: u64) -> Result<u32, ExceptionSnapshot> {
+    let mut value: u32 = 0;
+    PROBE_FAULTED.store(false, Ordering::SeqCst);
+    PROBE_ACTIVE.store(true, Ordering::SeqCst);
+    unsafe {
+        asm!(
+            "ldr {value:w}, [{addr}]",
+            addr = in(reg) addr as usize,
+            value = inout(reg) value,
+            options(nostack, preserves_flags)
+        );
+    }
+    PROBE_ACTIVE.store(false, Ordering::SeqCst);
+
+    if PROBE_FAULTED.swap(false, Ordering::SeqCst) {
+        Err(unsafe { LAST_EXCEPTION })
+    } else {
+        Ok(value)
+    }
 }
 
 fn command_last_exception(uart: &mut Uart) {
@@ -1097,6 +1274,12 @@ pub extern "C" fn exception_handler(vector: u64, frame: *const ExceptionFrame) {
     };
     unsafe {
         LAST_EXCEPTION = snapshot;
+    }
+
+    if ec == ESR_EC_DATA_ABORT_CURRENT && PROBE_ACTIVE.load(Ordering::SeqCst) {
+        PROBE_FAULTED.store(true, Ordering::SeqCst);
+        write_elr_el2(elr.wrapping_add(4));
+        return;
     }
 
     uart.put_str("\n");
