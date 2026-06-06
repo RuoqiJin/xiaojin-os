@@ -77,7 +77,7 @@
       :purpose "Expose R5C network and PCIe facts from the board profile.")
     (stage pcie-enumeration
       :status next
-      :implemented [reset-gpio-read reset-gpio-deassert-confirm]
+      :implemented [reset-gpio-read reset-gpio-deassert-confirm phy-grf-status apb-ltssm-status]
       :purpose "Reset, power, PHY, link training, and config-space enumeration.")
     (stage rtl8125-driver
       :status planned
@@ -115,11 +115,12 @@
       :subcommands [facts]
       :purpose "Show wired-network bring-up facts and staging.")
     (command pcie
-      :subcommands [facts reset-pins status init reset-deassert reset-assert]
+      :subcommands [facts reset-pins status phy-status apb-status init reset-deassert reset-assert]
       :init-mode "read-only-preflight"
       :write-commands [reset-deassert reset-assert]
+      :confirmed-read-commands [apb-status]
       :write-scope "pcie3x1 and pcie3x2 reset GPIOs only; requires confirm"
-      :purpose "Show R5C PCIe controller facts and control RJ45 PCIe reset GPIOs.")
+      :purpose "Show R5C PCIe controller facts, inspect PHY/APB status, and control RJ45 PCIe reset GPIOs.")
     (command xload
       :args [addr-or-auto size crc32 go]
       :default-target auto

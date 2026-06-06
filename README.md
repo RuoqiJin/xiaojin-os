@@ -26,6 +26,8 @@ Available commands:
 - `pcie facts`
 - `pcie reset-pins`
 - `pcie status`
+- `pcie phy-status`
+- `pcie apb-status confirm`
 - `pcie reset-deassert confirm`
 - `pcie reset-assert confirm`
 - `xload <addr|auto> <size> <crc32> [go]`
@@ -88,8 +90,11 @@ before it can write a native Ethernet driver.
 external port values, and the R5C PCIe reset GPIO levels. `pcie reset-deassert
 confirm` and `pcie reset-assert confirm` are the first controlled write commands:
 they only drive the RJ45-related `pcie3x1` and `pcie3x2` reset GPIOs. `pcie
-init` is still a read-only preflight; PCIe DBI/config reads stay disabled until
-reset, clocks, and PHY state are verified on hardware.
+phy-status` reads the PCIe3 PHY GRF configuration/status words and decodes the
+PHY SRAM init-done bit. `pcie apb-status confirm` reads only the two RJ45-related
+PCIe controller APB status windows and decodes coarse RC/LTSSM/link state.
+`pcie init` is still a read-only preflight; PCIe DBI/config reads stay disabled
+until reset, clocks, and PHY state are verified on hardware.
 
 ## Network Bring-Up Plan
 
@@ -112,6 +117,8 @@ net facts
 pcie facts
 pcie reset-pins
 pcie status
+pcie phy-status
+pcie apb-status confirm
 pcie reset-deassert confirm
 pcie status
 mmio list

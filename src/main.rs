@@ -19,6 +19,22 @@ const PCIE30_PHY_GRF_BASE: u64 = 0xfdcb_8000;
 const PCIE3X1_APB_BASE: u64 = 0xfe27_0000;
 const PCIE3X2_APB_BASE: u64 = 0xfe28_0000;
 const PCIE30_PHY_BASE: u64 = 0xfe8c_0000;
+const PCIE30_PHY_GRF_CON1: u64 = 0x04;
+const PCIE30_PHY_GRF_CON6: u64 = 0x18;
+const PCIE30_PHY_GRF_CON9: u64 = 0x24;
+const PCIE30_PHY_GRF_STATUS0: u64 = 0x80;
+const PCIE30_PHY_SRAM_INIT_DONE: u32 = 1 << 14;
+const PCIE_CLIENT_GENERAL_CON: u64 = 0x000;
+const PCIE_CLIENT_INTR_STATUS_MISC: u64 = 0x010;
+const PCIE_CLIENT_POWER_CON: u64 = 0x02c;
+const PCIE_CLIENT_HOT_RESET_CTRL: u64 = 0x180;
+const PCIE_CLIENT_LTSSM_STATUS: u64 = 0x300;
+const PCIE_CLIENT_LTSSM_ENABLE_BIT: u32 = 1 << 2;
+const PCIE_CLIENT_RC_MODE_BIT: u32 = 1 << 6;
+const PCIE_CLIENT_LINKUP_MASK: u32 = 0x3 << 16;
+const PCIE_CLIENT_LINKUP: u32 = 0x3 << 16;
+const PCIE_CLIENT_LTSSM_STATUS_MASK: u32 = 0x3f;
+const PCIE_CLIENT_LTSSM_L0: u32 = 0x11;
 const PCIE3X1_CFG_BASE: u64 = 0xf200_0000;
 const PCIE3X1_IO_BASE: u64 = 0xf210_0000;
 const PCIE3X1_MEM32_BASE: u64 = 0xf220_0000;
@@ -129,6 +145,13 @@ struct PcieResetPin {
     source: &'static str,
 }
 
+#[derive(Clone, Copy)]
+struct PcieController {
+    name: &'static str,
+    apb_base: u64,
+    reset_pin: &'static str,
+}
+
 const MMIO_REGIONS: &[MmioRegion] = &[
     MmioRegion {
         name: "uart2",
@@ -183,6 +206,19 @@ const PCIE_RESET_PINS: &[PcieResetPin] = &[
         label: "PC1",
         active_high: true,
         source: "reset-gpios",
+    },
+];
+
+const PCIE_CONTROLLERS: &[PcieController] = &[
+    PcieController {
+        name: "pcie3x1",
+        apb_base: PCIE3X1_APB_BASE,
+        reset_pin: "gpio0 PA0",
+    },
+    PcieController {
+        name: "pcie3x2",
+        apb_base: PCIE3X2_APB_BASE,
+        reset_pin: "gpio0 PB6",
     },
 ];
 
@@ -379,8 +415,13 @@ fn print_help(uart: &mut Uart) {
     uart.put_str("  pcie facts           show R5C PCIe controller facts\n");
     uart.put_str("  pcie reset-pins      read PCIe reset GPIO levels\n");
     uart.put_str("  pcie status          read PCIe bring-up status, no writes\n");
+    uart.put_str("  pcie phy-status      read PCIe3 PHY GRF status\n");
+    uart.put_str("  pcie apb-status confirm\n");
+    uart.put_str("                       read PCIe controller APB status registers\n");
     uart.put_str("  pcie reset-deassert confirm\n");
     uart.put_str("                       release RJ45 PCIe reset GPIOs\n");
+    uart.put_str("  pcie reset-assert confirm\n");
+    uart.put_str("                       hold RJ45 PCIe reset GPIOs\n");
     uart.put_str("  xload <addr|auto> <size> <crc32> [go]\n");
     uart.put_str("                       receive a serial-loaded image\n");
     uart.put_str("  hexdump <addr> [n]   dump DRAM bytes, max 256\n");
@@ -440,6 +481,8 @@ fn command_pcie(uart: &mut Uart, action: Option<&str>, arg1: Option<&str>) {
         None | Some("facts") => print_pcie_facts(uart),
         Some("reset-pins") => print_pcie_reset_pins(uart),
         Some("status") => print_pcie_status(uart),
+        Some("phy-status") => print_pcie_phy_status(uart),
+        Some("apb-status") => command_pcie_apb_status(uart, arg1),
         Some("init") => command_pcie_init(uart),
         Some("reset-deassert") => command_pcie_reset_write(uart, false, arg1),
         Some("reset-assert") => command_pcie_reset_write(uart, true, arg1),
@@ -448,6 +491,8 @@ fn command_pcie(uart: &mut Uart, action: Option<&str>, arg1: Option<&str>) {
             uart.put_str("  pcie facts\n");
             uart.put_str("  pcie reset-pins\n");
             uart.put_str("  pcie status\n");
+            uart.put_str("  pcie phy-status\n");
+            uart.put_str("  pcie apb-status confirm\n");
             uart.put_str("  pcie init\n");
             uart.put_str("  pcie reset-deassert confirm\n");
             uart.put_str("  pcie reset-assert confirm\n");
@@ -540,9 +585,24 @@ fn print_pcie_facts(uart: &mut Uart) {
 fn command_pcie_init(uart: &mut Uart) {
     uart.put_str("pcie init stage: read-only preflight\n");
     uart.put_str("  writes           disabled in this build\n");
-    uart.put_str("  reason           reset/clock/PHY writes need one more verified map pass\n");
-    uart.put_str("  next             validate GPIO levels, then add explicit reset control\n");
+    uart.put_str("  reason           clock/PHY/LTSSM writes need one more verified map pass\n");
+    uart.put_str("  next             inspect PHY GRF and APB LTSSM status\n");
     print_pcie_status(uart);
+    print_pcie_phy_status(uart);
+}
+
+fn command_pcie_apb_status(uart: &mut Uart, confirm: Option<&str>) {
+    if confirm != Some("confirm") {
+        uart.put_str("usage: pcie apb-status confirm\n");
+        uart.put_str("scope: read controller-local APB status registers only\n");
+        uart.put_str("note: DBI/config/BAR windows remain disabled in generic MMIO reads\n");
+        return;
+    }
+
+    uart.put_str("pcie apb status:\n");
+    for controller in PCIE_CONTROLLERS {
+        print_pcie_controller_apb_status(uart, *controller);
+    }
 }
 
 fn command_pcie_reset_write(uart: &mut Uart, assert_reset: bool, confirm: Option<&str>) {
@@ -578,6 +638,110 @@ fn print_pcie_status(uart: &mut Uart) {
     print_gpio_bank_status(uart, GPIO0);
     print_gpio_bank_status(uart, GPIO3);
     print_pcie_reset_pins(uart);
+}
+
+fn print_pcie_phy_status(uart: &mut Uart) {
+    uart.put_str("pcie phy status:\n");
+    let con1 = probe_read32(PCIE30_PHY_GRF_BASE + PCIE30_PHY_GRF_CON1);
+    let con6 = probe_read32(PCIE30_PHY_GRF_BASE + PCIE30_PHY_GRF_CON6);
+    let con9 = probe_read32(PCIE30_PHY_GRF_BASE + PCIE30_PHY_GRF_CON9);
+    let status0 = probe_read32(PCIE30_PHY_GRF_BASE + PCIE30_PHY_GRF_STATUS0);
+
+    print_pcie_reg(
+        uart,
+        "  phy-grf.con1",
+        PCIE30_PHY_GRF_BASE + PCIE30_PHY_GRF_CON1,
+        con1,
+    );
+    print_pcie_reg(
+        uart,
+        "  phy-grf.con6",
+        PCIE30_PHY_GRF_BASE + PCIE30_PHY_GRF_CON6,
+        con6,
+    );
+    print_pcie_reg(
+        uart,
+        "  phy-grf.con9",
+        PCIE30_PHY_GRF_BASE + PCIE30_PHY_GRF_CON9,
+        con9,
+    );
+    print_pcie_reg(
+        uart,
+        "  phy-grf.status0",
+        PCIE30_PHY_GRF_BASE + PCIE30_PHY_GRF_STATUS0,
+        status0,
+    );
+
+    if let Ok(status0) = status0 {
+        let sram_ready = status0 & PCIE30_PHY_SRAM_INIT_DONE != 0;
+        let _ = writeln!(
+            uart,
+            "  phy sram       {}",
+            if sram_ready { "init-done" } else { "not-ready" }
+        );
+    }
+}
+
+fn print_pcie_controller_apb_status(uart: &mut Uart, controller: PcieController) {
+    let general = probe_read32(controller.apb_base + PCIE_CLIENT_GENERAL_CON);
+    let misc = probe_read32(controller.apb_base + PCIE_CLIENT_INTR_STATUS_MISC);
+    let power = probe_read32(controller.apb_base + PCIE_CLIENT_POWER_CON);
+    let hot_reset = probe_read32(controller.apb_base + PCIE_CLIENT_HOT_RESET_CTRL);
+    let ltssm = probe_read32(controller.apb_base + PCIE_CLIENT_LTSSM_STATUS);
+
+    let _ = writeln!(
+        uart,
+        "  {} apb=0x{:016x} reset={}",
+        controller.name, controller.apb_base, controller.reset_pin
+    );
+    print_pcie_reg(
+        uart,
+        "    general",
+        controller.apb_base + PCIE_CLIENT_GENERAL_CON,
+        general,
+    );
+    if let Ok(general) = general {
+        let _ = writeln!(
+            uart,
+            "    mode         rc={} ltssm-enable={}",
+            enabled_name(general & PCIE_CLIENT_RC_MODE_BIT != 0),
+            enabled_name(general & PCIE_CLIENT_LTSSM_ENABLE_BIT != 0)
+        );
+    }
+    print_pcie_reg(
+        uart,
+        "    misc",
+        controller.apb_base + PCIE_CLIENT_INTR_STATUS_MISC,
+        misc,
+    );
+    print_pcie_reg(
+        uart,
+        "    power",
+        controller.apb_base + PCIE_CLIENT_POWER_CON,
+        power,
+    );
+    print_pcie_reg(
+        uart,
+        "    hot-reset",
+        controller.apb_base + PCIE_CLIENT_HOT_RESET_CTRL,
+        hot_reset,
+    );
+    print_pcie_reg(
+        uart,
+        "    ltssm",
+        controller.apb_base + PCIE_CLIENT_LTSSM_STATUS,
+        ltssm,
+    );
+    if let Ok(ltssm) = ltssm {
+        let link_up = ltssm & PCIE_CLIENT_LINKUP_MASK == PCIE_CLIENT_LINKUP;
+        let state = ltssm & PCIE_CLIENT_LTSSM_STATUS_MASK;
+        let _ = writeln!(
+            uart,
+            "    link         {} ltssm-state=0x{state:02x} ({})",
+            if link_up { "up" } else { "down" },
+            pcie_ltssm_state_name(state)
+        );
+    }
 }
 
 fn print_gpio_bank_status(uart: &mut Uart, bank: GpioBank) {
@@ -673,6 +837,22 @@ fn print_probe_result(uart: &mut Uart, label: &str, result: Result<u32, Exceptio
     }
 }
 
+fn print_pcie_reg(uart: &mut Uart, label: &str, addr: u64, result: Result<u32, ExceptionSnapshot>) {
+    match result {
+        Ok(value) => {
+            let _ = writeln!(uart, "{label:<18} @ 0x{addr:016x}: 0x{value:08x}");
+        }
+        Err(snapshot) => {
+            let _ = writeln!(
+                uart,
+                "{label:<18} @ 0x{addr:016x}: fault ec=0x{:02x} far=0x{:016x}",
+                snapshot.esr >> ESR_EC_SHIFT,
+                snapshot.far
+            );
+        }
+    }
+}
+
 fn gpio_version_name(version: u32) -> &'static str {
     match version {
         GPIO_TYPE_V2 => "v2",
@@ -694,6 +874,24 @@ fn bit_name(value: bool) -> &'static str {
         "high"
     } else {
         "low"
+    }
+}
+
+fn enabled_name(value: bool) -> &'static str {
+    if value {
+        "yes"
+    } else {
+        "no"
+    }
+}
+
+fn pcie_ltssm_state_name(state: u32) -> &'static str {
+    match state {
+        PCIE_CLIENT_LTSSM_L0 => "L0-or-entry",
+        0x00 => "detect/disabled",
+        0x01..=0x04 => "detect/polling",
+        0x05..=0x10 => "configuration",
+        _ => "other",
     }
 }
 
