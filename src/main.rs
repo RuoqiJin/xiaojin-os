@@ -306,6 +306,7 @@ const DB_WAL_KIND_TEST: u32 = 1;
 const DB_WAL_KIND_PUT: u32 = 2;
 const DB_WAL_KIND_BPUT: u32 = 3;
 const DB_EVENT_KIND_MAINT_STATUS: u32 = 1000;
+const DB_EVENT_KIND_MAINT_VERIFY: u32 = 1001;
 const DB_EVENT_SOURCE_MAINTAINER: u32 = 2;
 const DB_SUPERBLOCK_CRC_OFFSET: usize = SD_BLOCK_BYTES - 4;
 const SD_CMD_READ_SINGLE_BLOCK: u32 = 17;
@@ -2040,6 +2041,8 @@ fn print_help(uart: &mut Uart) {
     uart.put_str("                       parse cleartext maintainer status and pending summary\n");
     uart.put_str("  maint audit <if> <host|ip> <port> <path> confirm\n");
     uart.put_str("                       append maintainer status summary into XiaojinDB events\n");
+    uart.put_str("  maint verify <if> <host|ip> <port> <path> confirm\n");
+    uart.put_str("                       verify pending command digest and audit the result\n");
     uart.put_str("  net loop confirm     run ARP/IPv4/UDP responder for 120s\n");
     uart.put_str("  net listen confirm   run ARP/IPv4/UDP responder until Ctrl-C\n");
     uart.put_str("  wifi facts           show R5C WiFi hardware and bring-up facts\n");
@@ -2175,6 +2178,7 @@ fn print_caps(uart: &mut Uart) {
     uart.put_str("  maint http-poll yes\n");
     uart.put_str("  maint pending-summary yes\n");
     uart.put_str("  maint command-digest yes\n");
+    uart.put_str("  maint command-verify yes\n");
     uart.put_str("  maint local-audit yes\n");
     uart.put_str("  wifi facts yes\n");
     uart.put_str("  wifi pcie-facts yes\n");
@@ -3045,11 +3049,20 @@ fn command_maint<'a>(uart: &mut Uart, parts: &mut core::str::SplitWhitespace<'a>
             parts.next(),
             parts.next(),
         ),
+        Some("verify") => command_maint_verify(
+            uart,
+            parts.next(),
+            parts.next(),
+            parts.next(),
+            parts.next(),
+            parts.next(),
+        ),
         _ => {
             uart.put_str("usage:\n");
             uart.put_str("  maint poll <pcie3x1|pcie3x2|0|1> <host|ip> <port> <path> confirm\n");
             uart.put_str("  maint status <pcie3x1|pcie3x2|0|1> <host|ip> <port> <path> confirm\n");
             uart.put_str("  maint audit <pcie3x1|pcie3x2|0|1> <host|ip> <port> <path> confirm\n");
+            uart.put_str("  maint verify <pcie3x1|pcie3x2|0|1> <host|ip> <port> <path> confirm\n");
         }
     }
 }
@@ -3532,6 +3545,46 @@ fn write_maint_audit_query_summary<W: Write>(default_index: usize, query: &str, 
     };
 
     write_maint_audit_summary(out, index, host, port, path);
+}
+
+fn write_maint_verify_query_summary<W: Write>(default_index: usize, query: &str, out: &mut W) {
+    let mut parts = query.split_whitespace();
+    let _maint = parts.next();
+    if parts.next() != Some("verify") {
+        let _ = write!(out, "XJQ ERR maint-verify-usage");
+        return;
+    }
+    let Some(first) = parts.next() else {
+        let _ = write!(out, "XJQ ERR maint-verify-usage");
+        return;
+    };
+    let (index, host) = if let Some(index) = parse_net_interface(first) {
+        let Some(host) = parts.next() else {
+            let _ = write!(out, "XJQ ERR maint-verify-usage");
+            return;
+        };
+        (index, host)
+    } else {
+        (default_index, first)
+    };
+    let Some(port_text) = parts.next() else {
+        let _ = write!(out, "XJQ ERR maint-verify-usage");
+        return;
+    };
+    let Some(path) = parts.next() else {
+        let _ = write!(out, "XJQ ERR maint-verify-usage");
+        return;
+    };
+    if !matches!(parts.next(), None | Some("confirm")) {
+        let _ = write!(out, "XJQ ERR maint-verify-usage");
+        return;
+    }
+    let Some(port) = parse_u16(port_text) else {
+        let _ = write!(out, "XJQ ERR maint-verify-port");
+        return;
+    };
+
+    write_maint_verify_summary(out, index, host, port, path);
 }
 
 fn command_sd(uart: &mut Uart, action: Option<&str>, confirm: Option<&str>) {
@@ -8733,6 +8786,48 @@ fn command_net_http(
     }
 }
 
+fn command_maint_verify(
+    uart: &mut Uart,
+    iface: Option<&str>,
+    host: Option<&str>,
+    port: Option<&str>,
+    path: Option<&str>,
+    confirm: Option<&str>,
+) {
+    if confirm != Some("confirm") {
+        uart.put_str("usage: maint verify <pcie3x1|pcie3x2|0|1> <host|ip> <port> <path> confirm\n");
+        return;
+    }
+    let Some(iface) = iface else {
+        uart.put_str("missing interface\n");
+        return;
+    };
+    let Some(index) = parse_net_interface(iface) else {
+        uart.put_str("unknown interface; use pcie3x1, pcie3x2, 0, or 1\n");
+        return;
+    };
+    let Some(host) = host else {
+        uart.put_str("missing host\n");
+        return;
+    };
+    let Some(port) = port.and_then(parse_u16) else {
+        uart.put_str("missing or invalid TCP port\n");
+        return;
+    };
+    let Some(path) = path else {
+        uart.put_str("missing path\n");
+        return;
+    };
+
+    let _ = writeln!(
+        uart,
+        "maint verify {} http://{host}:{port}{path}:",
+        PCIE_CONTROLLERS[index].name
+    );
+    write_maint_verify_summary(uart, index, host, port, path);
+    uart.put_str("\n");
+}
+
 fn command_maint_poll(
     uart: &mut Uart,
     iface: Option<&str>,
@@ -9069,6 +9164,154 @@ fn write_maint_audit_summary<W: Write>(
     }
 }
 
+fn write_maint_verify_summary<W: Write>(
+    out: &mut W,
+    index: usize,
+    host: &str,
+    port: u16,
+    path: &str,
+) {
+    match net_http_get(index, host, port, path, HTTP_TIMEOUT_MS) {
+        Ok(result) => {
+            let Some(body) = find_http_body_start(&result.sample[..result.sample_len])
+                .map(|start| &result.sample[start..result.sample_len])
+            else {
+                let _ = write!(out, "XJQ ERR maint-verify no-body");
+                return;
+            };
+
+            let command_id = find_maint_text_field(body, b"next_pending_command_id");
+            let kind = find_maint_text_field(body, b"next_pending_command_kind");
+            let payload_sha = find_maint_text_field(body, b"next_pending_payload_sha256");
+            let command_sha = find_maint_text_field(body, b"next_pending_command_sha256");
+
+            let mut calculated = [0u8; 32];
+            let (pending, digest_ok, digest_calculated, reason) =
+                match (command_id, kind, payload_sha, command_sha) {
+                    (Some(id), _, _, _) if ascii_eq(id, b"none") => {
+                        (false, false, false, "no-pending")
+                    }
+                    (Some(id), Some(kind), Some(payload_sha), Some(command_sha)) => {
+                        if !is_sha256_hex(payload_sha) {
+                            (true, false, false, "bad-payload-sha")
+                        } else if !is_sha256_hex(command_sha) {
+                            (true, false, false, "bad-command-sha")
+                        } else if let Some(digest) = maint_command_digest(id, kind, payload_sha) {
+                            calculated = digest;
+                            if sha256_hex_matches(&calculated, command_sha) {
+                                (true, true, true, "ok")
+                            } else {
+                                (true, false, true, "mismatch")
+                            }
+                        } else {
+                            (true, false, false, "canonical-too-long")
+                        }
+                    }
+                    _ => (true, false, false, "missing-field"),
+                };
+
+            let mut event = NetReplyBuf::new();
+            let _ = write!(
+                event,
+                "maint-command-verify-v1 iface={} host=",
+                PCIE_CONTROLLERS[index].name
+            );
+            write_ascii_token(&mut event, host.as_bytes());
+            let _ = write!(
+                event,
+                " ip={}.{}.{}.{} port={} http_status={} pending={} digest-ok={} reason={} ",
+                result.tcp.dst_ip[0],
+                result.tcp.dst_ip[1],
+                result.tcp.dst_ip[2],
+                result.tcp.dst_ip[3],
+                result.tcp.dst_port,
+                result.status_code,
+                yes_no(pending),
+                yes_no(digest_ok),
+                reason
+            );
+            write_maint_compact_field(&mut event, "device_id", body, b"device_id");
+            write_maint_compact_field(&mut event, "command_id", body, b"next_pending_command_id");
+            write_maint_compact_field(&mut event, "kind", body, b"next_pending_command_kind");
+            write_maint_compact_field(
+                &mut event,
+                "command_sha",
+                body,
+                b"next_pending_command_sha256",
+            );
+            let _ = write!(event, "calculated=");
+            if digest_calculated {
+                write_sha256_hex(&mut event, &calculated);
+            } else {
+                let _ = write!(event, "none");
+            }
+
+            if event.as_slice().len() > DB_EVENT_PAYLOAD_BYTES {
+                let _ = write!(
+                    out,
+                    "XJQ ERR maint-verify payload-too-long len={} max={DB_EVENT_PAYLOAD_BYTES}",
+                    event.as_slice().len()
+                );
+                return;
+            }
+
+            match append_db_event(
+                DB_EVENT_KIND_MAINT_VERIFY,
+                DB_EVENT_SOURCE_MAINTAINER,
+                event.as_slice(),
+            ) {
+                Ok((_info, _catalog, meta, db_event)) => {
+                    let _ = write!(
+                        out,
+                        "XJQ OK maint-verify iface={} host={} ip={}.{}.{}.{} port={} status={} pending={} digest-ok={} reason={} seq={} page={} kind={} source={} payload-len={} payload-crc=0x{:08x} events={} next-page={} ",
+                        PCIE_CONTROLLERS[index].name,
+                        host,
+                        result.tcp.dst_ip[0],
+                        result.tcp.dst_ip[1],
+                        result.tcp.dst_ip[2],
+                        result.tcp.dst_ip[3],
+                        result.tcp.dst_port,
+                        result.status_code,
+                        yes_no(pending),
+                        yes_no(digest_ok),
+                        reason,
+                        db_event.sequence,
+                        db_event.page,
+                        db_event.kind,
+                        db_event.source,
+                        db_event.payload_len,
+                        db_event.payload_crc,
+                        meta.event_count,
+                        meta.next_page
+                    );
+                    write_maint_field(out, body, b"device_id");
+                    write_maint_field(out, body, b"next_pending_command_id");
+                    write_maint_field(out, body, b"next_pending_command_kind");
+                    write_maint_field(out, body, b"next_pending_payload_sha256");
+                    write_maint_field(out, body, b"next_pending_command_sha256");
+                    let _ = write!(out, "calculated=");
+                    if digest_calculated {
+                        write_sha256_hex(out, &calculated);
+                    } else {
+                        let _ = write!(out, "none");
+                    }
+                }
+                Err(error) => {
+                    let _ = write!(out, "XJQ ERR maint-verify {}", error.as_str());
+                    if let DbError::Sd(SdReadError::StatusError(bits))
+                    | DbError::Sd(SdReadError::IdmacError(bits)) = error
+                    {
+                        let _ = write!(out, " bits=0x{bits:08x}");
+                    }
+                }
+            }
+        }
+        Err(error) => {
+            let _ = write!(out, "XJQ ERR maint-verify {}", error.as_str());
+        }
+    }
+}
+
 fn write_maint_event_fields<W: Write>(out: &mut W, body: &[u8]) {
     write_maint_field(out, body, b"device_id");
     write_maint_field(out, body, b"registered");
@@ -9083,6 +9326,16 @@ fn write_maint_event_fields<W: Write>(out: &mut W, body: &[u8]) {
 
 fn write_maint_field<W: Write>(out: &mut W, body: &[u8], key: &[u8]) {
     let _ = write!(out, "{}=", AsciiBytes(key));
+    if let Some(value) = find_maint_text_field(body, key) {
+        write_ascii_token(out, value);
+    } else {
+        let _ = write!(out, "?");
+    }
+    let _ = write!(out, " ");
+}
+
+fn write_maint_compact_field<W: Write>(out: &mut W, name: &str, body: &[u8], key: &[u8]) {
+    let _ = write!(out, "{name}=");
     if let Some(value) = find_maint_text_field(body, key) {
         write_ascii_token(out, value);
     } else {
@@ -12343,7 +12596,7 @@ fn net_handle_query_packet(
             } else if query.eq_ignore_ascii_case("caps") {
                 let _ = write!(
                 reply,
-                "XJQ OK caps net-dev=yes dhcp=yes auto-dhcp=yes route=yes arp=yes dns=yes tcp-connect=yes http-get=yes http-trace=yes http-debug=yes maint-poll=yes maint-status=yes maint-pending-summary=yes maint-command-digest=yes maint-local-audit=yes query=yes reboot=yes wifi=facts-only wifi-pcie=facts wifi-cru=read-only wifi-apb=read-only wifi-phy=read-only wifi-power=read-only wifi-link=read-only wifi-trace=confirm wifi-pcie-init=confirm wifi-pcie-init-high=confirm wifi-station=planned wifi-ap=planned sd-probe=yes sd-writer=yes ab-persist=yes boot-slot=extlinux db=page-store,catalog,wal,fixed-table,btree,event-log,blob-backup,blob-restore"
+                "XJQ OK caps net-dev=yes dhcp=yes auto-dhcp=yes route=yes arp=yes dns=yes tcp-connect=yes http-get=yes http-trace=yes http-debug=yes maint-poll=yes maint-status=yes maint-pending-summary=yes maint-command-digest=yes maint-command-verify=yes maint-local-audit=yes query=yes reboot=yes wifi=facts-only wifi-pcie=facts wifi-cru=read-only wifi-apb=read-only wifi-phy=read-only wifi-power=read-only wifi-link=read-only wifi-trace=confirm wifi-pcie-init=confirm wifi-pcie-init-high=confirm wifi-station=planned wifi-ap=planned sd-probe=yes sd-writer=yes ab-persist=yes boot-slot=extlinux db=page-store,catalog,wal,fixed-table,btree,event-log,blob-backup,blob-restore"
             );
             } else if query.eq_ignore_ascii_case("net ips") {
                 let _ = write!(reply, "XJQ OK ");
@@ -12364,6 +12617,8 @@ fn net_handle_query_packet(
                 write_maint_status_query_summary(index, query, &mut reply);
             } else if query.starts_with("maint audit ") {
                 write_maint_audit_query_summary(index, query, &mut reply);
+            } else if query.starts_with("maint verify ") {
+                write_maint_verify_query_summary(index, query, &mut reply);
             } else if query.eq_ignore_ascii_case("wifi facts") {
                 let _ = write!(reply, "XJQ OK ");
                 write_wifi_facts_summary(&mut reply);
@@ -15555,6 +15810,86 @@ fn ranges_overlap(a_start: u64, a_len: u64, b_start: u64, b_end: u64) -> bool {
     a_start < b_end && b_start < a_end
 }
 
+fn ascii_eq(left: &[u8], right: &[u8]) -> bool {
+    left == right
+}
+
+fn trim_ascii_whitespace(value: &[u8]) -> &[u8] {
+    let mut start = 0usize;
+    let mut end = value.len();
+    while start < end && value[start].is_ascii_whitespace() {
+        start += 1;
+    }
+    while end > start && value[end - 1].is_ascii_whitespace() {
+        end -= 1;
+    }
+    &value[start..end]
+}
+
+fn is_sha256_hex(value: &[u8]) -> bool {
+    value.len() == 64 && value.iter().all(|byte| byte.is_ascii_hexdigit())
+}
+
+fn hex_nibble(byte: u8) -> Option<u8> {
+    match byte {
+        b'0'..=b'9' => Some(byte - b'0'),
+        b'a'..=b'f' => Some(byte - b'a' + 10),
+        b'A'..=b'F' => Some(byte - b'A' + 10),
+        _ => None,
+    }
+}
+
+fn sha256_hex_matches(digest: &[u8; 32], expected: &[u8]) -> bool {
+    if expected.len() != 64 {
+        return false;
+    }
+    for (index, byte) in digest.iter().enumerate() {
+        let Some(high) = hex_nibble(expected[index * 2]) else {
+            return false;
+        };
+        let Some(low) = hex_nibble(expected[index * 2 + 1]) else {
+            return false;
+        };
+        if *byte != (high << 4) | low {
+            return false;
+        }
+    }
+    true
+}
+
+fn write_sha256_hex<W: Write>(out: &mut W, digest: &[u8; 32]) {
+    for byte in digest {
+        let _ = write!(out, "{byte:02x}");
+    }
+}
+
+fn net_reply_push_checked(buffer: &mut NetReplyBuf, bytes: &[u8]) -> bool {
+    let before = buffer.as_slice().len();
+    buffer.push_slice(bytes);
+    buffer.as_slice().len() == before + bytes.len()
+}
+
+fn maint_command_digest(command_id: &[u8], kind: &[u8], payload_sha256: &[u8]) -> Option<[u8; 32]> {
+    let command_id = trim_ascii_whitespace(command_id);
+    let kind = trim_ascii_whitespace(kind);
+    let payload_sha256 = trim_ascii_whitespace(payload_sha256);
+    let mut canonical = NetReplyBuf::new();
+    for part in [
+        b"xiaojin-maint-command-v1\ncommand_id=".as_slice(),
+        command_id,
+        b"\nkind=".as_slice(),
+        kind,
+        b"\npayload_sha256=".as_slice(),
+        payload_sha256,
+        b"\n".as_slice(),
+    ] {
+        if !net_reply_push_checked(&mut canonical, part) {
+            return None;
+        }
+    }
+    Some(sha256_digest(canonical.as_slice()))
+}
+
 fn crc32_update(mut crc: u32, byte: u8) -> u32 {
     crc ^= byte as u32;
     for _ in 0..8 {
@@ -15574,6 +15909,173 @@ fn crc32_memory(addr: u64, len: u64) -> u32 {
         crc = crc32_update(crc, byte);
     }
     !crc
+}
+
+const SHA256_K: [u32; 64] = [
+    0x428a_2f98,
+    0x7137_4491,
+    0xb5c0_fbcf,
+    0xe9b5_dba5,
+    0x3956_c25b,
+    0x59f1_11f1,
+    0x923f_82a4,
+    0xab1c_5ed5,
+    0xd807_aa98,
+    0x1283_5b01,
+    0x2431_85be,
+    0x550c_7dc3,
+    0x72be_5d74,
+    0x80de_b1fe,
+    0x9bdc_06a7,
+    0xc19b_f174,
+    0xe49b_69c1,
+    0xefbe_4786,
+    0x0fc1_9dc6,
+    0x240c_a1cc,
+    0x2de9_2c6f,
+    0x4a74_84aa,
+    0x5cb0_a9dc,
+    0x76f9_88da,
+    0x983e_5152,
+    0xa831_c66d,
+    0xb003_27c8,
+    0xbf59_7fc7,
+    0xc6e0_0bf3,
+    0xd5a7_9147,
+    0x06ca_6351,
+    0x1429_2967,
+    0x27b7_0a85,
+    0x2e1b_2138,
+    0x4d2c_6dfc,
+    0x5338_0d13,
+    0x650a_7354,
+    0x766a_0abb,
+    0x81c2_c92e,
+    0x9272_2c85,
+    0xa2bf_e8a1,
+    0xa81a_664b,
+    0xc24b_8b70,
+    0xc76c_51a3,
+    0xd192_e819,
+    0xd699_0624,
+    0xf40e_3585,
+    0x106a_a070,
+    0x19a4_c116,
+    0x1e37_6c08,
+    0x2748_774c,
+    0x34b0_bcb5,
+    0x391c_0cb3,
+    0x4ed8_aa4a,
+    0x5b9c_ca4f,
+    0x682e_6ff3,
+    0x748f_82ee,
+    0x78a5_636f,
+    0x84c8_7814,
+    0x8cc7_0208,
+    0x90be_fffa,
+    0xa450_6ceb,
+    0xbef9_a3f7,
+    0xc671_78f2,
+];
+
+fn sha256_digest(input: &[u8]) -> [u8; 32] {
+    let mut state = [
+        0x6a09_e667u32,
+        0xbb67_ae85,
+        0x3c6e_f372,
+        0xa54f_f53a,
+        0x510e_527f,
+        0x9b05_688c,
+        0x1f83_d9ab,
+        0x5be0_cd19,
+    ];
+
+    let mut offset = 0usize;
+    while input.len().saturating_sub(offset) >= 64 {
+        sha256_compress(&mut state, &input[offset..offset + 64]);
+        offset += 64;
+    }
+
+    let rem = &input[offset..];
+    let mut block = [0u8; 64];
+    block[..rem.len()].copy_from_slice(rem);
+    block[rem.len()] = 0x80;
+    if rem.len() >= 56 {
+        sha256_compress(&mut state, &block);
+        block = [0u8; 64];
+    }
+    let bit_len = (input.len() as u64).wrapping_mul(8);
+    block[56..64].copy_from_slice(&bit_len.to_be_bytes());
+    sha256_compress(&mut state, &block);
+
+    let mut out = [0u8; 32];
+    for (index, word) in state.iter().enumerate() {
+        out[index * 4..index * 4 + 4].copy_from_slice(&word.to_be_bytes());
+    }
+    out
+}
+
+fn sha256_compress(state: &mut [u32; 8], block: &[u8]) {
+    let mut w = [0u32; 64];
+    for index in 0..16 {
+        let start = index * 4;
+        w[index] = u32::from_be_bytes([
+            block[start],
+            block[start + 1],
+            block[start + 2],
+            block[start + 3],
+        ]);
+    }
+    for index in 16..64 {
+        let s0 =
+            w[index - 15].rotate_right(7) ^ w[index - 15].rotate_right(18) ^ (w[index - 15] >> 3);
+        let s1 =
+            w[index - 2].rotate_right(17) ^ w[index - 2].rotate_right(19) ^ (w[index - 2] >> 10);
+        w[index] = w[index - 16]
+            .wrapping_add(s0)
+            .wrapping_add(w[index - 7])
+            .wrapping_add(s1);
+    }
+
+    let mut a = state[0];
+    let mut b = state[1];
+    let mut c = state[2];
+    let mut d = state[3];
+    let mut e = state[4];
+    let mut f = state[5];
+    let mut g = state[6];
+    let mut h = state[7];
+
+    for index in 0..64 {
+        let s1 = e.rotate_right(6) ^ e.rotate_right(11) ^ e.rotate_right(25);
+        let ch = (e & f) ^ ((!e) & g);
+        let temp1 = h
+            .wrapping_add(s1)
+            .wrapping_add(ch)
+            .wrapping_add(SHA256_K[index])
+            .wrapping_add(w[index]);
+        let s0 = a.rotate_right(2) ^ a.rotate_right(13) ^ a.rotate_right(22);
+        let maj = (a & b) ^ (a & c) ^ (b & c);
+        let temp2 = s0.wrapping_add(maj);
+
+        h = g;
+        g = f;
+        f = e;
+        e = d.wrapping_add(temp1);
+        d = c;
+        c = b;
+        b = a;
+        a = temp1.wrapping_add(temp2);
+    }
+
+    state[0] = state[0].wrapping_add(a);
+    state[1] = state[1].wrapping_add(b);
+    state[2] = state[2].wrapping_add(c);
+    state[3] = state[3].wrapping_add(d);
+    state[4] = state[4].wrapping_add(e);
+    state[5] = state[5].wrapping_add(f);
+    state[6] = state[6].wrapping_add(g);
+    state[7] = state[7].wrapping_add(h);
 }
 
 fn busy_wait_ms(ms: u64) {
