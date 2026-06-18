@@ -1,7 +1,7 @@
 OUTPUT_ARCH(aarch64)
 ENTRY(_start)
 
-LOAD_ADDR = 0x04080000;
+LOAD_ADDR = 0x02080000;
 
 SECTIONS
 {
@@ -19,6 +19,8 @@ SECTIONS
   .data : ALIGN(4K) {
     *(.data .data.*)
   }
+
+  __image_end = .;
 
   .bss (NOLOAD) : ALIGN(4K) {
     __bss_start = .;

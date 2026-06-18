@@ -3,6 +3,19 @@
 .type _start, %function
 
 _start:
+    b _start_code
+    .word 0
+    .quad 0x00080000
+    .quad __image_end - _start
+    .quad 0x8
+    .quad 0
+    .quad 0
+    .quad 0
+    .word 0x644d5241
+    .word 0
+
+.balign 64
+_start_code:
     msr daifset, #0xf
 
     adrp x0, __bss_start

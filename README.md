@@ -3,6 +3,21 @@
 Minimal bare-metal operating system. NanoPi R5C / RK3568 is the first board
 profile, not the whole project boundary.
 
+## Architecture Boundary
+
+R5C currently owns the first concrete boot path, but shared Xiaojin OS features
+must stay above the platform layer when possible:
+
+- `XJNL` image loading, `XJQ1` queries, `XJEV` events, DHCP control, A/B OTA
+  state, and XiaojinDB should remain architecture-neutral.
+- RK3568 code owns ARM64 exception vectors, ARM generic timer, GIC/PSCI facts,
+  DWMMC, PCIe bring-up, and RTL8125 details.
+- The planned AMD 8845HS-class x86_64 target should use UEFI, APIC/x2APIC,
+  TSC/HPET/APIC timer, PCIe NIC discovery, and NVMe/SATA/USB block drivers.
+- Local LAN hot update remains the fastest development path on every target.
+  A GCP maintenance service is a remote command/artifact plane, not a replacement
+  for direct `xjctl net-dev` and `xjctl net-ota`.
+
 ## Current Runtime
 
 The kernel boots into a UART control shell:
@@ -23,6 +38,15 @@ Available commands:
 - `sleep <ms>`
 - `bench [iters]`
 - `net facts`
+- `net ips`
+- `net ip <if> <ip> confirm`
+- `net dhcp <if> confirm`
+- `net dns <if> <name> confirm`
+- `net tcp <if> <host|ip> <port> confirm`
+- `net http <if> <host|ip> <port> <path> confirm`
+- `net loop confirm`
+- `net listen confirm`
+- `net sniff confirm`
 - `pcie facts`
 - `pcie reset-pins`
 - `pcie status`
@@ -52,6 +76,27 @@ Available commands:
 - `peek32 <addr>`
 - `mmio list`
 - `mmio read32 <region> <offset>`
+- `db facts`
+- `db status confirm`
+- `db init confirm`
+- `db catalog confirm`
+- `db catalog-init confirm`
+- `db page <n> confirm`
+- `db wal-append confirm`
+- `db table confirm`
+- `db table-init confirm`
+- `db put <key> <value> confirm`
+- `db get <key> confirm`
+- `db btree confirm`
+- `db btree-init confirm`
+- `db bput <key> <value> confirm`
+- `db bget <key> confirm`
+- `db bscan <start> <limit> confirm`
+- `db bleaf <page> confirm`
+- `db event-init confirm`
+- `db event-status confirm`
+- `db events <start-seq> <limit> confirm`
+- `db event <seq> confirm`
 - `last-exception`
 - `fault`
 - `abort confirm`
@@ -67,12 +112,12 @@ interrupt-driven timers and scheduling can build on the same counter path later.
 
 `xload` is the first resident serial loader. A kernel that was started from SD
 can receive another raw image over UART, validate CRC32, flush caches, and jump
-to it. The `auto` target uses two ping-pong slots, `0x04080000` and
+to it. The `auto` target uses two ping-pong slots, `0x02080000` and
 `0x05080000`, so later development loops can avoid repeated SD-card copies.
-Because the current image is statically linked at `0x04080000`, `auto ... go`
+Because the current image is statically linked at `0x02080000`, `auto ... go`
 does not run directly from the alternate slot. Instead, Xiaojin OS copies a
 small reload trampoline to `0x0587f000`; the trampoline copies the newly received
-image back down to `0x04080000`, flushes caches, and branches to the link
+image back down to `0x02080000`, flushes caches, and branches to the link
 address.
 
 `caps` prints machine-readable feature flags for host tools. `xjctl dev` uses
@@ -139,6 +184,62 @@ enables polling-mode RX/TX without interrupts. `pcie rtl-tx-test confirm` sends
 one raw broadcast Ethernet test frame per initialized controller; on current R5C
 hardware, `pcie3x2` has been observed to complete the descriptor. `pcie
 rtl-rx-poll confirm` polls RX descriptors once and re-arms any consumed buffers.
+`net ips` prints the runtime IP, subnet mask, gateway, and DNS configuration.
+`net ip <if> <ip> confirm` updates a PCIe NIC address and preserves it across
+`net-dev` hot reloads. `net dhcp <if> confirm` runs a manual DHCP client on one
+RTL8125 port: it sends DHCPDISCOVER, waits for DHCPOFFER, sends DHCPREQUEST,
+waits for DHCPACK, and applies the runtime IP/mask/gateway/DNS lease. DHCP is
+manual for now so the known static `net-dev` address remains the cold-boot
+recovery path until host-side discovery is implemented.
+The same DHCP path is also exposed through the UDP `XJDH` control packet, used
+by `xjctl net-dhcp`, so DHCP can now be triggered over Ethernet without opening
+the UART shell.
+Short read-only board queries are exposed through the UDP `XJQ1` control
+packet, used by `xjctl net-command`. Current queries include `caps`, `net ips`,
+`sd facts`, `sd regs confirm`, `sd read0 confirm`, `sd bpb confirm`, `sd root
+confirm`, `sd slots confirm`, and the XiaojinDB `db ... confirm` probes, which
+lets storage/OTA and DB bring-up continue over Ethernet instead of requiring the
+UART shell for every probe.
+
+XiaojinDB is a preallocated FAT32 page-file database in `/xiaojin-db.dat`.
+Current storage primitives include a superblock, catalog, circular WAL pages, a
+fixed-size key/value table, an experimental B+tree over 512-byte pages, and an
+append-only event log. Host tools can verify the full path with
+`xjctl net-db-smoke`, or append one metadata-only event with `xjctl net-event`.
+The GCP maintenance bridge can now schedule these checks through
+`xjctl gcp-bridge` and the `xiaojin-maintainer` service. The next database
+infrastructure step for PostgreSQL backup is a XiaojinDB blob/import layer:
+the current fixed table and event log are enough for health events and small
+rows, but not for a complete GCP VM PostgreSQL backup or serving replacement.
+Persistent inactive-slot image staging is exposed through the UDP `XJPS` control
+packet, used by `xjctl net-dev --persist --slot b`. This writes the last
+uploaded image into the selected preallocated A/B slot and verifies it by
+readback CRC, but it does not yet change the boot target.
+`net loop confirm` runs a bounded end-to-end network smoke test. `net listen
+confirm` runs the same ARP/IPv4/UDP responder without a time limit until serial
+Ctrl-C. The listener initializes the PCIe/RTL8125 path, answers ARP for the
+configured NIC addresses, periodically sends gratuitous ARP plus UDP
+`xjhello ...` to port `5511`, replies to UDP `xjping` probes on port `5510` with
+`xjpong ...`, accepts `XJIP` UDP IP-configuration packets, and accepts the
+`XJNL` UDP image-loading protocol used by `xjctl net-dev`.
+
+`wifi facts`, `wifi status`, `wifi pcie`, `wifi cru`, `wifi apb`, `wifi phy`,
+and `wifi roadmap` expose the R5C
+wireless plan without touching WiFi registers. The current hardware assumption
+is an RTL8822CE-family M.2 E-Key WiFi/BT module. The OpenWrt R5C device tree
+places the candidate WiFi PCIe controller at `/pcie@fe260000`, with
+DBI `0x3c0000000`, APB `0xfe260000`, config `0xf4000000`, bus `0x00..0x0f`,
+one lane, and reset GPIO `gpio3 PC1` active-high. `wifi cru` reads the PCIe2
+clock gate, soft reset, and reset-GPIO state without writing any WiFi/PCIe2
+registers. `wifi apb` reads controller-local APB status without DBI/config
+access. `wifi phy` reads RK3568 combphy2 and pipe-phy-grf status without writes.
+`wifi power` reads the `vcc3v3_pcie` regulator GPIO state. These facts are also available
+over Ethernet through `xjctl wifi-facts`, `xjctl wifi-status`, and
+`xjctl wifi-pcie`/`xjctl wifi-cru`/`xjctl wifi-apb`/`xjctl wifi-phy`/`xjctl wifi-power`. Station
+mode and AP mode are not implemented yet. `wifi pcie-init confirm` /
+`xjctl wifi-init` is the first write-stage probe: it initializes only the
+PCIe2/combphy2 WiFi path, waits for LTSSM, and reads config word 0 when the link
+comes up. The already-working RTL8125 wired OTA path remains the rescue channel.
 
 ## Network Bring-Up Plan
 
@@ -152,12 +253,43 @@ UART `xload` as the recovery path until the network path is stable.
    space enumeration.
 3. RTL8125 driver: discover BARs, map MMIO, set RX/TX rings, and use polling
    before interrupts.
-4. Minimal network stack: ARP, IPv4, UDP, and `xjctl net-dev` image loading.
+4. Minimal network stack: ARP, IPv4, UDP board-to-host hello, and UDP ping
+   response in the kernel.
+5. Host transport: macOS BPF raw Ethernet is available for direct-cable recovery;
+   normal UDP transport is available for routed LAN development.
+6. UDP image loading: `xjctl net-dev` sends a new Xiaojin OS image over
+   Ethernet, receives `XJNL READY/ACK/OK`, and reloads through the same
+   copy-down trampoline used by UART `xload`.
+7. Runtime IP config: `net ip ... confirm` and `XJIP` packets can move a NIC
+   from the direct `10.77.0.0/24` development subnet to a routed LAN subnet.
+8. DHCP client: `net dhcp ... confirm` can learn a runtime lease, gateway, and
+   DNS server from a LAN router.
+9. UDP network control: `XJDH` lets `xjctl net-dhcp` trigger the DHCP client
+   remotely; `XJQ1` lets `xjctl net-command` ask short board-control questions;
+   `xjctl net-discover` listens for `xjhello` to find the post-DHCP address.
+   The polling listener also includes a conservative RTL8125 DMA refresh
+   watchdog for the development phase: if no UDP control reply is completed for
+   a watchdog window, it rearms the local descriptor rings without changing the
+   current IP configuration.
+10. Outbound DNS/TCP/HTTP probes: `net dns ... confirm` resolves one A record through
+    runtime DNS/gateway state, and `net tcp ... confirm` proves an outbound
+    SYN/SYN-ACK/ACK TCP path. `net http ... confirm` performs one HTTP/1.0 GET
+    and parses the response status while ACKing sequential response payload
+    segments up to the built-in sample cap. Full TCP stream reassembly, TLS,
+    and kernel-native cloud polling remain follow-on stages.
+11. OTA storage: `sd facts`, `sd regs confirm`, `sd read0 confirm`, `sd bpb
+    confirm`, `sd root confirm`, and `sd slots confirm` verify the SD
+    controller, FAT32 BPB, root directory, and A/B slot FAT chains.
+12. Persistent staging: `xjctl net-dev --persist --slot b` uploads an image over
+    Ethernet, writes it into the inactive preallocated slot, and readback-checks
+    CRC. Boot target switching, bootstate updates, automatic confirmation, and
+    rollback are still follow-on stages.
 
 Useful first probes after booting the latest kernel:
 
 ```text
 net facts
+net loop confirm
 pcie facts
 pcie reset-pins
 pcie status
@@ -193,9 +325,9 @@ observed to stall instead of producing a recoverable data abort.
 
 - UART baud: `1500000`
 - UART2 MMIO base: `0xfe660000`
-- Chosen load address: `0x04080000`
+- Chosen load address: `0x02080000`
 - Serial xload slots:
-  - `0x04080000..0x04880000`
+  - `0x02080000..0x02880000`
   - `0x05080000..0x05880000`
 - Serial xload trampoline:
   - `0x0587f000..0x05880000`
@@ -215,9 +347,21 @@ observed to stall instead of producing a recoverable data abort.
   - local-admin test MACs assigned by Xiaojin OS:
     - `pcie3x1`: `02:58:4a:52:35:c0`
     - `pcie3x2`: `02:58:4a:52:35:c1`
+  - default test IPv4 addresses assigned by Xiaojin OS:
+    - `pcie3x1`: `192.168.80.251`
+    - `pcie3x2`: `192.168.80.250`
+  - default subnet mask: `255.255.255.0`; gateway/DNS are unset until DHCP or a
+    future manual route command provides them
+  - cold boot waits 2 seconds for a serial escape key; if none arrives, it
+    enters the network listener on the default LAN addresses
+  - runtime IPv4 addresses can be changed with `net ip ... confirm`, `XJIP`
+    host packets, or `net dhcp ... confirm`; these runtime facts survive
+    net-dev reloads through RAM handoff, while power-cycle defaults are compiled
+    into the SD image
+  - UDP smoke-test port: `5510`
   - `pcie3x2` raw TX descriptor completion has been observed after
     `pcie rtl-init confirm` and `pcie rtl-tx-test confirm`
-- U-Boot default kernel address: `0x00280000`
+- OpenWrt U-Boot Image load address: `0x02000000`
 - FDT address: `0x08300000`
 - Usable DRAM banks:
   - `0x00200000..0x08400000`
@@ -242,8 +386,8 @@ then load and jump:
 ```text
 mmc list
 mmc dev 1
-fatload mmc 1:1 0x04080000 xiaojin-os.bin
-go 0x04080000
+fatload mmc 1:1 0x02000000 xiaojin-os.bin
+booti 0x02000000 - 0x08300000
 ```
 
 If SD is `mmc 0`, use `mmc dev 0` and `fatload mmc 0:1 ...` instead.
