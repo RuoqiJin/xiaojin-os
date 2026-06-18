@@ -2061,6 +2061,10 @@ fn print_help(uart: &mut Uart) {
     uart.put_str("                       append maintainer status summary into XiaojinDB events\n");
     uart.put_str("  maint verify <if> <host|ip> <port> <path> confirm\n");
     uart.put_str("                       verify pending command digest and audit the result\n");
+    uart.put_str("  maint event <if> <host|ip> <port> <path> <kind> confirm\n");
+    uart.put_str(
+        "                       POST one public maintainer event to the GCP control plane\n",
+    );
     uart.put_str("  net loop confirm     run ARP/IPv4/UDP responder for 120s\n");
     uart.put_str("  net listen confirm   run ARP/IPv4/UDP responder until Ctrl-C\n");
     uart.put_str("  wifi facts           show R5C WiFi hardware and bring-up facts\n");
@@ -2198,6 +2202,7 @@ fn print_caps(uart: &mut Uart) {
     uart.put_str("  maint pending-summary yes\n");
     uart.put_str("  maint command-digest yes\n");
     uart.put_str("  maint command-verify yes\n");
+    uart.put_str("  maint remote-event yes\n");
     uart.put_str("  maint local-audit yes\n");
     uart.put_str("  wifi facts yes\n");
     uart.put_str("  wifi pcie-facts yes\n");
@@ -3088,12 +3093,24 @@ fn command_maint<'a>(uart: &mut Uart, parts: &mut core::str::SplitWhitespace<'a>
             parts.next(),
             parts.next(),
         ),
+        Some("event") => command_maint_event(
+            uart,
+            parts.next(),
+            parts.next(),
+            parts.next(),
+            parts.next(),
+            parts.next(),
+            parts.next(),
+        ),
         _ => {
             uart.put_str("usage:\n");
             uart.put_str("  maint poll <pcie3x1|pcie3x2|0|1> <host|ip> <port> <path> confirm\n");
             uart.put_str("  maint status <pcie3x1|pcie3x2|0|1> <host|ip> <port> <path> confirm\n");
             uart.put_str("  maint audit <pcie3x1|pcie3x2|0|1> <host|ip> <port> <path> confirm\n");
             uart.put_str("  maint verify <pcie3x1|pcie3x2|0|1> <host|ip> <port> <path> confirm\n");
+            uart.put_str(
+                "  maint event <pcie3x1|pcie3x2|0|1> <host|ip> <port> <path> <kind> confirm\n",
+            );
         }
     }
 }
@@ -3680,6 +3697,50 @@ fn write_maint_verify_query_summary<W: Write>(default_index: usize, query: &str,
     };
 
     write_maint_verify_summary(out, index, host, port, path);
+}
+
+fn write_maint_event_query_summary<W: Write>(default_index: usize, query: &str, out: &mut W) {
+    let mut parts = query.split_whitespace();
+    let _maint = parts.next();
+    if parts.next() != Some("event") {
+        let _ = write!(out, "XJQ ERR maint-event-usage");
+        return;
+    }
+    let Some(first) = parts.next() else {
+        let _ = write!(out, "XJQ ERR maint-event-usage");
+        return;
+    };
+    let (index, host) = if let Some(index) = parse_net_interface(first) {
+        let Some(host) = parts.next() else {
+            let _ = write!(out, "XJQ ERR maint-event-usage");
+            return;
+        };
+        (index, host)
+    } else {
+        (default_index, first)
+    };
+    let Some(port_text) = parts.next() else {
+        let _ = write!(out, "XJQ ERR maint-event-usage");
+        return;
+    };
+    let Some(path) = parts.next() else {
+        let _ = write!(out, "XJQ ERR maint-event-usage");
+        return;
+    };
+    let Some(kind) = parts.next() else {
+        let _ = write!(out, "XJQ ERR maint-event-usage");
+        return;
+    };
+    if !matches!(parts.next(), None | Some("confirm")) {
+        let _ = write!(out, "XJQ ERR maint-event-usage");
+        return;
+    }
+    let Some(port) = parse_u16(port_text) else {
+        let _ = write!(out, "XJQ ERR maint-event-port");
+        return;
+    };
+
+    write_maint_event_summary(out, index, host, port, path, kind);
 }
 
 fn command_sd(uart: &mut Uart, action: Option<&str>, confirm: Option<&str>) {
@@ -8935,6 +8996,55 @@ fn command_net_http_post(
     }
 }
 
+fn command_maint_event(
+    uart: &mut Uart,
+    iface: Option<&str>,
+    host: Option<&str>,
+    port: Option<&str>,
+    path: Option<&str>,
+    kind: Option<&str>,
+    confirm: Option<&str>,
+) {
+    if confirm != Some("confirm") {
+        uart.put_str(
+            "usage: maint event <pcie3x1|pcie3x2|0|1> <host|ip> <port> <path> <kind> confirm\n",
+        );
+        return;
+    }
+    let Some(iface) = iface else {
+        uart.put_str("missing interface\n");
+        return;
+    };
+    let Some(index) = parse_net_interface(iface) else {
+        uart.put_str("unknown interface; use pcie3x1, pcie3x2, 0, or 1\n");
+        return;
+    };
+    let Some(host) = host else {
+        uart.put_str("missing host\n");
+        return;
+    };
+    let Some(port) = port.and_then(parse_u16) else {
+        uart.put_str("missing or invalid TCP port\n");
+        return;
+    };
+    let Some(path) = path else {
+        uart.put_str("missing path\n");
+        return;
+    };
+    let Some(kind) = kind else {
+        uart.put_str("missing event kind\n");
+        return;
+    };
+
+    let _ = writeln!(
+        uart,
+        "maint event {} http://{host}:{port}{path}:",
+        PCIE_CONTROLLERS[index].name
+    );
+    write_maint_event_summary(uart, index, host, port, path, kind);
+    uart.put_str("\n");
+}
+
 fn command_maint_verify(
     uart: &mut Uart,
     iface: Option<&str>,
@@ -9340,6 +9450,61 @@ fn write_maint_audit_summary<W: Write>(
     }
 }
 
+fn write_maint_event_summary<W: Write>(
+    out: &mut W,
+    index: usize,
+    host: &str,
+    port: u16,
+    path: &str,
+    kind: &str,
+) {
+    if !is_public_maint_event_kind(kind) {
+        let _ = write!(out, "XJQ ERR maint-event bad-kind");
+        return;
+    }
+    let mut body = NetReplyBuf::new();
+    if write!(
+        body,
+        "{{\"events\":[{{\"kind\":\"{}\",\"payload\":{{\"source\":\"xiaojin-os\",\"iface\":\"{}\"}}}}]}}",
+        kind, PCIE_CONTROLLERS[index].name
+    )
+    .is_err()
+    {
+        let _ = write!(out, "XJQ ERR maint-event body-too-long");
+        return;
+    }
+
+    match net_http_post(index, host, port, path, body.as_slice(), HTTP_TIMEOUT_MS) {
+        Ok(result) => {
+            let _ = write!(
+                out,
+                "XJQ OK maint-event iface={} host={} ip={}.{}.{}.{} port={} status={} bytes={} payload={} segments={} fin={} truncated={} sent={} src-port={} kind={} first-line=\"",
+                PCIE_CONTROLLERS[index].name,
+                host,
+                result.tcp.dst_ip[0],
+                result.tcp.dst_ip[1],
+                result.tcp.dst_ip[2],
+                result.tcp.dst_ip[3],
+                result.tcp.dst_port,
+                result.status_code,
+                result.response_bytes,
+                result.payload_bytes,
+                result.segments,
+                yes_no(result.fin),
+                yes_no(result.truncated),
+                result.sent_payload_len,
+                result.tcp.src_port,
+                kind
+            );
+            write_http_sample_line(out, &result.sample[..result.sample_len]);
+            let _ = write!(out, "\"");
+        }
+        Err(error) => {
+            let _ = write!(out, "XJQ ERR maint-event {}", error.as_str());
+        }
+    }
+}
+
 fn write_maint_verify_summary<W: Write>(
     out: &mut W,
     index: usize,
@@ -9518,6 +9683,13 @@ fn write_maint_compact_field<W: Write>(out: &mut W, name: &str, body: &[u8], key
         let _ = write!(out, "?");
     }
     let _ = write!(out, " ");
+}
+
+fn is_public_maint_event_kind(kind: &str) -> bool {
+    matches!(
+        kind,
+        "maint_poll" | "maint_verify" | "maint_ack_intent" | "heartbeat"
+    )
 }
 
 fn find_maint_text_field<'a>(body: &'a [u8], key: &[u8]) -> Option<&'a [u8]> {
@@ -12829,7 +13001,7 @@ fn net_handle_query_packet(
             } else if query.eq_ignore_ascii_case("caps") {
                 let _ = write!(
                 reply,
-                "XJQ OK caps net-dev=yes dhcp=yes auto-dhcp=yes route=yes arp=yes dns=yes tcp-connect=yes http-get=yes http-post=yes http-trace=yes http-debug=yes maint-poll=yes maint-status=yes maint-pending-summary=yes maint-command-digest=yes maint-command-verify=yes maint-local-audit=yes query=yes reboot=yes wifi=facts-only wifi-pcie=facts wifi-cru=read-only wifi-apb=read-only wifi-phy=read-only wifi-power=read-only wifi-link=read-only wifi-trace=confirm wifi-pcie-init=confirm wifi-pcie-init-high=confirm wifi-station=planned wifi-ap=planned sd-probe=yes sd-writer=yes ab-persist=yes boot-slot=extlinux db=page-store,catalog,wal,fixed-table,btree,event-log,blob-backup,blob-restore"
+                "XJQ OK caps net-dev=yes dhcp=yes auto-dhcp=yes route=yes arp=yes dns=yes tcp-connect=yes http-get=yes http-post=yes http-trace=yes http-debug=yes maint-poll=yes maint-status=yes maint-pending-summary=yes maint-command-digest=yes maint-command-verify=yes maint-remote-event=yes maint-local-audit=yes query=yes reboot=yes wifi=facts-only wifi-pcie=facts wifi-cru=read-only wifi-apb=read-only wifi-phy=read-only wifi-power=read-only wifi-link=read-only wifi-trace=confirm wifi-pcie-init=confirm wifi-pcie-init-high=confirm wifi-station=planned wifi-ap=planned sd-probe=yes sd-writer=yes ab-persist=yes boot-slot=extlinux db=page-store,catalog,wal,fixed-table,btree,event-log,blob-backup,blob-restore"
             );
             } else if query.eq_ignore_ascii_case("net ips") {
                 let _ = write!(reply, "XJQ OK ");
@@ -12854,6 +13026,8 @@ fn net_handle_query_packet(
                 write_maint_audit_query_summary(index, query, &mut reply);
             } else if query.starts_with("maint verify ") {
                 write_maint_verify_query_summary(index, query, &mut reply);
+            } else if query.starts_with("maint event ") {
+                write_maint_event_query_summary(index, query, &mut reply);
             } else if query.eq_ignore_ascii_case("wifi facts") {
                 let _ = write!(reply, "XJQ OK ");
                 write_wifi_facts_summary(&mut reply);
