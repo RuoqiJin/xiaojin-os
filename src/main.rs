@@ -1056,6 +1056,20 @@ struct HttpGetResult {
 }
 
 #[derive(Clone, Copy)]
+struct HttpPostResult {
+    tcp: TcpSession,
+    status_code: u16,
+    response_bytes: usize,
+    payload_bytes: usize,
+    segments: u32,
+    fin: bool,
+    truncated: bool,
+    sent_payload_len: u32,
+    sample_len: usize,
+    sample: [u8; HTTP_RESPONSE_SAMPLE_BYTES],
+}
+
+#[derive(Clone, Copy)]
 struct HttpTraceResult {
     tcp: TcpSession,
     response_bytes: usize,
@@ -1088,6 +1102,7 @@ struct TcpDebugSegment {
 #[derive(Clone, Copy)]
 enum HttpError {
     BadPath,
+    BadBody,
     RequestTooLong,
     Tcp(TcpError),
     RequestTx,
@@ -1099,6 +1114,7 @@ impl HttpError {
     fn as_str(self) -> &'static str {
         match self {
             Self::BadPath => "bad-path",
+            Self::BadBody => "bad-body",
             Self::RequestTooLong => "request-too-long",
             Self::Tcp(error) => error.as_str(),
             Self::RequestTx => "request-tx",
@@ -2035,6 +2051,8 @@ fn print_help(uart: &mut Uart) {
     uart.put_str("                       prove outbound TCP SYN/SYN-ACK/ACK path\n");
     uart.put_str("  net http <if> <host|ip> <port> <path> confirm\n");
     uart.put_str("                       perform minimal HTTP/1.0 GET over outbound TCP\n");
+    uart.put_str("  net http-post <if> <host|ip> <port> <path> <body> confirm\n");
+    uart.put_str("                       perform minimal HTTP/1.0 POST over outbound TCP\n");
     uart.put_str("  maint poll <if> <host|ip> <port> <path> confirm\n");
     uart.put_str("                       pull one cleartext maintainer endpoint summary\n");
     uart.put_str("  maint status <if> <host|ip> <port> <path> confirm\n");
@@ -2175,6 +2193,7 @@ fn print_caps(uart: &mut Uart) {
     uart.put_str("  net udp-dhcp-control yes\n");
     uart.put_str("  net udp-query-control yes\n");
     uart.put_str("  net routed-udp-loader yes\n");
+    uart.put_str("  net http-post yes\n");
     uart.put_str("  maint http-poll yes\n");
     uart.put_str("  maint pending-summary yes\n");
     uart.put_str("  maint command-digest yes\n");
@@ -3003,6 +3022,15 @@ fn command_net<'a>(uart: &mut Uart, parts: &mut core::str::SplitWhitespace<'a>) 
             parts.next(),
             parts.next(),
         ),
+        Some("http-post") => command_net_http_post(
+            uart,
+            parts.next(),
+            parts.next(),
+            parts.next(),
+            parts.next(),
+            parts.next(),
+            parts.next(),
+        ),
         Some("loop") => command_net_loop(uart, parts.next()),
         Some("listen") => command_net_listen(uart, parts.next()),
         Some("sniff") => command_net_sniff(uart, parts.next()),
@@ -3015,6 +3043,9 @@ fn command_net<'a>(uart: &mut Uart, parts: &mut core::str::SplitWhitespace<'a>) 
             uart.put_str("  net dns <pcie3x1|pcie3x2|0|1> <name> confirm\n");
             uart.put_str("  net tcp <pcie3x1|pcie3x2|0|1> <host|ip> <port> confirm\n");
             uart.put_str("  net http <pcie3x1|pcie3x2|0|1> <host|ip> <port> <path> confirm\n");
+            uart.put_str(
+                "  net http-post <pcie3x1|pcie3x2|0|1> <host|ip> <port> <path> <body> confirm\n",
+            );
             uart.put_str("  net loop confirm\n");
             uart.put_str("  net listen confirm\n");
             uart.put_str("  net sniff confirm\n");
@@ -3301,6 +3332,70 @@ fn write_net_http_query_summary<W: Write>(default_index: usize, query: &str, out
         }
         Err(error) => {
             let _ = write!(out, "XJQ ERR http {}", error.as_str());
+        }
+    }
+}
+
+fn write_net_http_post_query_summary<W: Write>(default_index: usize, query: &str, out: &mut W) {
+    let mut parts = query.split_whitespace();
+    let _net = parts.next();
+    let _http_post = parts.next();
+    let Some(first) = parts.next() else {
+        let _ = write!(out, "XJQ ERR http-post-usage");
+        return;
+    };
+    let (index, host) = if let Some(index) = parse_net_interface(first) {
+        let Some(host) = parts.next() else {
+            let _ = write!(out, "XJQ ERR http-post-usage");
+            return;
+        };
+        (index, host)
+    } else {
+        (default_index, first)
+    };
+    let Some(port) = parts.next().and_then(parse_u16) else {
+        let _ = write!(out, "XJQ ERR http-post-usage");
+        return;
+    };
+    let Some(path) = parts.next() else {
+        let _ = write!(out, "XJQ ERR http-post-usage");
+        return;
+    };
+    let Some(body) = parts.next() else {
+        let _ = write!(out, "XJQ ERR http-post-usage");
+        return;
+    };
+    if !matches!(parts.next(), None | Some("confirm")) {
+        let _ = write!(out, "XJQ ERR http-post-usage");
+        return;
+    }
+
+    match net_http_post(index, host, port, path, body.as_bytes(), HTTP_TIMEOUT_MS) {
+        Ok(result) => {
+            let _ = write!(
+                out,
+                "XJQ OK http-post iface={} host={} ip={}.{}.{}.{} port={} status={} bytes={} payload={} segments={} fin={} truncated={} sent={} src-port={} first-line=\"",
+                PCIE_CONTROLLERS[index].name,
+                host,
+                result.tcp.dst_ip[0],
+                result.tcp.dst_ip[1],
+                result.tcp.dst_ip[2],
+                result.tcp.dst_ip[3],
+                result.tcp.dst_port,
+                result.status_code,
+                result.response_bytes,
+                result.payload_bytes,
+                result.segments,
+                yes_no(result.fin),
+                yes_no(result.truncated),
+                result.sent_payload_len,
+                result.tcp.src_port
+            );
+            write_http_sample_line(out, &result.sample[..result.sample_len]);
+            let _ = write!(out, "\"");
+        }
+        Err(error) => {
+            let _ = write!(out, "XJQ ERR http-post {}", error.as_str());
         }
     }
 }
@@ -8786,6 +8881,60 @@ fn command_net_http(
     }
 }
 
+fn command_net_http_post(
+    uart: &mut Uart,
+    iface: Option<&str>,
+    host: Option<&str>,
+    port: Option<&str>,
+    path: Option<&str>,
+    body: Option<&str>,
+    confirm: Option<&str>,
+) {
+    if confirm != Some("confirm") {
+        uart.put_str(
+            "usage: net http-post <pcie3x1|pcie3x2|0|1> <host|ip> <port> <path> <body> confirm\n",
+        );
+        uart.put_str("scope: perform one small HTTP/1.0 POST over the outbound TCP probe path\n");
+        return;
+    }
+    let Some(iface) = iface else {
+        uart.put_str("missing interface\n");
+        return;
+    };
+    let Some(index) = parse_net_interface(iface) else {
+        uart.put_str("unknown interface; use pcie3x1, pcie3x2, 0, or 1\n");
+        return;
+    };
+    let Some(host) = host else {
+        uart.put_str("missing host\n");
+        return;
+    };
+    let Some(port) = port.and_then(parse_u16) else {
+        uart.put_str("missing or invalid TCP port\n");
+        return;
+    };
+    let Some(path) = path else {
+        uart.put_str("missing path\n");
+        return;
+    };
+    let Some(body) = body else {
+        uart.put_str("missing body\n");
+        return;
+    };
+
+    let _ = writeln!(
+        uart,
+        "net http-post {} http://{host}:{port}{path}:",
+        PCIE_CONTROLLERS[index].name
+    );
+    match net_http_post(index, host, port, path, body.as_bytes(), HTTP_TIMEOUT_MS) {
+        Ok(result) => print_http_post_result(uart, result),
+        Err(error) => {
+            let _ = writeln!(uart, "  error           {}", error.as_str());
+        }
+    }
+}
+
 fn command_maint_verify(
     uart: &mut Uart,
     iface: Option<&str>,
@@ -8964,6 +9113,33 @@ fn print_http_get_result(uart: &mut Uart, result: HttpGetResult) {
         result.segments,
         yes_no(result.fin),
         yes_no(result.truncated)
+    );
+    let _ = writeln!(
+        uart,
+        "  peer            {}.{}.{}.{}:{} src-port={}",
+        result.tcp.dst_ip[0],
+        result.tcp.dst_ip[1],
+        result.tcp.dst_ip[2],
+        result.tcp.dst_ip[3],
+        result.tcp.dst_port,
+        result.tcp.src_port
+    );
+    uart.put_str("  first-line      ");
+    write_http_sample_line(uart, &result.sample[..result.sample_len]);
+    uart.put_str("\n");
+}
+
+fn print_http_post_result(uart: &mut Uart, result: HttpPostResult) {
+    let _ = writeln!(
+        uart,
+        "  status          {} bytes={} payload={} segments={} fin={} truncated={} sent={}",
+        result.status_code,
+        result.response_bytes,
+        result.payload_bytes,
+        result.segments,
+        yes_no(result.fin),
+        yes_no(result.truncated),
+        result.sent_payload_len
     );
     let _ = writeln!(
         uart,
@@ -11221,7 +11397,8 @@ fn net_http_get(
     path: &str,
     timeout_ms: u64,
 ) -> Result<HttpGetResult, HttpError> {
-    let (session, response) = net_http_exchange(index, host, dst_port, path, timeout_ms)?;
+    let (session, response, _sent_payload_len) =
+        net_http_exchange(index, host, dst_port, path, timeout_ms)?;
     let status_code = parse_http_status_code(&response.sample[..response.sample_len])
         .ok_or(HttpError::MalformedResponse)?;
 
@@ -11238,6 +11415,33 @@ fn net_http_get(
     })
 }
 
+fn net_http_post(
+    index: usize,
+    host: &str,
+    dst_port: u16,
+    path: &str,
+    body: &[u8],
+    timeout_ms: u64,
+) -> Result<HttpPostResult, HttpError> {
+    let (session, response, sent_payload_len) =
+        net_http_exchange_with_body(index, host, dst_port, path, b"POST", body, timeout_ms)?;
+    let status_code = parse_http_status_code(&response.sample[..response.sample_len])
+        .ok_or(HttpError::MalformedResponse)?;
+
+    Ok(HttpPostResult {
+        tcp: session,
+        status_code,
+        response_bytes: response.response_bytes,
+        payload_bytes: response.payload_bytes,
+        segments: response.segments,
+        fin: response.fin,
+        truncated: response.truncated,
+        sent_payload_len,
+        sample_len: response.sample_len,
+        sample: response.sample,
+    })
+}
+
 fn net_http_trace(
     index: usize,
     host: &str,
@@ -11245,7 +11449,8 @@ fn net_http_trace(
     path: &str,
     timeout_ms: u64,
 ) -> Result<HttpTraceResult, HttpError> {
-    let (session, response) = net_http_exchange(index, host, dst_port, path, timeout_ms)?;
+    let (session, response, _sent_payload_len) =
+        net_http_exchange(index, host, dst_port, path, timeout_ms)?;
     Ok(HttpTraceResult {
         tcp: session,
         response_bytes: response.response_bytes,
@@ -11321,7 +11526,19 @@ fn net_http_exchange(
     dst_port: u16,
     path: &str,
     timeout_ms: u64,
-) -> Result<(TcpSession, HttpResponseAccum), HttpError> {
+) -> Result<(TcpSession, HttpResponseAccum, u32), HttpError> {
+    net_http_exchange_with_body(index, host, dst_port, path, b"GET", &[], timeout_ms)
+}
+
+fn net_http_exchange_with_body(
+    index: usize,
+    host: &str,
+    dst_port: u16,
+    path: &str,
+    method: &[u8],
+    body: &[u8],
+    timeout_ms: u64,
+) -> Result<(TcpSession, HttpResponseAccum, u32), HttpError> {
     if !path.starts_with('/')
         || path
             .as_bytes()
@@ -11330,14 +11547,30 @@ fn net_http_exchange(
     {
         return Err(HttpError::BadPath);
     }
+    if body
+        .iter()
+        .any(|byte| *byte == b'\r' || *byte == b'\n' || *byte == 0)
+    {
+        return Err(HttpError::BadBody);
+    }
     let session = net_tcp_open(index, host, dst_port, timeout_ms).map_err(HttpError::Tcp)?;
     let mut request = HttpRequestBuf::new();
-    if write!(
-        request,
-        "GET {path} HTTP/1.0\r\nHost: {host}\r\nUser-Agent: xiaojin-os/0.1\r\nConnection: close\r\n\r\n"
-    )
-    .is_err()
-    {
+    let request_ok = if method == b"POST" {
+        write!(
+            request,
+            "POST {path} HTTP/1.0\r\nHost: {host}\r\nUser-Agent: xiaojin-os/0.1\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+            body.len()
+        )
+        .and_then(|_| request.write_str(core::str::from_utf8(body).unwrap_or("")))
+        .is_ok()
+    } else {
+        write!(
+            request,
+            "GET {path} HTTP/1.0\r\nHost: {host}\r\nUser-Agent: xiaojin-os/0.1\r\nConnection: close\r\n\r\n"
+        )
+        .is_ok()
+    };
+    if !request_ok {
         let _ = net_tcp_reset(index, session);
         return Err(HttpError::RequestTooLong);
     }
@@ -11386,7 +11619,7 @@ fn net_http_exchange(
         &[],
     );
 
-    Ok((session, response))
+    Ok((session, response, sent_payload_len))
 }
 
 #[derive(Clone, Copy)]
@@ -12596,7 +12829,7 @@ fn net_handle_query_packet(
             } else if query.eq_ignore_ascii_case("caps") {
                 let _ = write!(
                 reply,
-                "XJQ OK caps net-dev=yes dhcp=yes auto-dhcp=yes route=yes arp=yes dns=yes tcp-connect=yes http-get=yes http-trace=yes http-debug=yes maint-poll=yes maint-status=yes maint-pending-summary=yes maint-command-digest=yes maint-command-verify=yes maint-local-audit=yes query=yes reboot=yes wifi=facts-only wifi-pcie=facts wifi-cru=read-only wifi-apb=read-only wifi-phy=read-only wifi-power=read-only wifi-link=read-only wifi-trace=confirm wifi-pcie-init=confirm wifi-pcie-init-high=confirm wifi-station=planned wifi-ap=planned sd-probe=yes sd-writer=yes ab-persist=yes boot-slot=extlinux db=page-store,catalog,wal,fixed-table,btree,event-log,blob-backup,blob-restore"
+                "XJQ OK caps net-dev=yes dhcp=yes auto-dhcp=yes route=yes arp=yes dns=yes tcp-connect=yes http-get=yes http-post=yes http-trace=yes http-debug=yes maint-poll=yes maint-status=yes maint-pending-summary=yes maint-command-digest=yes maint-command-verify=yes maint-local-audit=yes query=yes reboot=yes wifi=facts-only wifi-pcie=facts wifi-cru=read-only wifi-apb=read-only wifi-phy=read-only wifi-power=read-only wifi-link=read-only wifi-trace=confirm wifi-pcie-init=confirm wifi-pcie-init-high=confirm wifi-station=planned wifi-ap=planned sd-probe=yes sd-writer=yes ab-persist=yes boot-slot=extlinux db=page-store,catalog,wal,fixed-table,btree,event-log,blob-backup,blob-restore"
             );
             } else if query.eq_ignore_ascii_case("net ips") {
                 let _ = write!(reply, "XJQ OK ");
@@ -12609,6 +12842,8 @@ fn net_handle_query_packet(
                 write_net_http_debug_query_summary(index, query, &mut reply);
             } else if query.starts_with("net http-trace ") {
                 write_net_http_trace_query_summary(index, query, &mut reply);
+            } else if query.starts_with("net http-post ") {
+                write_net_http_post_query_summary(index, query, &mut reply);
             } else if query.starts_with("net http ") {
                 write_net_http_query_summary(index, query, &mut reply);
             } else if query.starts_with("maint poll ") {
