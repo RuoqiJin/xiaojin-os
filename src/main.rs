@@ -1065,6 +1065,24 @@ struct HttpTraceResult {
 }
 
 #[derive(Clone, Copy)]
+struct HttpDebugResult {
+    tcp: TcpSession,
+    sent_payload_len: u32,
+    segment: TcpDebugSegment,
+}
+
+#[derive(Clone, Copy)]
+struct TcpDebugSegment {
+    seq: u32,
+    ack: u32,
+    flags: u16,
+    segment_len: usize,
+    payload_len: usize,
+    sample_len: usize,
+    sample: [u8; HTTP_RESPONSE_SAMPLE_BYTES],
+}
+
+#[derive(Clone, Copy)]
 enum HttpError {
     BadPath,
     RequestTooLong,
@@ -3316,6 +3334,68 @@ fn write_net_http_trace_query_summary<W: Write>(default_index: usize, query: &st
         }
         Err(error) => {
             let _ = write!(out, "XJQ ERR http-trace {}", error.as_str());
+        }
+    }
+}
+
+fn write_net_http_debug_query_summary<W: Write>(default_index: usize, query: &str, out: &mut W) {
+    let mut parts = query.split_whitespace();
+    let _net = parts.next();
+    let _http_debug = parts.next();
+    let Some(first) = parts.next() else {
+        let _ = write!(out, "XJQ ERR http-debug-usage");
+        return;
+    };
+    let (index, host) = if let Some(index) = parse_net_interface(first) {
+        let Some(host) = parts.next() else {
+            let _ = write!(out, "XJQ ERR http-debug-usage");
+            return;
+        };
+        (index, host)
+    } else {
+        (default_index, first)
+    };
+    let Some(port) = parts.next().and_then(parse_u16) else {
+        let _ = write!(out, "XJQ ERR http-debug-usage");
+        return;
+    };
+    let Some(path) = parts.next() else {
+        let _ = write!(out, "XJQ ERR http-debug-usage");
+        return;
+    };
+    if !matches!(parts.next(), None | Some("confirm")) {
+        let _ = write!(out, "XJQ ERR http-debug-usage");
+        return;
+    }
+
+    match net_http_debug(index, host, port, path, HTTP_TIMEOUT_MS) {
+        Ok(result) => {
+            let expected_ack = result.tcp.local_seq.wrapping_add(result.sent_payload_len);
+            let _ = write!(
+                out,
+                "XJQ OK http-debug iface={} host={} ip={}.{}.{}.{} port={} src-port={} sent={} expected-ack=0x{expected_ack:08x} seg-seq=0x{:08x} seg-ack=0x{:08x} flags=0x{:03x} segment={} payload={} first-line=\"",
+                PCIE_CONTROLLERS[index].name,
+                host,
+                result.tcp.dst_ip[0],
+                result.tcp.dst_ip[1],
+                result.tcp.dst_ip[2],
+                result.tcp.dst_ip[3],
+                result.tcp.dst_port,
+                result.tcp.src_port,
+                result.sent_payload_len,
+                result.segment.seq,
+                result.segment.ack,
+                result.segment.flags,
+                result.segment.segment_len,
+                result.segment.payload_len
+            );
+            write_http_sample_line(out, &result.segment.sample[..result.segment.sample_len]);
+            let _ = write!(out, "\" raw=\"");
+            write_http_raw_sample_line(out, &result.segment.sample[..result.segment.sample_len]);
+            let _ = write!(out, "\"");
+        }
+        Err(error) => {
+            let _ = write!(out, "XJQ ERR http-debug {}", error.as_str());
         }
     }
 }
@@ -10723,6 +10803,63 @@ fn net_http_trace(
     })
 }
 
+fn net_http_debug(
+    index: usize,
+    host: &str,
+    dst_port: u16,
+    path: &str,
+    timeout_ms: u64,
+) -> Result<HttpDebugResult, HttpError> {
+    if !path.starts_with('/')
+        || path
+            .as_bytes()
+            .iter()
+            .any(|b| *b == b' ' || *b == b'\r' || *b == b'\n')
+    {
+        return Err(HttpError::BadPath);
+    }
+    let session = net_tcp_open(index, host, dst_port, timeout_ms).map_err(HttpError::Tcp)?;
+    let mut request = HttpRequestBuf::new();
+    if write!(
+        request,
+        "GET {path} HTTP/1.0\r\nHost: {host}\r\nUser-Agent: xiaojin-os/0.1\r\nConnection: close\r\n\r\n"
+    )
+    .is_err()
+    {
+        let _ = net_tcp_reset(index, session);
+        return Err(HttpError::RequestTooLong);
+    }
+
+    if !net_send_tcp_packet(
+        index,
+        session.next_hop_mac,
+        net_device_ip(index),
+        session.dst_ip,
+        session.src_port,
+        session.dst_port,
+        session.local_seq,
+        session.remote_seq_next,
+        TCP_FLAG_ACK | TCP_FLAG_PSH,
+        request.as_slice(),
+    ) {
+        let _ = net_tcp_reset(index, session);
+        return Err(HttpError::RequestTx);
+    }
+
+    let sent_payload_len = request.as_slice().len() as u32;
+    let Some(segment) = net_wait_tcp_debug_segment(index, session, timeout_ms) else {
+        let _ = net_tcp_reset(index, session);
+        return Err(HttpError::ResponseTimeout);
+    };
+    let _ = net_tcp_reset(index, session);
+
+    Ok(HttpDebugResult {
+        tcp: session,
+        sent_payload_len,
+        segment,
+    })
+}
+
 fn net_http_exchange(
     index: usize,
     host: &str,
@@ -10969,6 +11106,88 @@ fn net_poll_tcp_payload(
         }
     }
     None
+}
+
+fn net_wait_tcp_debug_segment(
+    index: usize,
+    session: TcpSession,
+    timeout_ms: u64,
+) -> Option<TcpDebugSegment> {
+    let freq = read_cntfrq();
+    let timeout_ticks = ms_to_ticks(timeout_ms, freq)?;
+    let start = read_cntpct();
+    loop {
+        if let Some(segment) = net_poll_tcp_debug_segment(index, session) {
+            return Some(segment);
+        }
+        if read_cntpct().wrapping_sub(start) >= timeout_ticks {
+            return None;
+        }
+        core::hint::spin_loop();
+    }
+}
+
+fn net_poll_tcp_debug_segment(index: usize, session: TcpSession) -> Option<TcpDebugSegment> {
+    for entry in 0..RTL_RX_DESC_COUNT {
+        let desc_addr = rtl_rx_desc_addr(index, entry);
+        invalidate_dcache_range(desc_addr, core::mem::size_of::<RtlDesc>() as u64);
+        let status = unsafe { RTL_RX_RINGS.0[index][entry].opts1 };
+        if status & RTL_DESC_OWN != 0 {
+            continue;
+        }
+
+        let len = (status & 0x3fff) as usize;
+        let len = if len > RTL_RX_BUFFER_SIZE {
+            RTL_RX_BUFFER_SIZE
+        } else {
+            len
+        };
+        let buffer_addr = rtl_rx_buffer_addr(index, entry);
+        invalidate_dcache_range(buffer_addr, len as u64);
+        let frame = unsafe { core::slice::from_raw_parts(buffer_addr as *const u8, len) };
+        let segment = net_parse_tcp_debug_segment(index, frame, session);
+        if segment.is_none() {
+            let _ = net_handle_frame(index, frame);
+        }
+        rtl_rearm_rx_desc(index, entry);
+        if segment.is_some() {
+            return segment;
+        }
+    }
+    None
+}
+
+fn net_parse_tcp_debug_segment(
+    index: usize,
+    frame: &[u8],
+    session: TcpSession,
+) -> Option<TcpDebugSegment> {
+    let parsed = parse_tcp_ipv4_segment(index, frame)?;
+    if parsed.src_ip != session.dst_ip
+        || parsed.dst_ip != net_device_ip(index)
+        || parsed.src_port != session.dst_port
+        || parsed.dst_port != session.src_port
+    {
+        return None;
+    }
+
+    let mut sample = [0u8; HTTP_RESPONSE_SAMPLE_BYTES];
+    let sample_len = if parsed.payload.len() > sample.len() {
+        sample.len()
+    } else {
+        parsed.payload.len()
+    };
+    sample[..sample_len].copy_from_slice(&parsed.payload[..sample_len]);
+
+    Some(TcpDebugSegment {
+        seq: parsed.seq,
+        ack: parsed.ack,
+        flags: parsed.flags,
+        segment_len: parsed.segment_len,
+        payload_len: parsed.payload.len(),
+        sample_len,
+        sample,
+    })
 }
 
 fn net_parse_tcp_payload(
@@ -11922,7 +12141,7 @@ fn net_handle_query_packet(
             } else if query.eq_ignore_ascii_case("caps") {
                 let _ = write!(
                 reply,
-                "XJQ OK caps net-dev=yes dhcp=yes auto-dhcp=yes route=yes arp=yes dns=yes tcp-connect=yes http-get=yes http-trace=yes maint-poll=yes maint-status=yes maint-pending-summary=yes maint-command-digest=yes query=yes reboot=yes wifi=facts-only wifi-pcie=facts wifi-cru=read-only wifi-apb=read-only wifi-phy=read-only wifi-power=read-only wifi-link=read-only wifi-trace=confirm wifi-pcie-init=confirm wifi-pcie-init-high=confirm wifi-station=planned wifi-ap=planned sd-probe=yes sd-writer=yes ab-persist=yes boot-slot=extlinux db=page-store,catalog,wal,fixed-table,btree,event-log,blob-backup,blob-restore"
+                "XJQ OK caps net-dev=yes dhcp=yes auto-dhcp=yes route=yes arp=yes dns=yes tcp-connect=yes http-get=yes http-trace=yes http-debug=yes maint-poll=yes maint-status=yes maint-pending-summary=yes maint-command-digest=yes query=yes reboot=yes wifi=facts-only wifi-pcie=facts wifi-cru=read-only wifi-apb=read-only wifi-phy=read-only wifi-power=read-only wifi-link=read-only wifi-trace=confirm wifi-pcie-init=confirm wifi-pcie-init-high=confirm wifi-station=planned wifi-ap=planned sd-probe=yes sd-writer=yes ab-persist=yes boot-slot=extlinux db=page-store,catalog,wal,fixed-table,btree,event-log,blob-backup,blob-restore"
             );
             } else if query.eq_ignore_ascii_case("net ips") {
                 let _ = write!(reply, "XJQ OK ");
@@ -11931,6 +12150,8 @@ fn net_handle_query_packet(
                 write_net_dns_query_summary(index, query, &mut reply);
             } else if query.starts_with("net tcp ") {
                 write_net_tcp_query_summary(index, query, &mut reply);
+            } else if query.starts_with("net http-debug ") {
+                write_net_http_debug_query_summary(index, query, &mut reply);
             } else if query.starts_with("net http-trace ") {
                 write_net_http_trace_query_summary(index, query, &mut reply);
             } else if query.starts_with("net http ") {
