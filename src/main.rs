@@ -168,6 +168,11 @@ const DEFAULT_NET_DNS: [[u8; 4]; RTL_DEVICE_COUNT] = [[0, 0, 0, 0], [0, 0, 0, 0]
 const DEFAULT_NET_BROADCAST_IP: [u8; 4] = [192, 168, 80, 255];
 const IPV4_ANY_IP: [u8; 4] = [0, 0, 0, 0];
 const IPV4_BROADCAST_IP: [u8; 4] = [255, 255, 255, 255];
+const XIAOJIN_IDENTITY_FORMAT: &str = "xiaojin-device-identity-v1";
+const XIAOJIN_DEVICE_ID: &str = "r5c-lab";
+const XIAOJIN_BOARD_ID: &str = "nanopi-r5c";
+const XIAOJIN_SOC_ID: &str = "rk3568";
+const XIAOJIN_ARCH_ID: &str = "aarch64";
 const COLD_BOOT_AUTO_NET_LISTEN: bool = true;
 const COLD_BOOT_SERIAL_ESCAPE_MS: u64 = 2_000;
 const NET_BROADCAST_MAC: [u8; 6] = [0xff; 6];
@@ -1980,6 +1985,8 @@ fn handle_command(uart: &mut Uart, input: &str) {
         print_caps(uart);
     } else if command.eq_ignore_ascii_case("about") {
         print_about(uart);
+    } else if command.eq_ignore_ascii_case("identity") {
+        print_identity(uart);
     } else if command.eq_ignore_ascii_case("mem") {
         print_memory_map(uart);
     } else if command.eq_ignore_ascii_case("regs") {
@@ -2033,6 +2040,7 @@ fn print_help(uart: &mut Uart) {
     uart.put_str("  help                 show this command list\n");
     uart.put_str("  caps                 show machine-readable feature flags\n");
     uart.put_str("  about                show kernel and board identity\n");
+    uart.put_str("  identity             show stable device identity and fingerprint\n");
     uart.put_str("  mem                  show current memory map facts\n");
     uart.put_str("  regs                 show selected CPU registers\n");
     uart.put_str("  time                 show generic timer registers and uptime\n");
@@ -2209,6 +2217,7 @@ fn print_caps(uart: &mut Uart) {
     uart.put_str("  maint ack-intent yes\n");
     uart.put_str("  maint remote-event yes\n");
     uart.put_str("  maint local-audit yes\n");
+    uart.put_str("  identity facts yes\n");
     uart.put_str("  wifi facts yes\n");
     uart.put_str("  wifi pcie-facts yes\n");
     uart.put_str("  wifi link-readonly yes\n");
@@ -2227,12 +2236,27 @@ fn print_caps(uart: &mut Uart) {
 
 fn print_about(uart: &mut Uart) {
     uart.put_str("Xiaojin OS 0.1.0\n");
-    uart.put_str("board: nanopi-r5c\n");
-    uart.put_str("soc: rk3568\n");
+    let _ = writeln!(uart, "device: {XIAOJIN_DEVICE_ID}");
+    let _ = writeln!(uart, "board: {XIAOJIN_BOARD_ID}");
+    let _ = writeln!(uart, "soc: {XIAOJIN_SOC_ID}");
     uart.put_str("kernel: AArch64 no_std Rust\n");
     uart.put_str("control: UART2 shell\n");
     uart.put_str("network target: PCIe RTL8125 wired loader\n");
     uart.put_str("wireless target: RTL8822CE over R5C M.2 E-Key, driver planned\n");
+}
+
+fn print_identity(uart: &mut Uart) {
+    write_identity_summary(uart);
+    uart.put_str("\n");
+}
+
+fn write_identity_summary<W: Write>(out: &mut W) {
+    let fingerprint = device_identity_digest();
+    let _ = write!(
+        out,
+        "identity format={XIAOJIN_IDENTITY_FORMAT} device_id={XIAOJIN_DEVICE_ID} board_id={XIAOJIN_BOARD_ID} soc={XIAOJIN_SOC_ID} arch={XIAOJIN_ARCH_ID} fingerprint="
+    );
+    write_sha256_hex(out, &fingerprint);
 }
 
 fn command_wifi<'a>(uart: &mut Uart, parts: &mut core::str::SplitWhitespace<'a>) {
@@ -9662,11 +9686,17 @@ fn write_maint_ack_intent_summary<W: Write>(
                     _ => (true, false, false, "missing-field"),
                 };
 
+            let identity_fingerprint = device_identity_digest();
             let mut post_body = NetReplyBuf::new();
             let _ = write!(
                 post_body,
-                "{{\"events\":[{{\"kind\":\"maint_ack_intent\",\"payload\":{{\"s\":\"xj\",\"i\":\"{}\",\"p\":{},\"d\":{},\"r\":\"{}\",\"h\":\"",
+                "{{\"events\":[{{\"kind\":\"maint_ack_intent\",\"payload\":{{\"s\":\"xj\",\"di\":\"{XIAOJIN_DEVICE_ID}\",\"if\":\"{}\",\"fp\":\"",
                 PCIE_CONTROLLERS[index].name,
+            );
+            write_sha256_hex(&mut post_body, &identity_fingerprint);
+            let _ = write!(
+                post_body,
+                "\",\"p\":{},\"d\":{},\"r\":\"{}\",\"h\":\"",
                 if pending { "true" } else { "false" },
                 if digest_ok { "true" } else { "false" },
                 reason
@@ -13240,8 +13270,13 @@ fn net_handle_query_packet(
             } else if query.eq_ignore_ascii_case("caps") {
                 let _ = write!(
                 reply,
-                "XJQ OK caps net-dev=yes dhcp=yes auto-dhcp=yes route=yes arp=yes dns=yes tcp-connect=yes http-get=yes http-post=yes http-trace=yes http-debug=yes maint-poll=yes maint-status=yes maint-pending-summary=yes maint-command-digest=yes maint-command-verify=yes maint-ack-intent=yes maint-remote-event=yes maint-local-audit=yes query=yes reboot=yes wifi=facts-only wifi-pcie=facts wifi-cru=read-only wifi-apb=read-only wifi-phy=read-only wifi-power=read-only wifi-link=read-only wifi-trace=confirm wifi-pcie-init=confirm wifi-pcie-init-high=confirm wifi-station=planned wifi-ap=planned sd-probe=yes sd-writer=yes ab-persist=yes boot-slot=extlinux db=page-store,catalog,wal,fixed-table,btree,event-log,blob-backup,blob-restore"
+                "XJQ OK caps net-dev=yes dhcp=yes auto-dhcp=yes route=yes arp=yes dns=yes tcp-connect=yes http-get=yes http-post=yes http-trace=yes http-debug=yes maint-poll=yes maint-status=yes maint-pending-summary=yes maint-command-digest=yes maint-command-verify=yes maint-ack-intent=yes maint-remote-event=yes maint-local-audit=yes identity=yes query=yes reboot=yes wifi=facts-only wifi-pcie=facts wifi-cru=read-only wifi-apb=read-only wifi-phy=read-only wifi-power=read-only wifi-link=read-only wifi-trace=confirm wifi-pcie-init=confirm wifi-pcie-init-high=confirm wifi-station=planned wifi-ap=planned sd-probe=yes sd-writer=yes ab-persist=yes boot-slot=extlinux db=page-store,catalog,wal,fixed-table,btree,event-log,blob-backup,blob-restore"
             );
+            } else if query.eq_ignore_ascii_case("identity")
+                || query.eq_ignore_ascii_case("identity facts")
+            {
+                let _ = write!(reply, "XJQ OK ");
+                write_identity_summary(&mut reply);
             } else if query.eq_ignore_ascii_case("net ips") {
                 let _ = write!(reply, "XJQ OK ");
                 write_net_ips_summary(&mut reply);
@@ -16511,6 +16546,15 @@ fn write_sha256_hex<W: Write>(out: &mut W, digest: &[u8; 32]) {
     for byte in digest {
         let _ = write!(out, "{byte:02x}");
     }
+}
+
+fn device_identity_digest() -> [u8; 32] {
+    let mut canonical = NetReplyBuf::new();
+    let _ = write!(
+        canonical,
+        "{XIAOJIN_IDENTITY_FORMAT}\ndevice_id={XIAOJIN_DEVICE_ID}\nboard_id={XIAOJIN_BOARD_ID}\nsoc={XIAOJIN_SOC_ID}\narch={XIAOJIN_ARCH_ID}\n"
+    );
+    sha256_digest(canonical.as_slice())
 }
 
 fn net_reply_push_checked(buffer: &mut NetReplyBuf, bytes: &[u8]) -> bool {
