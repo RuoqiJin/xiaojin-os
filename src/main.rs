@@ -307,9 +307,11 @@ const DB_TABLE_RECORD_BYTES: usize = 32;
 const DB_TABLE_VALUE_BYTES: usize = 24;
 const DB_TABLE_RECORDS: u32 = 13;
 const DB_TABLE_RECORD_USED: u16 = 1;
+const DB_TABLE_KEY_MAINT_HMAC: u32 = 0x584a_4d48; // "XJMH"
 const DB_WAL_KIND_TEST: u32 = 1;
 const DB_WAL_KIND_PUT: u32 = 2;
 const DB_WAL_KIND_BPUT: u32 = 3;
+const DB_WAL_KIND_DELETE: u32 = 4;
 const DB_EVENT_KIND_MAINT_STATUS: u32 = 1000;
 const DB_EVENT_KIND_MAINT_VERIFY: u32 = 1001;
 const DB_EVENT_SOURCE_MAINTAINER: u32 = 2;
@@ -2069,7 +2071,11 @@ fn print_help(uart: &mut Uart) {
     uart.put_str("                       append maintainer status summary into XiaojinDB events\n");
     uart.put_str("  maint verify <if> <host|ip> <port> <path> confirm\n");
     uart.put_str("  maint verify-hmac <if> <host|ip> <port> <path> <key-hex> confirm\n");
+    uart.put_str("  maint verify-local <if> <host|ip> <port> <path> confirm\n");
     uart.put_str("                       verify pending command digest and audit the result\n");
+    uart.put_str("  maint key-status confirm\n");
+    uart.put_str("  maint key-set <key-hex> confirm\n");
+    uart.put_str("  maint key-clear confirm\n");
     uart.put_str("  maint ack-intent <if> <host|ip> <port> <poll-path> <event-path> confirm\n");
     uart.put_str(
         "                       verify pending command digest and POST an ACK intent event\n",
@@ -2216,6 +2222,7 @@ fn print_caps(uart: &mut Uart) {
     uart.put_str("  maint command-digest yes\n");
     uart.put_str("  maint command-verify yes\n");
     uart.put_str("  maint command-verify-hmac yes\n");
+    uart.put_str("  maint local-hmac-key yes\n");
     uart.put_str("  maint ack-intent yes\n");
     uart.put_str("  maint remote-event yes\n");
     uart.put_str("  maint local-audit yes\n");
@@ -3133,6 +3140,17 @@ fn command_maint<'a>(uart: &mut Uart, parts: &mut core::str::SplitWhitespace<'a>
             parts.next(),
             parts.next(),
         ),
+        Some("verify-local") => command_maint_verify_local(
+            uart,
+            parts.next(),
+            parts.next(),
+            parts.next(),
+            parts.next(),
+            parts.next(),
+        ),
+        Some("key-status") => command_maint_key_status(uart, parts.next()),
+        Some("key-set") => command_maint_key_set(uart, parts.next(), parts.next()),
+        Some("key-clear") => command_maint_key_clear(uart, parts.next()),
         Some("ack-intent") => command_maint_ack_intent(
             uart,
             parts.next(),
@@ -3158,6 +3176,12 @@ fn command_maint<'a>(uart: &mut Uart, parts: &mut core::str::SplitWhitespace<'a>
             uart.put_str("  maint audit <pcie3x1|pcie3x2|0|1> <host|ip> <port> <path> confirm\n");
             uart.put_str("  maint verify <pcie3x1|pcie3x2|0|1> <host|ip> <port> <path> confirm\n");
             uart.put_str("  maint verify-hmac <pcie3x1|pcie3x2|0|1> <host|ip> <port> <path> <key-hex> confirm\n");
+            uart.put_str(
+                "  maint verify-local <pcie3x1|pcie3x2|0|1> <host|ip> <port> <path> confirm\n",
+            );
+            uart.put_str("  maint key-status confirm\n");
+            uart.put_str("  maint key-set <key-hex> confirm\n");
+            uart.put_str("  maint key-clear confirm\n");
             uart.put_str(
                 "  maint ack-intent <pcie3x1|pcie3x2|0|1> <host|ip> <port> <poll-path> <event-path> confirm\n",
             );
@@ -3749,7 +3773,7 @@ fn write_maint_verify_query_summary<W: Write>(default_index: usize, query: &str,
         return;
     };
 
-    write_maint_verify_summary(out, index, host, port, path, None);
+    write_maint_verify_summary(out, index, host, port, path, MaintHmacKey::None);
 }
 
 fn write_maint_verify_hmac_query_summary<W: Write>(default_index: usize, query: &str, out: &mut W) {
@@ -3793,7 +3817,150 @@ fn write_maint_verify_hmac_query_summary<W: Write>(default_index: usize, query: 
         return;
     };
 
-    write_maint_verify_summary(out, index, host, port, path, Some(key_hex));
+    write_maint_verify_summary(out, index, host, port, path, MaintHmacKey::Hex(key_hex));
+}
+
+fn write_maint_verify_local_query_summary<W: Write>(
+    default_index: usize,
+    query: &str,
+    out: &mut W,
+) {
+    let mut parts = query.split_whitespace();
+    let _maint = parts.next();
+    if parts.next() != Some("verify-local") {
+        let _ = write!(out, "XJQ ERR maint-verify-local-usage");
+        return;
+    }
+    let Some(first) = parts.next() else {
+        let _ = write!(out, "XJQ ERR maint-verify-local-usage");
+        return;
+    };
+    let (index, host) = if let Some(index) = parse_net_interface(first) {
+        let Some(host) = parts.next() else {
+            let _ = write!(out, "XJQ ERR maint-verify-local-usage");
+            return;
+        };
+        (index, host)
+    } else {
+        (default_index, first)
+    };
+    let Some(port_text) = parts.next() else {
+        let _ = write!(out, "XJQ ERR maint-verify-local-usage");
+        return;
+    };
+    let Some(path) = parts.next() else {
+        let _ = write!(out, "XJQ ERR maint-verify-local-usage");
+        return;
+    };
+    if parts.next() != Some("confirm") || parts.next().is_some() {
+        let _ = write!(out, "XJQ ERR maint-verify-local-usage");
+        return;
+    }
+    let Some(port) = parse_u16(port_text) else {
+        let _ = write!(out, "XJQ ERR maint-verify-local-port");
+        return;
+    };
+    let Ok(row) = get_maint_hmac_key_row() else {
+        let _ = write!(out, "XJQ ERR maint-verify-local key-missing");
+        return;
+    };
+
+    write_maint_verify_summary(
+        out,
+        index,
+        host,
+        port,
+        path,
+        MaintHmacKey::Raw(&row.value[..row.value_len]),
+    );
+}
+
+fn write_maint_key_status_summary<W: Write>(out: &mut W) {
+    match get_maint_hmac_key_row() {
+        Ok(row) => {
+            let digest = sha256_digest(&row.value[..row.value_len]);
+            let _ = write!(
+                out,
+                "XJQ OK maint-key provisioned=yes key={DB_TABLE_KEY_MAINT_HMAC} key-len={} key-sha256=",
+                row.value_len
+            );
+            write_sha256_hex(out, &digest);
+        }
+        Err(DbError::KeyMissing) | Err(DbError::TableMissing) => {
+            let _ = write!(
+                out,
+                "XJQ OK maint-key provisioned=no key={DB_TABLE_KEY_MAINT_HMAC} key-len=0 key-sha256=none"
+            );
+        }
+        Err(error) => {
+            let _ = write!(out, "XJQ ERR maint-key-status {}", error.as_str());
+        }
+    }
+}
+
+fn write_maint_key_set_query_summary<W: Write>(query: &str, out: &mut W) {
+    let mut parts = query.split_whitespace();
+    let _maint = parts.next();
+    if parts.next() != Some("key-set") {
+        let _ = write!(out, "XJQ ERR maint-key-set-usage");
+        return;
+    }
+    let Some(key_hex) = parts.next() else {
+        let _ = write!(out, "XJQ ERR maint-key-set-usage");
+        return;
+    };
+    if parts.next() != Some("confirm") || parts.next().is_some() {
+        let _ = write!(out, "XJQ ERR maint-key-set-usage");
+        return;
+    }
+    write_maint_key_set_summary(out, key_hex);
+}
+
+fn write_maint_key_set_summary<W: Write>(out: &mut W, key_hex: &str) {
+    let mut key = [0u8; DB_TABLE_VALUE_BYTES];
+    let Some(key_len) = decode_hex_to_buf(key_hex.as_bytes(), &mut key) else {
+        let _ = write!(out, "XJQ ERR maint-key-set bad-key");
+        return;
+    };
+    if key_len == 0 {
+        let _ = write!(out, "XJQ ERR maint-key-set bad-key");
+        return;
+    }
+    match put_db_row(DB_TABLE_KEY_MAINT_HMAC, &key[..key_len]) {
+        Ok((_info, _catalog, table, row)) => {
+            let digest = sha256_digest(&row.value[..row.value_len]);
+            let _ = write!(
+                out,
+                "XJQ OK maint-key-set provisioned=yes key={} key-len={} table-records={} key-sha256=",
+                row.key, row.value_len, table.record_count
+            );
+            write_sha256_hex(out, &digest);
+        }
+        Err(error) => {
+            let _ = write!(out, "XJQ ERR maint-key-set {}", error.as_str());
+        }
+    }
+}
+
+fn write_maint_key_clear_summary<W: Write>(out: &mut W) {
+    match delete_db_row(DB_TABLE_KEY_MAINT_HMAC) {
+        Ok((_info, _catalog, table)) => {
+            let _ = write!(
+                out,
+                "XJQ OK maint-key-clear provisioned=no key={DB_TABLE_KEY_MAINT_HMAC} table-records={} key-sha256=none",
+                table.record_count
+            );
+        }
+        Err(DbError::KeyMissing) | Err(DbError::TableMissing) => {
+            let _ = write!(
+                out,
+                "XJQ OK maint-key-clear provisioned=no key={DB_TABLE_KEY_MAINT_HMAC} already-clear=yes key-sha256=none"
+            );
+        }
+        Err(error) => {
+            let _ = write!(out, "XJQ ERR maint-key-clear {}", error.as_str());
+        }
+    }
 }
 
 fn write_maint_ack_intent_query_summary<W: Write>(default_index: usize, query: &str, out: &mut W) {
@@ -5939,6 +6106,48 @@ fn put_db_row(
     Ok((info, new_catalog, new_table, row))
 }
 
+fn delete_db_row(key: u32) -> Result<(DbFileInfo, DbCatalog, DbTablePage), DbError> {
+    let (info, catalog, table) = read_db_table()?;
+    validate_db_table(table)?;
+
+    read_file_sector(info.facts, info.entry, DB_TABLE_ROOT_PAGE)?;
+    let mut block = [0u8; SD_BLOCK_BYTES];
+    unsafe {
+        core::ptr::copy_nonoverlapping(
+            addr_of!(SD_BLOCK_BUFFER.0).cast::<u8>(),
+            block.as_mut_ptr(),
+            SD_BLOCK_BYTES,
+        );
+    }
+    let mut found = None;
+    for slot in 0..DB_TABLE_RECORDS as usize {
+        if table_record_key(&block, slot) == Some(key) {
+            found = Some(slot);
+            break;
+        }
+    }
+    let Some(slot) = found else {
+        return Err(DbError::KeyMissing);
+    };
+    let Some(offset) = table_record_offset(slot) else {
+        return Err(DbError::BadTable);
+    };
+    let new_catalog = append_db_wal_event(info, catalog, DB_WAL_KIND_DELETE, key, b"delete")?;
+    for byte in &mut block[offset..offset + DB_TABLE_RECORD_BYTES] {
+        *byte = 0;
+    }
+    let record_count = table.record_count.saturating_sub(1);
+    update_table_header(
+        &mut block,
+        record_count,
+        new_catalog.sequence,
+        DB_TABLE_RECORDS,
+    );
+    write_file_sector(info.facts, info.entry, DB_TABLE_ROOT_PAGE, &block)?;
+    let (_info2, _catalog2, new_table) = read_db_table()?;
+    Ok((info, new_catalog, new_table))
+}
+
 fn get_db_row(key: u32) -> Result<(DbFileInfo, DbCatalog, DbTablePage, DbRowValue), DbError> {
     let (info, catalog, table) = read_db_table()?;
     read_file_sector(info.facts, info.entry, catalog.table_root_page)?;
@@ -5957,6 +6166,14 @@ fn get_db_row(key: u32) -> Result<(DbFileInfo, DbCatalog, DbTablePage, DbRowValu
         }
     }
     Err(DbError::KeyMissing)
+}
+
+fn get_maint_hmac_key_row() -> Result<DbRowValue, DbError> {
+    let (_info, _catalog, _table, row) = get_db_row(DB_TABLE_KEY_MAINT_HMAC)?;
+    if row.value_len == 0 || row.value_len > DB_TABLE_VALUE_BYTES {
+        return Err(DbError::BadValue);
+    }
+    Ok(row)
 }
 
 fn read_db_btree_root() -> Result<(DbFileInfo, DbCatalog, DbBtreeRoot), DbError> {
@@ -9273,7 +9490,7 @@ fn command_maint_verify(
         "maint verify {} http://{host}:{port}{path}:",
         PCIE_CONTROLLERS[index].name
     );
-    write_maint_verify_summary(uart, index, host, port, path, None);
+    write_maint_verify_summary(uart, index, host, port, path, MaintHmacKey::None);
     uart.put_str("\n");
 }
 
@@ -9322,7 +9539,93 @@ fn command_maint_verify_hmac(
         "maint verify-hmac {} http://{host}:{port}{path}:",
         PCIE_CONTROLLERS[index].name
     );
-    write_maint_verify_summary(uart, index, host, port, path, Some(key_hex));
+    write_maint_verify_summary(uart, index, host, port, path, MaintHmacKey::Hex(key_hex));
+    uart.put_str("\n");
+}
+
+fn command_maint_verify_local(
+    uart: &mut Uart,
+    iface: Option<&str>,
+    host: Option<&str>,
+    port: Option<&str>,
+    path: Option<&str>,
+    confirm: Option<&str>,
+) {
+    if confirm != Some("confirm") {
+        uart.put_str(
+            "usage: maint verify-local <pcie3x1|pcie3x2|0|1> <host|ip> <port> <path> confirm\n",
+        );
+        return;
+    }
+    let Some(iface) = iface else {
+        uart.put_str("missing interface\n");
+        return;
+    };
+    let Some(index) = parse_net_interface(iface) else {
+        uart.put_str("unknown interface; use pcie3x1, pcie3x2, 0, or 1\n");
+        return;
+    };
+    let Some(host) = host else {
+        uart.put_str("missing host\n");
+        return;
+    };
+    let Some(port) = port.and_then(parse_u16) else {
+        uart.put_str("missing or invalid TCP port\n");
+        return;
+    };
+    let Some(path) = path else {
+        uart.put_str("missing path\n");
+        return;
+    };
+    let Ok(row) = get_maint_hmac_key_row() else {
+        uart.put_str("maint verify-local error: key-missing\n");
+        return;
+    };
+
+    let _ = writeln!(
+        uart,
+        "maint verify-local {} http://{host}:{port}{path}:",
+        PCIE_CONTROLLERS[index].name
+    );
+    write_maint_verify_summary(
+        uart,
+        index,
+        host,
+        port,
+        path,
+        MaintHmacKey::Raw(&row.value[..row.value_len]),
+    );
+    uart.put_str("\n");
+}
+
+fn command_maint_key_status(uart: &mut Uart, confirm: Option<&str>) {
+    if confirm != Some("confirm") {
+        uart.put_str("usage: maint key-status confirm\n");
+        return;
+    }
+    write_maint_key_status_summary(uart);
+    uart.put_str("\n");
+}
+
+fn command_maint_key_set(uart: &mut Uart, key_hex: Option<&str>, confirm: Option<&str>) {
+    if confirm != Some("confirm") {
+        uart.put_str("usage: maint key-set <key-hex> confirm\n");
+        return;
+    }
+    let Some(key_hex) = key_hex else {
+        uart.put_str("missing HMAC key hex\n");
+        return;
+    };
+    write_maint_key_set_summary(uart, key_hex);
+    uart.put_str("\n");
+}
+
+fn command_maint_key_clear(uart: &mut Uart, confirm: Option<&str>) {
+    if confirm != Some("confirm") {
+        uart.put_str("usage: maint key-clear confirm\n");
+        return;
+    }
+    write_maint_key_clear_summary(uart);
     uart.put_str("\n");
 }
 
@@ -9913,7 +10216,7 @@ fn write_maint_verify_summary<W: Write>(
     host: &str,
     port: u16,
     path: &str,
-    hmac_key_hex: Option<&str>,
+    hmac_key: MaintHmacKey<'_>,
 ) {
     match net_http_get(index, host, port, path, HTTP_TIMEOUT_MS) {
         Ok(result) => {
@@ -9959,8 +10262,8 @@ fn write_maint_verify_summary<W: Write>(
                 };
             let mut signature_calculated = [0u8; 32];
             let (signature_checked, signature_ok, signature_calculated_valid, signature_reason) =
-                if let Some(key_hex) = hmac_key_hex {
-                    match maint_hmac_signature_digest(command_sha, signature_algorithm, key_hex) {
+                if hmac_key.is_some() {
+                    match maint_hmac_signature_digest(command_sha, signature_algorithm, hmac_key) {
                         MaintHmacCheckInput::NoPending => (true, false, false, "no-pending"),
                         MaintHmacCheckInput::DigestNotOk => (true, false, false, "digest-not-ok"),
                         MaintHmacCheckInput::BadKey => (true, false, false, "bad-key"),
@@ -13466,7 +13769,7 @@ fn net_handle_query_packet(
             } else if query.eq_ignore_ascii_case("caps") {
                 let _ = write!(
                 reply,
-                "XJQ OK caps net-dev=yes dhcp=yes auto-dhcp=yes route=yes arp=yes dns=yes tcp-connect=yes http-get=yes http-post=yes http-trace=yes http-debug=yes maint-poll=yes maint-status=yes maint-pending-summary=yes maint-command-digest=yes maint-command-verify=yes maint-command-verify-hmac=yes maint-ack-intent=yes maint-remote-event=yes maint-local-audit=yes identity=yes query=yes reboot=yes wifi=facts-only wifi-pcie=facts wifi-cru=read-only wifi-apb=read-only wifi-phy=read-only wifi-power=read-only wifi-link=read-only wifi-trace=confirm wifi-pcie-init=confirm wifi-pcie-init-high=confirm wifi-station=planned wifi-ap=planned sd-probe=yes sd-writer=yes ab-persist=yes boot-slot=extlinux db=page-store,catalog,wal,fixed-table,btree,event-log,blob-backup,blob-restore"
+                "XJQ OK caps net-dev=yes dhcp=yes auto-dhcp=yes route=yes arp=yes dns=yes tcp-connect=yes http-get=yes http-post=yes http-trace=yes http-debug=yes maint-poll=yes maint-status=yes maint-pending-summary=yes maint-command-digest=yes maint-command-verify=yes maint-command-verify-hmac=yes maint-local-hmac-key=yes maint-ack-intent=yes maint-remote-event=yes maint-local-audit=yes identity=yes query=yes reboot=yes wifi=facts-only wifi-pcie=facts wifi-cru=read-only wifi-apb=read-only wifi-phy=read-only wifi-power=read-only wifi-link=read-only wifi-trace=confirm wifi-pcie-init=confirm wifi-pcie-init-high=confirm wifi-station=planned wifi-ap=planned sd-probe=yes sd-writer=yes ab-persist=yes boot-slot=extlinux db=page-store,catalog,wal,fixed-table,btree,event-log,blob-backup,blob-restore"
             );
             } else if query.eq_ignore_ascii_case("identity")
                 || query.eq_ignore_ascii_case("identity facts")
@@ -13499,8 +13802,20 @@ fn net_handle_query_packet(
                 write_maint_audit_query_summary(index, query, &mut reply);
             } else if query.starts_with("maint verify-hmac ") {
                 write_maint_verify_hmac_query_summary(index, query, &mut reply);
+            } else if query.starts_with("maint verify-local ") {
+                write_maint_verify_local_query_summary(index, query, &mut reply);
             } else if query.starts_with("maint verify ") {
                 write_maint_verify_query_summary(index, query, &mut reply);
+            } else if query.eq_ignore_ascii_case("maint key-status")
+                || query.eq_ignore_ascii_case("maint key-status confirm")
+            {
+                write_maint_key_status_summary(&mut reply);
+            } else if query.starts_with("maint key-set ") {
+                write_maint_key_set_query_summary(query, &mut reply);
+            } else if query.eq_ignore_ascii_case("maint key-clear")
+                || query.eq_ignore_ascii_case("maint key-clear confirm")
+            {
+                write_maint_key_clear_summary(&mut reply);
             } else if query.starts_with("maint ack-intent ") {
                 write_maint_ack_intent_query_summary(index, query, &mut reply);
             } else if query.starts_with("maint event ") {
@@ -16798,10 +17113,23 @@ enum MaintHmacCheckInput {
     Calculated([u8; 32]),
 }
 
+#[derive(Clone, Copy)]
+enum MaintHmacKey<'a> {
+    None,
+    Hex(&'a str),
+    Raw(&'a [u8]),
+}
+
+impl<'a> MaintHmacKey<'a> {
+    fn is_some(self) -> bool {
+        !matches!(self, Self::None)
+    }
+}
+
 fn maint_hmac_signature_digest(
     command_sha: Option<&[u8]>,
     signature_algorithm: Option<&[u8]>,
-    key_hex: &str,
+    key: MaintHmacKey<'_>,
 ) -> MaintHmacCheckInput {
     let Some(command_sha) = command_sha.map(trim_ascii_whitespace) else {
         return MaintHmacCheckInput::DigestNotOk;
@@ -16819,15 +17147,27 @@ fn maint_hmac_signature_digest(
         return MaintHmacCheckInput::BadAlgorithm;
     }
 
-    let mut key = [0u8; 128];
-    let Some(key_len) = decode_hex_to_buf(key_hex.as_bytes(), &mut key) else {
-        return MaintHmacCheckInput::BadKey;
+    let mut decoded_key = [0u8; 128];
+    let key_bytes = match key {
+        MaintHmacKey::None => return MaintHmacCheckInput::BadKey,
+        MaintHmacKey::Hex(key_hex) => {
+            let Some(key_len) = decode_hex_to_buf(key_hex.as_bytes(), &mut decoded_key) else {
+                return MaintHmacCheckInput::BadKey;
+            };
+            if key_len == 0 {
+                return MaintHmacCheckInput::BadKey;
+            }
+            &decoded_key[..key_len]
+        }
+        MaintHmacKey::Raw(key) => {
+            if key.is_empty() {
+                return MaintHmacCheckInput::BadKey;
+            }
+            key
+        }
     };
-    if key_len == 0 {
-        return MaintHmacCheckInput::BadKey;
-    }
 
-    let signature_digest = hmac_sha256_digest(&key[..key_len], command_sha);
+    let signature_digest = hmac_sha256_digest(key_bytes, command_sha);
     let mut signature_hex = [0u8; 64];
     write_digest_hex_bytes(&signature_digest, &mut signature_hex);
     MaintHmacCheckInput::Calculated(sha256_digest(&signature_hex))
