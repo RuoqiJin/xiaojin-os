@@ -9483,6 +9483,10 @@ fn write_maint_status_summary<W: Write>(
             write_maint_field(out, body, b"next_pending_command_updated_unix");
             write_maint_field(out, body, b"next_pending_payload_sha256");
             write_maint_field(out, body, b"next_pending_command_sha256");
+            write_maint_field(out, body, b"next_pending_signer_id");
+            write_maint_field(out, body, b"next_pending_signature_algorithm");
+            write_maint_field(out, body, b"next_pending_signature_sha256");
+            write_maint_field(out, body, b"next_pending_signature_present");
         }
         Err(error) => {
             let _ = write!(out, "XJQ ERR maint-status {}", error.as_str());
@@ -9660,6 +9664,9 @@ fn write_maint_ack_intent_summary<W: Write>(
             let kind = find_maint_text_field(body, b"next_pending_command_kind");
             let payload_sha = find_maint_text_field(body, b"next_pending_payload_sha256");
             let command_sha = find_maint_text_field(body, b"next_pending_command_sha256");
+            let signer_id = find_maint_text_field(body, b"next_pending_signer_id");
+            let signature_sha = find_maint_text_field(body, b"next_pending_signature_sha256");
+            let signature_present = find_maint_text_field(body, b"next_pending_signature_present");
 
             let mut calculated = [0u8; 32];
             let (pending, digest_ok, digest_calculated, reason) =
@@ -9712,6 +9719,24 @@ fn write_maint_ack_intent_summary<W: Write>(
             } else {
                 let _ = write!(post_body, "none");
             }
+            let _ = write!(post_body, "\",\"si\":\"");
+            if let Some(signer_id) = signer_id {
+                write_ascii_token(&mut post_body, signer_id);
+            } else {
+                let _ = write!(post_body, "none");
+            }
+            let _ = write!(post_body, "\",\"sg\":\"");
+            if let Some(signature_sha) = signature_sha {
+                write_ascii_token(&mut post_body, signature_sha);
+            } else {
+                let _ = write!(post_body, "none");
+            }
+            let _ = write!(post_body, "\",\"sp\":\"");
+            if let Some(signature_present) = signature_present {
+                write_ascii_token(&mut post_body, signature_present);
+            } else {
+                let _ = write!(post_body, "no");
+            }
             let _ = write!(post_body, "\"}}}}]}}");
 
             if post_body.as_slice().len() > 1024 {
@@ -9756,6 +9781,9 @@ fn write_maint_ack_intent_summary<W: Write>(
                     write_maint_field(out, body, b"next_pending_command_id");
                     write_maint_field(out, body, b"next_pending_command_kind");
                     write_maint_field(out, body, b"next_pending_command_sha256");
+                    write_maint_field(out, body, b"next_pending_signer_id");
+                    write_maint_field(out, body, b"next_pending_signature_sha256");
+                    write_maint_field(out, body, b"next_pending_signature_present");
                     let _ = write!(out, "calculated=");
                     if digest_calculated {
                         write_sha256_hex(out, &calculated);
@@ -9849,6 +9877,9 @@ fn write_maint_verify_summary<W: Write>(
                 body,
                 b"next_pending_command_sha256",
             );
+            write_maint_compact_field(&mut event, "signer", body, b"next_pending_signer_id");
+            write_maint_compact_field(&mut event, "sigsha", body, b"next_pending_signature_sha256");
+            write_maint_compact_field(&mut event, "sigp", body, b"next_pending_signature_present");
             let _ = write!(event, "calculated=");
             if digest_calculated {
                 write_sha256_hex(&mut event, &calculated);
@@ -9899,6 +9930,9 @@ fn write_maint_verify_summary<W: Write>(
                     write_maint_field(out, body, b"next_pending_command_kind");
                     write_maint_field(out, body, b"next_pending_payload_sha256");
                     write_maint_field(out, body, b"next_pending_command_sha256");
+                    write_maint_field(out, body, b"next_pending_signer_id");
+                    write_maint_field(out, body, b"next_pending_signature_sha256");
+                    write_maint_field(out, body, b"next_pending_signature_present");
                     let _ = write!(out, "calculated=");
                     if digest_calculated {
                         write_sha256_hex(out, &calculated);
@@ -9932,6 +9966,9 @@ fn write_maint_event_fields<W: Write>(out: &mut W, body: &[u8]) {
     write_maint_field(out, body, b"next_pending_command_id");
     write_maint_field(out, body, b"next_pending_command_kind");
     write_maint_field(out, body, b"next_pending_command_sha256");
+    write_maint_compact_field(out, "signer", body, b"next_pending_signer_id");
+    write_maint_compact_field(out, "sigsha", body, b"next_pending_signature_sha256");
+    write_maint_compact_field(out, "sigp", body, b"next_pending_signature_present");
 }
 
 fn write_maint_field<W: Write>(out: &mut W, body: &[u8], key: &[u8]) {
