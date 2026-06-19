@@ -204,7 +204,7 @@ const TCP_CLIENT_PORT_BASE: u16 = 49152;
 const TCP_CONNECT_TIMEOUT_MS: u64 = 4_000;
 const HTTP_TIMEOUT_MS: u64 = 5_000;
 const HTTP_IDLE_TIMEOUT_MS: u64 = 500;
-const HTTP_REQUEST_BYTES: usize = 384;
+const HTTP_REQUEST_BYTES: usize = 768;
 const HTTP_RESPONSE_MAX_BYTES: usize = 8 * 1024;
 const HTTP_RESPONSE_SAMPLE_BYTES: usize = 1024;
 const TCP_FLAG_PSH: u16 = 0x008;
@@ -2061,6 +2061,10 @@ fn print_help(uart: &mut Uart) {
     uart.put_str("                       append maintainer status summary into XiaojinDB events\n");
     uart.put_str("  maint verify <if> <host|ip> <port> <path> confirm\n");
     uart.put_str("                       verify pending command digest and audit the result\n");
+    uart.put_str("  maint ack-intent <if> <host|ip> <port> <poll-path> <event-path> confirm\n");
+    uart.put_str(
+        "                       verify pending command digest and POST an ACK intent event\n",
+    );
     uart.put_str("  maint event <if> <host|ip> <port> <path> <kind> confirm\n");
     uart.put_str(
         "                       POST one public maintainer event to the GCP control plane\n",
@@ -2202,6 +2206,7 @@ fn print_caps(uart: &mut Uart) {
     uart.put_str("  maint pending-summary yes\n");
     uart.put_str("  maint command-digest yes\n");
     uart.put_str("  maint command-verify yes\n");
+    uart.put_str("  maint ack-intent yes\n");
     uart.put_str("  maint remote-event yes\n");
     uart.put_str("  maint local-audit yes\n");
     uart.put_str("  wifi facts yes\n");
@@ -3093,6 +3098,15 @@ fn command_maint<'a>(uart: &mut Uart, parts: &mut core::str::SplitWhitespace<'a>
             parts.next(),
             parts.next(),
         ),
+        Some("ack-intent") => command_maint_ack_intent(
+            uart,
+            parts.next(),
+            parts.next(),
+            parts.next(),
+            parts.next(),
+            parts.next(),
+            parts.next(),
+        ),
         Some("event") => command_maint_event(
             uart,
             parts.next(),
@@ -3108,6 +3122,9 @@ fn command_maint<'a>(uart: &mut Uart, parts: &mut core::str::SplitWhitespace<'a>
             uart.put_str("  maint status <pcie3x1|pcie3x2|0|1> <host|ip> <port> <path> confirm\n");
             uart.put_str("  maint audit <pcie3x1|pcie3x2|0|1> <host|ip> <port> <path> confirm\n");
             uart.put_str("  maint verify <pcie3x1|pcie3x2|0|1> <host|ip> <port> <path> confirm\n");
+            uart.put_str(
+                "  maint ack-intent <pcie3x1|pcie3x2|0|1> <host|ip> <port> <poll-path> <event-path> confirm\n",
+            );
             uart.put_str(
                 "  maint event <pcie3x1|pcie3x2|0|1> <host|ip> <port> <path> <kind> confirm\n",
             );
@@ -3697,6 +3714,50 @@ fn write_maint_verify_query_summary<W: Write>(default_index: usize, query: &str,
     };
 
     write_maint_verify_summary(out, index, host, port, path);
+}
+
+fn write_maint_ack_intent_query_summary<W: Write>(default_index: usize, query: &str, out: &mut W) {
+    let mut parts = query.split_whitespace();
+    let _maint = parts.next();
+    if parts.next() != Some("ack-intent") {
+        let _ = write!(out, "XJQ ERR maint-ack-intent-usage");
+        return;
+    }
+    let Some(first) = parts.next() else {
+        let _ = write!(out, "XJQ ERR maint-ack-intent-usage");
+        return;
+    };
+    let (index, host) = if let Some(index) = parse_net_interface(first) {
+        let Some(host) = parts.next() else {
+            let _ = write!(out, "XJQ ERR maint-ack-intent-usage");
+            return;
+        };
+        (index, host)
+    } else {
+        (default_index, first)
+    };
+    let Some(port_text) = parts.next() else {
+        let _ = write!(out, "XJQ ERR maint-ack-intent-usage");
+        return;
+    };
+    let Some(poll_path) = parts.next() else {
+        let _ = write!(out, "XJQ ERR maint-ack-intent-usage");
+        return;
+    };
+    let Some(event_path) = parts.next() else {
+        let _ = write!(out, "XJQ ERR maint-ack-intent-usage");
+        return;
+    };
+    if !matches!(parts.next(), None | Some("confirm")) {
+        let _ = write!(out, "XJQ ERR maint-ack-intent-usage");
+        return;
+    }
+    let Some(port) = parse_u16(port_text) else {
+        let _ = write!(out, "XJQ ERR maint-ack-intent-port");
+        return;
+    };
+
+    write_maint_ack_intent_summary(out, index, host, port, poll_path, event_path);
 }
 
 fn write_maint_event_query_summary<W: Write>(default_index: usize, query: &str, out: &mut W) {
@@ -9045,6 +9106,55 @@ fn command_maint_event(
     uart.put_str("\n");
 }
 
+fn command_maint_ack_intent(
+    uart: &mut Uart,
+    iface: Option<&str>,
+    host: Option<&str>,
+    port: Option<&str>,
+    poll_path: Option<&str>,
+    event_path: Option<&str>,
+    confirm: Option<&str>,
+) {
+    if confirm != Some("confirm") {
+        uart.put_str(
+            "usage: maint ack-intent <pcie3x1|pcie3x2|0|1> <host|ip> <port> <poll-path> <event-path> confirm\n",
+        );
+        return;
+    }
+    let Some(iface) = iface else {
+        uart.put_str("missing interface\n");
+        return;
+    };
+    let Some(index) = parse_net_interface(iface) else {
+        uart.put_str("unknown interface; use pcie3x1, pcie3x2, 0, or 1\n");
+        return;
+    };
+    let Some(host) = host else {
+        uart.put_str("missing host\n");
+        return;
+    };
+    let Some(port) = port.and_then(parse_u16) else {
+        uart.put_str("missing or invalid TCP port\n");
+        return;
+    };
+    let Some(poll_path) = poll_path else {
+        uart.put_str("missing poll path\n");
+        return;
+    };
+    let Some(event_path) = event_path else {
+        uart.put_str("missing event path\n");
+        return;
+    };
+
+    let _ = writeln!(
+        uart,
+        "maint ack-intent {} http://{host}:{port}{poll_path} -> {event_path}:",
+        PCIE_CONTROLLERS[index].name
+    );
+    write_maint_ack_intent_summary(uart, index, host, port, poll_path, event_path);
+    uart.put_str("\n");
+}
+
 fn command_maint_verify(
     uart: &mut Uart,
     iface: Option<&str>,
@@ -9501,6 +9611,135 @@ fn write_maint_event_summary<W: Write>(
         }
         Err(error) => {
             let _ = write!(out, "XJQ ERR maint-event {}", error.as_str());
+        }
+    }
+}
+
+fn write_maint_ack_intent_summary<W: Write>(
+    out: &mut W,
+    index: usize,
+    host: &str,
+    port: u16,
+    poll_path: &str,
+    event_path: &str,
+) {
+    match net_http_get(index, host, port, poll_path, HTTP_TIMEOUT_MS) {
+        Ok(poll) => {
+            let Some(body) = find_http_body_start(&poll.sample[..poll.sample_len])
+                .map(|start| &poll.sample[start..poll.sample_len])
+            else {
+                let _ = write!(out, "XJQ ERR maint-ack-intent no-body");
+                return;
+            };
+
+            let command_id = find_maint_text_field(body, b"next_pending_command_id");
+            let kind = find_maint_text_field(body, b"next_pending_command_kind");
+            let payload_sha = find_maint_text_field(body, b"next_pending_payload_sha256");
+            let command_sha = find_maint_text_field(body, b"next_pending_command_sha256");
+
+            let mut calculated = [0u8; 32];
+            let (pending, digest_ok, digest_calculated, reason) =
+                match (command_id, kind, payload_sha, command_sha) {
+                    (Some(id), _, _, _) if ascii_eq(id, b"none") => {
+                        (false, false, false, "no-pending")
+                    }
+                    (Some(id), Some(kind), Some(payload_sha), Some(command_sha)) => {
+                        if !is_sha256_hex(payload_sha) {
+                            (true, false, false, "bad-payload-sha")
+                        } else if !is_sha256_hex(command_sha) {
+                            (true, false, false, "bad-command-sha")
+                        } else if let Some(digest) = maint_command_digest(id, kind, payload_sha) {
+                            calculated = digest;
+                            if sha256_hex_matches(&calculated, command_sha) {
+                                (true, true, true, "ok")
+                            } else {
+                                (true, false, true, "mismatch")
+                            }
+                        } else {
+                            (true, false, false, "canonical-too-long")
+                        }
+                    }
+                    _ => (true, false, false, "missing-field"),
+                };
+
+            let mut post_body = NetReplyBuf::new();
+            let _ = write!(
+                post_body,
+                "{{\"events\":[{{\"kind\":\"maint_ack_intent\",\"payload\":{{\"s\":\"xj\",\"i\":\"{}\",\"p\":{},\"d\":{},\"r\":\"{}\",\"h\":\"",
+                PCIE_CONTROLLERS[index].name,
+                if pending { "true" } else { "false" },
+                if digest_ok { "true" } else { "false" },
+                reason
+            );
+            if let Some(command_sha) = command_sha {
+                write_ascii_token(&mut post_body, command_sha);
+            } else {
+                let _ = write!(post_body, "none");
+            }
+            let _ = write!(post_body, "\",\"x\":\"");
+            if digest_calculated {
+                write_sha256_hex(&mut post_body, &calculated);
+            } else {
+                let _ = write!(post_body, "none");
+            }
+            let _ = write!(post_body, "\"}}}}]}}");
+
+            if post_body.as_slice().len() > 1024 {
+                let _ = write!(
+                    out,
+                    "XJQ ERR maint-ack-intent body-too-long len={}",
+                    post_body.as_slice().len()
+                );
+                return;
+            }
+
+            match net_http_post(
+                index,
+                host,
+                port,
+                event_path,
+                post_body.as_slice(),
+                HTTP_TIMEOUT_MS,
+            ) {
+                Ok(event) => {
+                    let _ = write!(
+                        out,
+                        "XJQ OK maint-ack-intent iface={} host={} ip={}.{}.{}.{} port={} poll-status={} event-status={} pending={} digest-ok={} reason={} sent={} src-port={} first-line=\"",
+                        PCIE_CONTROLLERS[index].name,
+                        host,
+                        event.tcp.dst_ip[0],
+                        event.tcp.dst_ip[1],
+                        event.tcp.dst_ip[2],
+                        event.tcp.dst_ip[3],
+                        event.tcp.dst_port,
+                        poll.status_code,
+                        event.status_code,
+                        yes_no(pending),
+                        yes_no(digest_ok),
+                        reason,
+                        event.sent_payload_len,
+                        event.tcp.src_port
+                    );
+                    write_http_sample_line(out, &event.sample[..event.sample_len]);
+                    let _ = write!(out, "\" ");
+                    write_maint_field(out, body, b"device_id");
+                    write_maint_field(out, body, b"next_pending_command_id");
+                    write_maint_field(out, body, b"next_pending_command_kind");
+                    write_maint_field(out, body, b"next_pending_command_sha256");
+                    let _ = write!(out, "calculated=");
+                    if digest_calculated {
+                        write_sha256_hex(out, &calculated);
+                    } else {
+                        let _ = write!(out, "none");
+                    }
+                }
+                Err(error) => {
+                    let _ = write!(out, "XJQ ERR maint-ack-intent event {}", error.as_str());
+                }
+            }
+        }
+        Err(error) => {
+            let _ = write!(out, "XJQ ERR maint-ack-intent poll {}", error.as_str());
         }
     }
 }
@@ -13001,7 +13240,7 @@ fn net_handle_query_packet(
             } else if query.eq_ignore_ascii_case("caps") {
                 let _ = write!(
                 reply,
-                "XJQ OK caps net-dev=yes dhcp=yes auto-dhcp=yes route=yes arp=yes dns=yes tcp-connect=yes http-get=yes http-post=yes http-trace=yes http-debug=yes maint-poll=yes maint-status=yes maint-pending-summary=yes maint-command-digest=yes maint-command-verify=yes maint-remote-event=yes maint-local-audit=yes query=yes reboot=yes wifi=facts-only wifi-pcie=facts wifi-cru=read-only wifi-apb=read-only wifi-phy=read-only wifi-power=read-only wifi-link=read-only wifi-trace=confirm wifi-pcie-init=confirm wifi-pcie-init-high=confirm wifi-station=planned wifi-ap=planned sd-probe=yes sd-writer=yes ab-persist=yes boot-slot=extlinux db=page-store,catalog,wal,fixed-table,btree,event-log,blob-backup,blob-restore"
+                "XJQ OK caps net-dev=yes dhcp=yes auto-dhcp=yes route=yes arp=yes dns=yes tcp-connect=yes http-get=yes http-post=yes http-trace=yes http-debug=yes maint-poll=yes maint-status=yes maint-pending-summary=yes maint-command-digest=yes maint-command-verify=yes maint-ack-intent=yes maint-remote-event=yes maint-local-audit=yes query=yes reboot=yes wifi=facts-only wifi-pcie=facts wifi-cru=read-only wifi-apb=read-only wifi-phy=read-only wifi-power=read-only wifi-link=read-only wifi-trace=confirm wifi-pcie-init=confirm wifi-pcie-init-high=confirm wifi-station=planned wifi-ap=planned sd-probe=yes sd-writer=yes ab-persist=yes boot-slot=extlinux db=page-store,catalog,wal,fixed-table,btree,event-log,blob-backup,blob-restore"
             );
             } else if query.eq_ignore_ascii_case("net ips") {
                 let _ = write!(reply, "XJQ OK ");
@@ -13026,6 +13265,8 @@ fn net_handle_query_packet(
                 write_maint_audit_query_summary(index, query, &mut reply);
             } else if query.starts_with("maint verify ") {
                 write_maint_verify_query_summary(index, query, &mut reply);
+            } else if query.starts_with("maint ack-intent ") {
+                write_maint_ack_intent_query_summary(index, query, &mut reply);
             } else if query.starts_with("maint event ") {
                 write_maint_event_query_summary(index, query, &mut reply);
             } else if query.eq_ignore_ascii_case("wifi facts") {
