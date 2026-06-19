@@ -211,7 +211,7 @@ const HTTP_TIMEOUT_MS: u64 = 5_000;
 const HTTP_IDLE_TIMEOUT_MS: u64 = 500;
 const HTTP_REQUEST_BYTES: usize = 768;
 const HTTP_RESPONSE_MAX_BYTES: usize = 8 * 1024;
-const HTTP_RESPONSE_SAMPLE_BYTES: usize = 1024;
+const HTTP_RESPONSE_SAMPLE_BYTES: usize = 2048;
 const TCP_FLAG_PSH: u16 = 0x008;
 const TCP_FLAG_SYN: u16 = 0x002;
 const TCP_FLAG_RST: u16 = 0x004;
@@ -314,6 +314,7 @@ const DB_WAL_KIND_BPUT: u32 = 3;
 const DB_WAL_KIND_DELETE: u32 = 4;
 const DB_EVENT_KIND_MAINT_STATUS: u32 = 1000;
 const DB_EVENT_KIND_MAINT_VERIFY: u32 = 1001;
+const DB_EVENT_KIND_MAINT_PULL_EXEC: u32 = 1002;
 const DB_EVENT_SOURCE_MAINTAINER: u32 = 2;
 const DB_SUPERBLOCK_CRC_OFFSET: usize = SD_BLOCK_BYTES - 4;
 const SD_CMD_READ_SINGLE_BLOCK: u32 = 17;
@@ -2073,6 +2074,8 @@ fn print_help(uart: &mut Uart) {
     uart.put_str("  maint verify-hmac <if> <host|ip> <port> <path> <key-hex> confirm\n");
     uart.put_str("  maint verify-local <if> <host|ip> <port> <path> confirm\n");
     uart.put_str("                       verify pending command digest and audit the result\n");
+    uart.put_str("  maint pull-exec <if> <host|ip> <port> <path> confirm\n");
+    uart.put_str("                       verify and execute one signed read-only xj_query\n");
     uart.put_str("  maint key-status confirm\n");
     uart.put_str("  maint key-set <key-hex> confirm\n");
     uart.put_str("  maint key-clear confirm\n");
@@ -2223,6 +2226,7 @@ fn print_caps(uart: &mut Uart) {
     uart.put_str("  maint command-verify yes\n");
     uart.put_str("  maint command-verify-hmac yes\n");
     uart.put_str("  maint local-hmac-key yes\n");
+    uart.put_str("  maint pull-exec yes\n");
     uart.put_str("  maint ack-intent yes\n");
     uart.put_str("  maint remote-event yes\n");
     uart.put_str("  maint local-audit yes\n");
@@ -2240,6 +2244,13 @@ fn print_caps(uart: &mut Uart) {
     let _ = writeln!(
         uart,
         "  xload trampoline-address 0x{XLOAD_TRAMPOLINE_ADDR:016x}"
+    );
+}
+
+fn write_caps_query_summary<W: Write>(out: &mut W) {
+    let _ = write!(
+        out,
+        "XJQ OK caps net-dev=yes dhcp=yes auto-dhcp=yes route=yes arp=yes dns=yes tcp-connect=yes http-get=yes http-post=yes http-trace=yes http-debug=yes maint-poll=yes maint-status=yes maint-pending-summary=yes maint-command-digest=yes maint-command-verify=yes maint-command-verify-hmac=yes maint-local-hmac-key=yes maint-pull-exec=yes maint-ack-intent=yes maint-remote-event=yes maint-local-audit=yes identity=yes query=yes reboot=yes wifi=facts-only wifi-pcie=facts wifi-cru=read-only wifi-apb=read-only wifi-phy=read-only wifi-power=read-only wifi-link=read-only wifi-trace=confirm wifi-pcie-init=confirm wifi-pcie-init-high=confirm wifi-station=planned wifi-ap=planned sd-probe=yes sd-writer=yes ab-persist=yes boot-slot=extlinux db=page-store,catalog,wal,fixed-table,btree,event-log,blob-backup,blob-restore"
     );
 }
 
@@ -3148,6 +3159,14 @@ fn command_maint<'a>(uart: &mut Uart, parts: &mut core::str::SplitWhitespace<'a>
             parts.next(),
             parts.next(),
         ),
+        Some("pull-exec") => command_maint_pull_exec(
+            uart,
+            parts.next(),
+            parts.next(),
+            parts.next(),
+            parts.next(),
+            parts.next(),
+        ),
         Some("key-status") => command_maint_key_status(uart, parts.next()),
         Some("key-set") => command_maint_key_set(uart, parts.next(), parts.next()),
         Some("key-clear") => command_maint_key_clear(uart, parts.next()),
@@ -3178,6 +3197,9 @@ fn command_maint<'a>(uart: &mut Uart, parts: &mut core::str::SplitWhitespace<'a>
             uart.put_str("  maint verify-hmac <pcie3x1|pcie3x2|0|1> <host|ip> <port> <path> <key-hex> confirm\n");
             uart.put_str(
                 "  maint verify-local <pcie3x1|pcie3x2|0|1> <host|ip> <port> <path> confirm\n",
+            );
+            uart.put_str(
+                "  maint pull-exec <pcie3x1|pcie3x2|0|1> <host|ip> <port> <path> confirm\n",
             );
             uart.put_str("  maint key-status confirm\n");
             uart.put_str("  maint key-set <key-hex> confirm\n");
@@ -3866,6 +3888,57 @@ fn write_maint_verify_local_query_summary<W: Write>(
     };
 
     write_maint_verify_summary(
+        out,
+        index,
+        host,
+        port,
+        path,
+        MaintHmacKey::Raw(&row.value[..row.value_len]),
+    );
+}
+
+fn write_maint_pull_exec_query_summary<W: Write>(default_index: usize, query: &str, out: &mut W) {
+    let mut parts = query.split_whitespace();
+    let _maint = parts.next();
+    if parts.next() != Some("pull-exec") {
+        let _ = write!(out, "XJQ ERR maint-pull-exec-usage");
+        return;
+    }
+    let Some(first) = parts.next() else {
+        let _ = write!(out, "XJQ ERR maint-pull-exec-usage");
+        return;
+    };
+    let (index, host) = if let Some(index) = parse_net_interface(first) {
+        let Some(host) = parts.next() else {
+            let _ = write!(out, "XJQ ERR maint-pull-exec-usage");
+            return;
+        };
+        (index, host)
+    } else {
+        (default_index, first)
+    };
+    let Some(port_text) = parts.next() else {
+        let _ = write!(out, "XJQ ERR maint-pull-exec-usage");
+        return;
+    };
+    let Some(path) = parts.next() else {
+        let _ = write!(out, "XJQ ERR maint-pull-exec-usage");
+        return;
+    };
+    if parts.next() != Some("confirm") || parts.next().is_some() {
+        let _ = write!(out, "XJQ ERR maint-pull-exec-usage");
+        return;
+    }
+    let Some(port) = parse_u16(port_text) else {
+        let _ = write!(out, "XJQ ERR maint-pull-exec-port");
+        return;
+    };
+    let Ok(row) = get_maint_hmac_key_row() else {
+        let _ = write!(out, "XJQ ERR maint-pull-exec key-missing");
+        return;
+    };
+
+    write_maint_pull_exec_summary(
         out,
         index,
         host,
@@ -9598,6 +9671,61 @@ fn command_maint_verify_local(
     uart.put_str("\n");
 }
 
+fn command_maint_pull_exec(
+    uart: &mut Uart,
+    iface: Option<&str>,
+    host: Option<&str>,
+    port: Option<&str>,
+    path: Option<&str>,
+    confirm: Option<&str>,
+) {
+    if confirm != Some("confirm") {
+        uart.put_str(
+            "usage: maint pull-exec <pcie3x1|pcie3x2|0|1> <host|ip> <port> <path> confirm\n",
+        );
+        return;
+    }
+    let Some(iface) = iface else {
+        uart.put_str("missing interface\n");
+        return;
+    };
+    let Some(index) = parse_net_interface(iface) else {
+        uart.put_str("unknown interface; use pcie3x1, pcie3x2, 0, or 1\n");
+        return;
+    };
+    let Some(host) = host else {
+        uart.put_str("missing host\n");
+        return;
+    };
+    let Some(port) = port.and_then(parse_u16) else {
+        uart.put_str("missing or invalid TCP port\n");
+        return;
+    };
+    let Some(path) = path else {
+        uart.put_str("missing path\n");
+        return;
+    };
+    let Ok(row) = get_maint_hmac_key_row() else {
+        uart.put_str("maint pull-exec error: key-missing\n");
+        return;
+    };
+
+    let _ = writeln!(
+        uart,
+        "maint pull-exec {} http://{host}:{port}{path}:",
+        PCIE_CONTROLLERS[index].name
+    );
+    write_maint_pull_exec_summary(
+        uart,
+        index,
+        host,
+        port,
+        path,
+        MaintHmacKey::Raw(&row.value[..row.value_len]),
+    );
+    uart.put_str("\n");
+}
+
 fn command_maint_key_status(uart: &mut Uart, confirm: Option<&str>) {
     if confirm != Some("confirm") {
         uart.put_str("usage: maint key-status confirm\n");
@@ -10415,6 +10543,319 @@ fn write_maint_verify_summary<W: Write>(
             let _ = write!(out, "XJQ ERR maint-verify {}", error.as_str());
         }
     }
+}
+
+fn write_maint_pull_exec_summary<W: Write>(
+    out: &mut W,
+    index: usize,
+    host: &str,
+    port: u16,
+    path: &str,
+    hmac_key: MaintHmacKey<'_>,
+) {
+    match net_http_get(index, host, port, path, HTTP_TIMEOUT_MS) {
+        Ok(result) => {
+            let Some(body) = find_http_body_start(&result.sample[..result.sample_len])
+                .map(|start| &result.sample[start..result.sample_len])
+            else {
+                let _ = write!(out, "XJQ ERR maint-pull-exec no-body");
+                return;
+            };
+
+            let command_id = find_maint_text_field(body, b"next_pending_command_id");
+            let kind = find_maint_text_field(body, b"next_pending_command_kind");
+            let payload_sha = find_maint_text_field(body, b"next_pending_payload_sha256");
+            let command_sha = find_maint_text_field(body, b"next_pending_command_sha256");
+            let signature_algorithm =
+                find_maint_text_field(body, b"next_pending_signature_algorithm");
+            let signature_sha = find_maint_text_field(body, b"next_pending_signature_sha256");
+            let signature_present = find_maint_text_field(body, b"next_pending_signature_present");
+            let public_query_present =
+                find_maint_text_field(body, b"next_pending_public_query_present");
+            let public_query_hex = find_maint_text_field(body, b"next_pending_public_query_hex");
+            let public_query_sha = find_maint_text_field(body, b"next_pending_public_query_sha256");
+
+            let Some(command_id) = command_id else {
+                let _ = write!(out, "XJQ ERR maint-pull-exec missing-command-id");
+                return;
+            };
+            if ascii_eq(command_id, b"none") {
+                let _ = write!(out, "XJQ ERR maint-pull-exec no-pending");
+                return;
+            }
+            let Some(kind) = kind else {
+                let _ = write!(out, "XJQ ERR maint-pull-exec missing-kind");
+                return;
+            };
+            if !ascii_eq(kind, b"xj_query") {
+                let _ = write!(out, "XJQ ERR maint-pull-exec unsupported-kind kind=");
+                write_ascii_token(out, kind);
+                return;
+            }
+            let (Some(payload_sha), Some(command_sha)) = (payload_sha, command_sha) else {
+                let _ = write!(out, "XJQ ERR maint-pull-exec missing-digest");
+                return;
+            };
+            if !is_sha256_hex(payload_sha) || !is_sha256_hex(command_sha) {
+                let _ = write!(out, "XJQ ERR maint-pull-exec bad-digest");
+                return;
+            }
+            if !matches!(public_query_present, Some(value) if ascii_eq(value, b"yes")) {
+                let _ = write!(out, "XJQ ERR maint-pull-exec public-query-missing");
+                return;
+            }
+            let Some(public_query_hex) = public_query_hex else {
+                let _ = write!(out, "XJQ ERR maint-pull-exec missing-query-hex");
+                return;
+            };
+            let mut query_buf = [0u8; NETCONTROL_QUERY_BYTES];
+            let Some(query_len) = decode_hex_to_buf(public_query_hex, &mut query_buf) else {
+                let _ = write!(out, "XJQ ERR maint-pull-exec bad-query-hex");
+                return;
+            };
+            let query_bytes = &query_buf[..query_len];
+            if !is_public_xj_query(query_bytes) {
+                let _ = write!(out, "XJQ ERR maint-pull-exec query-denied query=");
+                write_ascii_token(out, query_bytes);
+                return;
+            }
+            if let Some(public_query_sha) = public_query_sha {
+                let query_digest = sha256_digest(query_bytes);
+                if !sha256_hex_matches(&query_digest, public_query_sha) {
+                    let _ = write!(out, "XJQ ERR maint-pull-exec query-sha-mismatch");
+                    return;
+                }
+            }
+            let Some(payload_digest) = maint_public_query_payload_digest(query_bytes) else {
+                let _ = write!(out, "XJQ ERR maint-pull-exec payload-canonical-too-long");
+                return;
+            };
+            if !sha256_hex_matches(&payload_digest, payload_sha) {
+                let _ = write!(out, "XJQ ERR maint-pull-exec payload-mismatch calculated=");
+                write_sha256_hex(out, &payload_digest);
+                return;
+            }
+            let Some(command_digest) = maint_command_digest(command_id, kind, payload_sha) else {
+                let _ = write!(out, "XJQ ERR maint-pull-exec command-canonical-too-long");
+                return;
+            };
+            if !sha256_hex_matches(&command_digest, command_sha) {
+                let _ = write!(out, "XJQ ERR maint-pull-exec command-mismatch calculated=");
+                write_sha256_hex(out, &command_digest);
+                return;
+            }
+
+            let signature_calculated =
+                match maint_hmac_signature_digest(Some(command_sha), signature_algorithm, hmac_key)
+                {
+                    MaintHmacCheckInput::NoPending => {
+                        let _ = write!(out, "XJQ ERR maint-pull-exec signature-no-pending");
+                        return;
+                    }
+                    MaintHmacCheckInput::DigestNotOk => {
+                        let _ = write!(out, "XJQ ERR maint-pull-exec signature-bad-digest");
+                        return;
+                    }
+                    MaintHmacCheckInput::BadKey => {
+                        let _ = write!(out, "XJQ ERR maint-pull-exec signature-bad-key");
+                        return;
+                    }
+                    MaintHmacCheckInput::BadAlgorithm => {
+                        let _ = write!(out, "XJQ ERR maint-pull-exec signature-bad-algorithm");
+                        return;
+                    }
+                    MaintHmacCheckInput::Calculated(digest) => digest,
+                };
+            if !matches!(signature_present, Some(value) if ascii_eq(value, b"yes")) {
+                let _ = write!(out, "XJQ ERR maint-pull-exec signature-missing");
+                return;
+            }
+            let Some(signature_sha) = signature_sha else {
+                let _ = write!(out, "XJQ ERR maint-pull-exec signature-sha-missing");
+                return;
+            };
+            if !sha256_hex_matches(&signature_calculated, signature_sha) {
+                let _ = write!(
+                    out,
+                    "XJQ ERR maint-pull-exec signature-mismatch calculated="
+                );
+                write_sha256_hex(out, &signature_calculated);
+                return;
+            }
+
+            let Ok(query) = str::from_utf8(query_bytes) else {
+                let _ = write!(out, "XJQ ERR maint-pull-exec query-utf8");
+                return;
+            };
+            let mut query_result = NetReplyBuf::new();
+            if !write_public_xj_query_result(query, &mut query_result) {
+                let _ = write!(out, "XJQ ERR maint-pull-exec query-denied");
+                return;
+            }
+
+            let mut event = NetReplyBuf::new();
+            let result_digest = sha256_digest(query_result.as_slice());
+            let _ = write!(
+                event,
+                "maint-pull-exec-v1 iface={} host=",
+                PCIE_CONTROLLERS[index].name
+            );
+            write_ascii_token(&mut event, host.as_bytes());
+            let _ = write!(
+                event,
+                " port={} http={} query=",
+                result.tcp.dst_port, result.status_code
+            );
+            write_ascii_token(&mut event, query_bytes);
+            let _ = write!(event, " command_id=");
+            write_ascii_token(&mut event, command_id);
+            let _ = write!(event, " command_sha=");
+            write_ascii_token(&mut event, command_sha);
+            let _ = write!(event, " sig-ok=yes result-sha=");
+            write_sha256_hex(&mut event, &result_digest);
+            if event.as_slice().len() > DB_EVENT_PAYLOAD_BYTES {
+                let _ = write!(
+                    out,
+                    "XJQ ERR maint-pull-exec payload-too-long len={} max={DB_EVENT_PAYLOAD_BYTES}",
+                    event.as_slice().len()
+                );
+                return;
+            }
+
+            match append_db_event(
+                DB_EVENT_KIND_MAINT_PULL_EXEC,
+                DB_EVENT_SOURCE_MAINTAINER,
+                event.as_slice(),
+            ) {
+                Ok((_info, _catalog, meta, db_event)) => {
+                    let _ = write!(
+                        out,
+                        "XJQ OK maint-pull-exec iface={} host={} ip={}.{}.{}.{} port={} status={} signature-ok=yes seq={} page={} events={} next-page={} query=\"",
+                        PCIE_CONTROLLERS[index].name,
+                        host,
+                        result.tcp.dst_ip[0],
+                        result.tcp.dst_ip[1],
+                        result.tcp.dst_ip[2],
+                        result.tcp.dst_ip[3],
+                        result.tcp.dst_port,
+                        result.status_code,
+                        db_event.sequence,
+                        db_event.page,
+                        meta.event_count,
+                        meta.next_page
+                    );
+                    write_http_sample_line(out, query_bytes);
+                    let _ = write!(out, "\" command_id=");
+                    write_ascii_token(out, command_id);
+                    let _ = write!(out, " result=\"");
+                    write_http_sample_line(out, query_result.as_slice());
+                    let _ = write!(out, "\"");
+                }
+                Err(error) => {
+                    let _ = write!(out, "XJQ ERR maint-pull-exec {}", error.as_str());
+                    if let DbError::Sd(SdReadError::StatusError(bits))
+                    | DbError::Sd(SdReadError::IdmacError(bits)) = error
+                    {
+                        let _ = write!(out, " bits=0x{bits:08x}");
+                    }
+                }
+            }
+        }
+        Err(error) => {
+            let _ = write!(out, "XJQ ERR maint-pull-exec {}", error.as_str());
+        }
+    }
+}
+
+fn maint_public_query_payload_digest(query: &[u8]) -> Option<[u8; 32]> {
+    if !is_public_xj_query(query) {
+        return None;
+    }
+    let mut canonical = NetReplyBuf::new();
+    for part in [b"{\"query\":\"".as_slice(), query, b"\"}".as_slice()] {
+        if !net_reply_push_checked(&mut canonical, part) {
+            return None;
+        }
+    }
+    Some(sha256_digest(canonical.as_slice()))
+}
+
+fn is_public_xj_query(query: &[u8]) -> bool {
+    if query.is_empty()
+        || query.len() > 96
+        || query.first().is_some_and(|byte| byte.is_ascii_whitespace())
+        || query.last().is_some_and(|byte| byte.is_ascii_whitespace())
+        || query.iter().any(|byte| {
+            !(byte.is_ascii_graphic() || *byte == b' ') || matches!(*byte, b'"' | b'\\')
+        })
+    {
+        return false;
+    }
+    let Ok(query) = str::from_utf8(query) else {
+        return false;
+    };
+
+    [
+        "caps",
+        "identity",
+        "identity facts",
+        "net ips",
+        "db facts",
+        "db status",
+        "db status confirm",
+        "db catalog",
+        "db catalog confirm",
+        "db event-status",
+        "db event-status confirm",
+        "maint key-status",
+        "maint key-status confirm",
+        "sd extlinux",
+        "sd extlinux confirm",
+    ]
+    .iter()
+    .any(|allowed| query.eq_ignore_ascii_case(allowed))
+}
+
+fn write_public_xj_query_result<W: Write>(query: &str, out: &mut W) -> bool {
+    if query.eq_ignore_ascii_case("caps") {
+        write_caps_query_summary(out);
+    } else if query.eq_ignore_ascii_case("identity") || query.eq_ignore_ascii_case("identity facts")
+    {
+        let _ = write!(out, "XJQ OK ");
+        write_identity_summary(out);
+    } else if query.eq_ignore_ascii_case("net ips") {
+        let _ = write!(out, "XJQ OK ");
+        write_net_ips_summary(out);
+    } else if query.eq_ignore_ascii_case("db facts") {
+        let _ = write!(
+            out,
+            "XJQ OK db-facts file={DB_FILE_NAME_STR} page-bytes={DB_PAGE_BYTES} superblock=0 catalog={DB_ROOT_CATALOG_PAGE} wal-start={DB_WAL_START_PAGE} wal-pages={DB_WAL_PAGE_COUNT} table-root={DB_TABLE_ROOT_PAGE} table-records={DB_TABLE_RECORDS} btree-root={DB_BTREE_ROOT_PAGE} btree-leaf-start={DB_BTREE_LEAF_START_PAGE} btree-leaves={DB_BTREE_LEAF_COUNT} event-meta={DB_EVENT_META_PAGE} event-start={DB_EVENT_START_PAGE} event-pages={DB_EVENT_PAGE_COUNT} blob-meta={DB_BLOB_META_PAGE} blob-start={DB_BLOB_START_PAGE} value-bytes={DB_TABLE_VALUE_BYTES} persistence=preallocated-fat32"
+        );
+    } else if query.eq_ignore_ascii_case("db status")
+        || query.eq_ignore_ascii_case("db status confirm")
+    {
+        write_db_status_summary(out);
+    } else if query.eq_ignore_ascii_case("db catalog")
+        || query.eq_ignore_ascii_case("db catalog confirm")
+    {
+        write_db_catalog_summary(out);
+    } else if query.eq_ignore_ascii_case("db event-status")
+        || query.eq_ignore_ascii_case("db event-status confirm")
+    {
+        write_db_event_status_summary(out);
+    } else if query.eq_ignore_ascii_case("maint key-status")
+        || query.eq_ignore_ascii_case("maint key-status confirm")
+    {
+        write_maint_key_status_summary(out);
+    } else if query.eq_ignore_ascii_case("sd extlinux")
+        || query.eq_ignore_ascii_case("sd extlinux confirm")
+    {
+        let _ = write!(out, "XJQ ");
+        write_sd_extlinux_summary(out);
+    } else {
+        return false;
+    }
+    true
 }
 
 fn write_maint_event_fields<W: Write>(out: &mut W, body: &[u8]) {
@@ -13767,10 +14208,7 @@ fn net_handle_query_packet(
             if query.is_empty() {
                 let _ = write!(reply, "XJQ ERR empty-query");
             } else if query.eq_ignore_ascii_case("caps") {
-                let _ = write!(
-                reply,
-                "XJQ OK caps net-dev=yes dhcp=yes auto-dhcp=yes route=yes arp=yes dns=yes tcp-connect=yes http-get=yes http-post=yes http-trace=yes http-debug=yes maint-poll=yes maint-status=yes maint-pending-summary=yes maint-command-digest=yes maint-command-verify=yes maint-command-verify-hmac=yes maint-local-hmac-key=yes maint-ack-intent=yes maint-remote-event=yes maint-local-audit=yes identity=yes query=yes reboot=yes wifi=facts-only wifi-pcie=facts wifi-cru=read-only wifi-apb=read-only wifi-phy=read-only wifi-power=read-only wifi-link=read-only wifi-trace=confirm wifi-pcie-init=confirm wifi-pcie-init-high=confirm wifi-station=planned wifi-ap=planned sd-probe=yes sd-writer=yes ab-persist=yes boot-slot=extlinux db=page-store,catalog,wal,fixed-table,btree,event-log,blob-backup,blob-restore"
-            );
+                write_caps_query_summary(&mut reply);
             } else if query.eq_ignore_ascii_case("identity")
                 || query.eq_ignore_ascii_case("identity facts")
             {
@@ -13804,6 +14242,8 @@ fn net_handle_query_packet(
                 write_maint_verify_hmac_query_summary(index, query, &mut reply);
             } else if query.starts_with("maint verify-local ") {
                 write_maint_verify_local_query_summary(index, query, &mut reply);
+            } else if query.starts_with("maint pull-exec ") {
+                write_maint_pull_exec_query_summary(index, query, &mut reply);
             } else if query.starts_with("maint verify ") {
                 write_maint_verify_query_summary(index, query, &mut reply);
             } else if query.eq_ignore_ascii_case("maint key-status")
