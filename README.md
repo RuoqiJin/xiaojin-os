@@ -215,8 +215,12 @@ The GCP maintenance bridge can now schedule these checks through
 `xjctl gcp-bridge` and the `xiaojin-maintainer` service. Xiaojin OS can also run
 a bounded device-side maintainer loop with
 `maint loop <if> <host|ip> <port> <poll-path> <event-path> <count> <interval-ms> confirm`;
-it reuses the signed `maint pull-exec` path, so a local maintainer HMAC key must
-already be provisioned and every executed query is audited in XiaojinDB. This is
+the same bounded loop is exposed over Ethernet as
+`xjctl net-command "maint loop <if> <host|ip> <port> <poll-path> <event-path> <count> <interval-ms> confirm"`.
+The UDP query form returns a compact per-iteration status and is limited to 4
+iterations; the UART shell form remains limited to 16. Both reuse the signed
+`maint pull-exec` path, so a local maintainer HMAC key must already be
+provisioned and every executed query is audited in XiaojinDB. This is
 manual/bounded today; persistent cold-boot maintainer configuration is still a
 separate step. The next database
 infrastructure step for PostgreSQL backup is a XiaojinDB blob/import layer:

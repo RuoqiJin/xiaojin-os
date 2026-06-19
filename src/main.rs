@@ -4000,6 +4000,130 @@ fn write_maint_pull_exec_query_summary<W: Write>(default_index: usize, query: &s
     );
 }
 
+fn write_maint_loop_query_summary<W: Write>(default_index: usize, query: &str, out: &mut W) {
+    let mut parts = query.split_whitespace();
+    let _maint = parts.next();
+    if parts.next() != Some("loop") {
+        let _ = write!(out, "XJQ ERR maint-loop-usage");
+        return;
+    }
+    let Some(first) = parts.next() else {
+        let _ = write!(out, "XJQ ERR maint-loop-usage");
+        return;
+    };
+    let (index, host) = if let Some(index) = parse_net_interface(first) {
+        let Some(host) = parts.next() else {
+            let _ = write!(out, "XJQ ERR maint-loop-usage");
+            return;
+        };
+        (index, host)
+    } else {
+        (default_index, first)
+    };
+    let Some(port_text) = parts.next() else {
+        let _ = write!(out, "XJQ ERR maint-loop-usage");
+        return;
+    };
+    let Some(poll_path) = parts.next() else {
+        let _ = write!(out, "XJQ ERR maint-loop-usage");
+        return;
+    };
+    let Some(event_path) = parts.next() else {
+        let _ = write!(out, "XJQ ERR maint-loop-usage");
+        return;
+    };
+    let Some(count_text) = parts.next() else {
+        let _ = write!(out, "XJQ ERR maint-loop-usage");
+        return;
+    };
+    let Some(interval_text) = parts.next() else {
+        let _ = write!(out, "XJQ ERR maint-loop-usage");
+        return;
+    };
+    if parts.next() != Some("confirm") || parts.next().is_some() {
+        let _ = write!(out, "XJQ ERR maint-loop-usage");
+        return;
+    }
+    let Some(port) = parse_u16(port_text) else {
+        let _ = write!(out, "XJQ ERR maint-loop-port");
+        return;
+    };
+    if !poll_path.starts_with('/') {
+        let _ = write!(out, "XJQ ERR maint-loop-poll-path");
+        return;
+    }
+    if !event_path.starts_with('/') {
+        let _ = write!(out, "XJQ ERR maint-loop-event-path");
+        return;
+    }
+    let Some(count) = parse_u64(count_text) else {
+        let _ = write!(out, "XJQ ERR maint-loop-count");
+        return;
+    };
+    if !(1..=4).contains(&count) {
+        let _ = write!(out, "XJQ ERR maint-loop-count-range max=4");
+        return;
+    }
+    let Some(interval_ms) = parse_u64(interval_text) else {
+        let _ = write!(out, "XJQ ERR maint-loop-interval");
+        return;
+    };
+    if !(1_000..=600_000).contains(&interval_ms) {
+        let _ = write!(out, "XJQ ERR maint-loop-interval-range");
+        return;
+    }
+    let Ok(row) = get_maint_hmac_key_row() else {
+        let _ = write!(out, "XJQ ERR maint-loop key-missing");
+        return;
+    };
+
+    let mut ok_flags = [false; 4];
+    let mut err_flags = [false; 4];
+    let mut ok_count = 0usize;
+    let mut err_count = 0usize;
+    let count_usize = count as usize;
+
+    for iteration in 0..count_usize {
+        let mut iteration_reply = NetReplyBuf::new();
+        write_maint_pull_exec_summary(
+            &mut iteration_reply,
+            index,
+            host,
+            port,
+            poll_path,
+            Some(event_path),
+            MaintHmacKey::Raw(&row.value[..row.value_len]),
+        );
+        let text = str::from_utf8(iteration_reply.as_slice()).unwrap_or("");
+        if text.starts_with("XJQ OK maint-pull-exec ") {
+            ok_flags[iteration] = true;
+            ok_count += 1;
+        } else {
+            err_flags[iteration] = true;
+            err_count += 1;
+        }
+        if iteration + 1 < count_usize {
+            delay_ms(interval_ms);
+        }
+    }
+
+    let _ = write!(
+        out,
+        "XJQ OK maint-loop iface={} host={host} port={port} poll={poll_path} event={event_path} count={count} interval-ms={interval_ms} ok={ok_count} err={err_count}",
+        PCIE_CONTROLLERS[index].name
+    );
+    for iteration in 0..count_usize {
+        let status = if ok_flags[iteration] {
+            "ok"
+        } else if err_flags[iteration] {
+            "err"
+        } else {
+            "skip"
+        };
+        let _ = write!(out, " i{}={status}", iteration + 1);
+    }
+}
+
 fn write_maint_key_status_summary<W: Write>(out: &mut W) {
     match get_maint_hmac_key_row() {
         Ok(row) => {
@@ -14787,6 +14911,8 @@ fn net_handle_query_packet(
                 write_maint_verify_local_query_summary(index, query, &mut reply);
             } else if query.starts_with("maint pull-exec ") {
                 write_maint_pull_exec_query_summary(index, query, &mut reply);
+            } else if query.starts_with("maint loop ") {
+                write_maint_loop_query_summary(index, query, &mut reply);
             } else if query.starts_with("maint verify ") {
                 write_maint_verify_query_summary(index, query, &mut reply);
             } else if query.eq_ignore_ascii_case("maint key-status")
