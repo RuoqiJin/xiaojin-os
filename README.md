@@ -221,8 +221,14 @@ The UDP query form returns a compact per-iteration status and is limited to 4
 iterations; the UART shell form remains limited to 16. Both reuse the signed
 `maint pull-exec` path, so a local maintainer HMAC key must already be
 provisioned and every executed query is audited in XiaojinDB. This is
-manual/bounded today; persistent cold-boot maintainer configuration is still a
-separate step. The next database
+manual/bounded today. The board can persist the maintainer endpoint in
+XiaojinDB with
+`xjctl net-command "maint config-set <if> <host|ip> <port> <poll-path> <event-path> <count> <interval-ms> confirm"`,
+inspect it with `maint config-status`, and execute the saved bounded loop with
+`maint config-run`. The current compact persistent format stores an IPv4
+maintainer host plus the deployed public poll/event path pair, which keeps the
+first cold-boot maintenance target in one XiaojinDB fixed-table row. Cold-boot
+autostart of that saved loop is still a separate step. The next database
 infrastructure step for PostgreSQL backup is a XiaojinDB blob/import layer:
 the current fixed table and event log are enough for health events and small
 rows, but not for a complete GCP VM PostgreSQL backup or serving replacement.

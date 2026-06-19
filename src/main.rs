@@ -311,6 +311,11 @@ const DB_TABLE_NAMESPACE_ROW_BITS: u32 = 20;
 const DB_TABLE_NAMESPACE_ROW_MAX: u32 = (1u32 << DB_TABLE_NAMESPACE_ROW_BITS) - 1;
 const DB_TABLE_NAMESPACE_NAME_MAX: usize = 48;
 const DB_TABLE_KEY_MAINT_HMAC: u32 = 0x584a_4d48; // "XJMH"
+const DB_TABLE_KEY_MAINT_CONFIG: u32 = 0x584a_4d43; // "XJMC"
+const MAINT_CONFIG_MAGIC: &[u8; 4] = b"XJMC";
+const MAINT_CONFIG_ROW_BYTES: usize = 20;
+const MAINT_CONFIG_DEFAULT_POLL_PATH: &str = "/xiaojin-maintainer/device-pull/r5c-lab/poll.txt";
+const MAINT_CONFIG_DEFAULT_EVENT_PATH: &str = "/xiaojin-maintainer/device-pull/r5c-lab/events";
 const DB_WAL_KIND_TEST: u32 = 1;
 const DB_WAL_KIND_PUT: u32 = 2;
 const DB_WAL_KIND_BPUT: u32 = 3;
@@ -1285,6 +1290,53 @@ impl From<SdReadError> for DbError {
     fn from(value: SdReadError) -> Self {
         Self::Sd(value)
     }
+}
+
+#[derive(Clone, Copy)]
+enum MaintConfigError {
+    Db(DbError),
+    Missing,
+    BadMagic,
+    BadInterface,
+    BadHost,
+    BadPort,
+    BadCount,
+    BadInterval,
+    BadLength,
+}
+
+impl MaintConfigError {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Db(error) => error.as_str(),
+            Self::Missing => "maint-config-missing",
+            Self::BadMagic => "maint-config-bad-magic",
+            Self::BadInterface => "maint-config-bad-interface",
+            Self::BadHost => "maint-config-bad-host",
+            Self::BadPort => "maint-config-bad-port",
+            Self::BadCount => "maint-config-bad-count",
+            Self::BadInterval => "maint-config-bad-interval",
+            Self::BadLength => "maint-config-bad-length",
+        }
+    }
+}
+
+impl From<DbError> for MaintConfigError {
+    fn from(value: DbError) -> Self {
+        match value {
+            DbError::KeyMissing | DbError::BtreeMissing | DbError::MissingFile => Self::Missing,
+            error => Self::Db(error),
+        }
+    }
+}
+
+#[derive(Clone, Copy)]
+struct MaintConfig {
+    index: usize,
+    host_ip: [u8; 4],
+    port: u16,
+    count: u64,
+    interval_ms: u64,
 }
 
 #[derive(Clone, Copy)]
@@ -2263,7 +2315,7 @@ fn print_caps(uart: &mut Uart) {
 fn write_caps_query_summary<W: Write>(out: &mut W) {
     let _ = write!(
         out,
-        "XJQ OK caps net-dev=yes dhcp=yes auto-dhcp=yes route=yes arp=yes dns=yes tcp-connect=yes http-get=yes http-post=yes http-trace=yes http-debug=yes maint-poll=yes maint-status=yes maint-pending-summary=yes maint-command-digest=yes maint-command-verify=yes maint-command-verify-hmac=yes maint-local-hmac-key=yes maint-pull-exec=yes maint-loop=yes maint-ack-intent=yes maint-remote-event=yes maint-local-audit=yes identity=yes query=yes reboot=yes wifi=facts-only wifi-pcie=facts wifi-cru=read-only wifi-apb=read-only wifi-phy=read-only wifi-power=read-only wifi-link=read-only wifi-trace=confirm wifi-pcie-init=confirm wifi-pcie-init-high=confirm wifi-station=planned wifi-ap=planned sd-probe=yes sd-writer=yes ab-persist=yes boot-slot=extlinux db=page-store,catalog,wal,fixed-table,btree,table-namespace,event-log,blob-backup,blob-restore"
+        "XJQ OK caps net-dev=yes dhcp=yes auto-dhcp=yes route=yes arp=yes dns=yes tcp-connect=yes http-get=yes http-post=yes http-trace=yes http-debug=yes maint-poll=yes maint-status=yes maint-pending-summary=yes maint-command-digest=yes maint-command-verify=yes maint-command-verify-hmac=yes maint-local-hmac-key=yes maint-pull-exec=yes maint-loop=yes maint-config=yes maint-ack-intent=yes maint-remote-event=yes maint-local-audit=yes identity=yes query=yes reboot=yes wifi=facts-only wifi-pcie=facts wifi-cru=read-only wifi-apb=read-only wifi-phy=read-only wifi-power=read-only wifi-link=read-only wifi-trace=confirm wifi-pcie-init=confirm wifi-pcie-init-high=confirm wifi-station=planned wifi-ap=planned sd-probe=yes sd-writer=yes ab-persist=yes boot-slot=extlinux db=page-store,catalog,wal,fixed-table,btree,table-namespace,event-log,blob-backup,blob-restore"
     );
 }
 
@@ -4000,6 +4052,68 @@ fn write_maint_pull_exec_query_summary<W: Write>(default_index: usize, query: &s
     );
 }
 
+fn write_maint_loop_execute_summary<W: Write>(
+    index: usize,
+    host: &str,
+    port: u16,
+    poll_path: &str,
+    event_path: &str,
+    count: u64,
+    interval_ms: u64,
+    out: &mut W,
+) {
+    let Ok(row) = get_maint_hmac_key_row() else {
+        let _ = write!(out, "XJQ ERR maint-loop key-missing");
+        return;
+    };
+
+    let mut ok_flags = [false; 4];
+    let mut err_flags = [false; 4];
+    let mut ok_count = 0usize;
+    let mut err_count = 0usize;
+    let count_usize = count as usize;
+
+    for iteration in 0..count_usize {
+        let mut iteration_reply = NetReplyBuf::new();
+        write_maint_pull_exec_summary(
+            &mut iteration_reply,
+            index,
+            host,
+            port,
+            poll_path,
+            Some(event_path),
+            MaintHmacKey::Raw(&row.value[..row.value_len]),
+        );
+        let text = str::from_utf8(iteration_reply.as_slice()).unwrap_or("");
+        if text.starts_with("XJQ OK maint-pull-exec ") {
+            ok_flags[iteration] = true;
+            ok_count += 1;
+        } else {
+            err_flags[iteration] = true;
+            err_count += 1;
+        }
+        if iteration + 1 < count_usize {
+            delay_ms(interval_ms);
+        }
+    }
+
+    let _ = write!(
+        out,
+        "XJQ OK maint-loop iface={} host={host} port={port} poll={poll_path} event={event_path} count={count} interval-ms={interval_ms} ok={ok_count} err={err_count}",
+        PCIE_CONTROLLERS[index].name
+    );
+    for iteration in 0..count_usize {
+        let status = if ok_flags[iteration] {
+            "ok"
+        } else if err_flags[iteration] {
+            "err"
+        } else {
+            "skip"
+        };
+        let _ = write!(out, " i{}={status}", iteration + 1);
+    }
+}
+
 fn write_maint_loop_query_summary<W: Write>(default_index: usize, query: &str, out: &mut W) {
     let mut parts = query.split_whitespace();
     let _maint = parts.next();
@@ -4072,55 +4186,125 @@ fn write_maint_loop_query_summary<W: Write>(default_index: usize, query: &str, o
         let _ = write!(out, "XJQ ERR maint-loop-interval-range");
         return;
     }
-    let Ok(row) = get_maint_hmac_key_row() else {
-        let _ = write!(out, "XJQ ERR maint-loop key-missing");
+
+    write_maint_loop_execute_summary(
+        index,
+        host,
+        port,
+        poll_path,
+        event_path,
+        count,
+        interval_ms,
+        out,
+    );
+}
+
+fn write_maint_config_set_query_summary<W: Write>(default_index: usize, query: &str, out: &mut W) {
+    let mut parts = query.split_whitespace();
+    let _maint = parts.next();
+    if parts.next() != Some("config-set") {
+        let _ = write!(out, "XJQ ERR maint-config-set-usage");
+        return;
+    }
+    let Some(first) = parts.next() else {
+        let _ = write!(out, "XJQ ERR maint-config-set-usage");
         return;
     };
-
-    let mut ok_flags = [false; 4];
-    let mut err_flags = [false; 4];
-    let mut ok_count = 0usize;
-    let mut err_count = 0usize;
-    let count_usize = count as usize;
-
-    for iteration in 0..count_usize {
-        let mut iteration_reply = NetReplyBuf::new();
-        write_maint_pull_exec_summary(
-            &mut iteration_reply,
-            index,
-            host,
-            port,
-            poll_path,
-            Some(event_path),
-            MaintHmacKey::Raw(&row.value[..row.value_len]),
-        );
-        let text = str::from_utf8(iteration_reply.as_slice()).unwrap_or("");
-        if text.starts_with("XJQ OK maint-pull-exec ") {
-            ok_flags[iteration] = true;
-            ok_count += 1;
-        } else {
-            err_flags[iteration] = true;
-            err_count += 1;
+    let (index, host) = if let Some(index) = parse_net_interface(first) {
+        let Some(host) = parts.next() else {
+            let _ = write!(out, "XJQ ERR maint-config-set-usage");
+            return;
+        };
+        (index, host)
+    } else {
+        (default_index, first)
+    };
+    let Some(port) = parts.next().and_then(parse_u16) else {
+        let _ = write!(out, "XJQ ERR maint-config-set-port");
+        return;
+    };
+    let Some(poll_path) = parts.next() else {
+        let _ = write!(out, "XJQ ERR maint-config-set-usage");
+        return;
+    };
+    let Some(event_path) = parts.next() else {
+        let _ = write!(out, "XJQ ERR maint-config-set-usage");
+        return;
+    };
+    let Some(count) = parts.next().and_then(parse_u64) else {
+        let _ = write!(out, "XJQ ERR maint-config-set-count");
+        return;
+    };
+    let Some(interval_ms) = parts.next().and_then(parse_u64) else {
+        let _ = write!(out, "XJQ ERR maint-config-set-interval");
+        return;
+    };
+    if parts.next() != Some("confirm") || parts.next().is_some() {
+        let _ = write!(out, "XJQ ERR maint-config-set-usage");
+        return;
+    }
+    match put_maint_config(index, host, port, poll_path, event_path, count, interval_ms) {
+        Ok(()) => {
+            let _ = write!(
+                out,
+                "XJQ OK maint-config-set iface={} host={host} port={port} poll={poll_path} event={event_path} count={count} interval-ms={interval_ms}",
+                PCIE_CONTROLLERS[index].name
+            );
         }
-        if iteration + 1 < count_usize {
-            delay_ms(interval_ms);
+        Err(error) => {
+            let _ = write!(out, "XJQ ERR maint-config-set {}", error.as_str());
         }
     }
+}
 
-    let _ = write!(
-        out,
-        "XJQ OK maint-loop iface={} host={host} port={port} poll={poll_path} event={event_path} count={count} interval-ms={interval_ms} ok={ok_count} err={err_count}",
-        PCIE_CONTROLLERS[index].name
-    );
-    for iteration in 0..count_usize {
-        let status = if ok_flags[iteration] {
-            "ok"
-        } else if err_flags[iteration] {
-            "err"
-        } else {
-            "skip"
-        };
-        let _ = write!(out, " i{}={status}", iteration + 1);
+fn write_maint_config_status_summary<W: Write>(out: &mut W) {
+    match load_maint_config() {
+        Ok(config) => {
+            let _ = write!(
+                out,
+                "XJQ OK maint-config iface={} host={}.{}.{}.{} port={} poll={} event={} count={} interval-ms={}",
+                PCIE_CONTROLLERS[config.index].name,
+                config.host_ip[0],
+                config.host_ip[1],
+                config.host_ip[2],
+                config.host_ip[3],
+                config.port,
+                MAINT_CONFIG_DEFAULT_POLL_PATH,
+                MAINT_CONFIG_DEFAULT_EVENT_PATH,
+                config.count,
+                config.interval_ms
+            );
+        }
+        Err(error) => {
+            let _ = write!(out, "XJQ ERR maint-config-status {}", error.as_str());
+        }
+    }
+}
+
+fn write_maint_config_run_summary<W: Write>(out: &mut W) {
+    match load_maint_config() {
+        Ok(config) => {
+            let mut host_text = NetReplyBuf::new();
+            let _ = write!(
+                host_text,
+                "{}.{}.{}.{}",
+                config.host_ip[0], config.host_ip[1], config.host_ip[2], config.host_ip[3]
+            );
+            let host = str::from_utf8(host_text.as_slice()).unwrap_or("0.0.0.0");
+            write_maint_loop_execute_summary(
+                config.index,
+                host,
+                config.port,
+                MAINT_CONFIG_DEFAULT_POLL_PATH,
+                MAINT_CONFIG_DEFAULT_EVENT_PATH,
+                config.count,
+                config.interval_ms,
+                out,
+            );
+        }
+        Err(error) => {
+            let _ = write!(out, "XJQ ERR maint-config-run {}", error.as_str());
+        }
     }
 }
 
@@ -6674,6 +6858,96 @@ fn get_maint_hmac_key_row() -> Result<DbRowValue, DbError> {
         return Err(DbError::BadValue);
     }
     Ok(row)
+}
+
+fn put_maint_config(
+    index: usize,
+    host: &str,
+    port: u16,
+    poll_path: &str,
+    event_path: &str,
+    count: u64,
+    interval_ms: u64,
+) -> Result<(), MaintConfigError> {
+    if index >= RTL_DEVICE_COUNT {
+        return Err(MaintConfigError::BadInterface);
+    }
+    let Some(host_ip) = parse_ipv4(host) else {
+        return Err(MaintConfigError::BadHost);
+    };
+    if !valid_unicast_ipv4(host_ip) {
+        return Err(MaintConfigError::BadHost);
+    }
+    if poll_path != MAINT_CONFIG_DEFAULT_POLL_PATH || event_path != MAINT_CONFIG_DEFAULT_EVENT_PATH
+    {
+        return Err(MaintConfigError::BadLength);
+    }
+    if !(1..=4).contains(&count) {
+        return Err(MaintConfigError::BadCount);
+    }
+    if !(1_000..=600_000).contains(&interval_ms) || interval_ms > u32::MAX as u64 {
+        return Err(MaintConfigError::BadInterval);
+    }
+
+    let mut row = [0u8; MAINT_CONFIG_ROW_BYTES];
+    row[0..4].copy_from_slice(MAINT_CONFIG_MAGIC);
+    row[4] = 1;
+    row[5] = index as u8;
+    row[6..10].copy_from_slice(&host_ip);
+    row[10] = port as u8;
+    row[11] = (port >> 8) as u8;
+    row[12] = count as u8;
+    row[13] = 0;
+    let interval = interval_ms as u32;
+    row[14] = interval as u8;
+    row[15] = (interval >> 8) as u8;
+    row[16] = (interval >> 16) as u8;
+    row[17] = (interval >> 24) as u8;
+    row[18] = 0;
+    row[19] = 0;
+    put_db_row(DB_TABLE_KEY_MAINT_CONFIG, &row)?;
+    Ok(())
+}
+
+fn load_maint_config() -> Result<MaintConfig, MaintConfigError> {
+    let (_info, _catalog, _table, row) = get_db_row(DB_TABLE_KEY_MAINT_CONFIG)?;
+    if row.value_len != MAINT_CONFIG_ROW_BYTES {
+        return Err(MaintConfigError::BadLength);
+    }
+    if &row.value[0..4] != MAINT_CONFIG_MAGIC || row.value[4] != 1 {
+        return Err(MaintConfigError::BadMagic);
+    }
+    let index = row.value[5] as usize;
+    if index >= RTL_DEVICE_COUNT {
+        return Err(MaintConfigError::BadInterface);
+    }
+    let host_ip = [row.value[6], row.value[7], row.value[8], row.value[9]];
+    if !valid_unicast_ipv4(host_ip) {
+        return Err(MaintConfigError::BadHost);
+    }
+    let port = u16::from(row.value[10]) | (u16::from(row.value[11]) << 8);
+    if port == 0 {
+        return Err(MaintConfigError::BadPort);
+    }
+    let count = row.value[12] as u64;
+    if !(1..=4).contains(&count) {
+        return Err(MaintConfigError::BadCount);
+    }
+    let interval_ms = u32::from(row.value[14])
+        | (u32::from(row.value[15]) << 8)
+        | (u32::from(row.value[16]) << 16)
+        | (u32::from(row.value[17]) << 24);
+    let interval_ms = interval_ms as u64;
+    if !(1_000..=600_000).contains(&interval_ms) {
+        return Err(MaintConfigError::BadInterval);
+    }
+    Ok(MaintConfig {
+        index,
+        host_ip,
+        port,
+        count,
+        interval_ms,
+    })
 }
 
 fn read_db_btree_root() -> Result<(DbFileInfo, DbCatalog, DbBtreeRoot), DbError> {
@@ -14913,6 +15187,16 @@ fn net_handle_query_packet(
                 write_maint_pull_exec_query_summary(index, query, &mut reply);
             } else if query.starts_with("maint loop ") {
                 write_maint_loop_query_summary(index, query, &mut reply);
+            } else if query.starts_with("maint config-set ") {
+                write_maint_config_set_query_summary(index, query, &mut reply);
+            } else if query.eq_ignore_ascii_case("maint config-status")
+                || query.eq_ignore_ascii_case("maint config-status confirm")
+            {
+                write_maint_config_status_summary(&mut reply);
+            } else if query.eq_ignore_ascii_case("maint config-run")
+                || query.eq_ignore_ascii_case("maint config-run confirm")
+            {
+                write_maint_config_run_summary(&mut reply);
             } else if query.starts_with("maint verify ") {
                 write_maint_verify_query_summary(index, query, &mut reply);
             } else if query.eq_ignore_ascii_case("maint key-status")
