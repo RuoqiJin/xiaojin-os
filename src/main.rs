@@ -13288,6 +13288,7 @@ fn net_handle_query_packet(
     payload: &[u8],
 ) -> bool {
     let mut reply = NetReplyBuf::new();
+    let mut reboot_after_reply = false;
 
     if payload.len() < NETCONTROL_QUERY_MAGIC.len() {
         let _ = write!(reply, "XJQ ERR bad-len");
@@ -13314,6 +13315,9 @@ fn net_handle_query_packet(
             {
                 let _ = write!(reply, "XJQ OK ");
                 write_identity_summary(&mut reply);
+            } else if query.eq_ignore_ascii_case("reboot confirm") {
+                let _ = write!(reply, "XJQ OK reboot=after-reply");
+                reboot_after_reply = true;
             } else if query.eq_ignore_ascii_case("net ips") {
                 let _ = write!(reply, "XJQ OK ");
                 write_net_ips_summary(&mut reply);
@@ -13492,7 +13496,12 @@ fn net_handle_query_packet(
         }
     }
 
-    net_send_udp_reply(index, dst_mac, src_ip, src_port, reply.as_slice())
+    let sent = net_send_udp_reply(index, dst_mac, src_ip, src_port, reply.as_slice());
+    if reboot_after_reply {
+        busy_wait_ms(50);
+        psci_system_reset()
+    }
+    sent
 }
 
 fn net_handle_boot_slot_packet(
