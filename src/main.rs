@@ -2315,7 +2315,7 @@ fn print_caps(uart: &mut Uart) {
 fn write_caps_query_summary<W: Write>(out: &mut W) {
     let _ = write!(
         out,
-        "XJQ OK caps net-dev=yes dhcp=yes auto-dhcp=yes route=yes arp=yes dns=yes tcp-connect=yes http-get=yes http-post=yes http-trace=yes http-debug=yes maint-poll=yes maint-status=yes maint-pending-summary=yes maint-command-digest=yes maint-command-verify=yes maint-command-verify-hmac=yes maint-local-hmac-key=yes maint-pull-exec=yes maint-loop=yes maint-config=yes maint-ack-intent=yes maint-remote-event=yes maint-local-audit=yes identity=yes query=yes reboot=yes wifi=facts-only wifi-pcie=facts wifi-cru=read-only wifi-apb=read-only wifi-phy=read-only wifi-power=read-only wifi-link=read-only wifi-trace=confirm wifi-pcie-init=confirm wifi-pcie-init-high=confirm wifi-station=planned wifi-ap=planned sd-probe=yes sd-writer=yes ab-persist=yes boot-slot=extlinux db=page-store,catalog,wal,fixed-table,btree,table-namespace,event-log,blob-backup,blob-restore"
+        "XJQ OK caps net-dev=yes dhcp=yes auto-dhcp=yes route=yes arp=yes dns=yes tcp-connect=yes http-get=yes http-post=yes http-trace=yes http-debug=yes maint-poll=yes maint-status=yes maint-pending-summary=yes maint-command-digest=yes maint-command-verify=yes maint-command-verify-hmac=yes maint-local-hmac-key=yes maint-pull-exec=yes maint-loop=yes maint-config=yes maint-cold-boot-tick=yes maint-ack-intent=yes maint-remote-event=yes maint-local-audit=yes identity=yes query=yes reboot=yes wifi=facts-only wifi-pcie=facts wifi-cru=read-only wifi-apb=read-only wifi-phy=read-only wifi-power=read-only wifi-link=read-only wifi-trace=confirm wifi-pcie-init=confirm wifi-pcie-init-high=confirm wifi-station=planned wifi-ap=planned sd-probe=yes sd-writer=yes ab-persist=yes boot-slot=extlinux db=page-store,catalog,wal,fixed-table,btree,table-namespace,event-log,blob-backup,blob-restore"
     );
 }
 
@@ -4304,6 +4304,47 @@ fn write_maint_config_run_summary<W: Write>(out: &mut W) {
         }
         Err(error) => {
             let _ = write!(out, "XJQ ERR maint-config-run {}", error.as_str());
+        }
+    }
+}
+
+fn write_maint_config_run_once_summary<W: Write>(out: &mut W) {
+    match load_maint_config() {
+        Ok(config) => {
+            let mut host_text = NetReplyBuf::new();
+            let _ = write!(
+                host_text,
+                "{}.{}.{}.{}",
+                config.host_ip[0], config.host_ip[1], config.host_ip[2], config.host_ip[3]
+            );
+            let host = str::from_utf8(host_text.as_slice()).unwrap_or("0.0.0.0");
+            write_maint_loop_execute_summary(
+                config.index,
+                host,
+                config.port,
+                MAINT_CONFIG_DEFAULT_POLL_PATH,
+                MAINT_CONFIG_DEFAULT_EVENT_PATH,
+                1,
+                config.interval_ms,
+                out,
+            );
+        }
+        Err(error) => {
+            let _ = write!(out, "XJQ ERR maint-config-run-once {}", error.as_str());
+        }
+    }
+}
+
+fn command_maint_config_tick(uart: &mut Uart) {
+    match load_maint_config() {
+        Ok(_config) => {
+            uart.put_str("  maint-config    ");
+            write_maint_config_run_once_summary(uart);
+            uart.put_str("\n");
+        }
+        Err(MaintConfigError::Missing) => {}
+        Err(error) => {
+            let _ = writeln!(uart, "  maint-config    skipped {}", error.as_str());
         }
     }
 }
@@ -12074,6 +12115,9 @@ fn command_net_polling(uart: &mut Uart, label: &str, duration_ms: Option<u64>) {
     command_pcie_link_start(uart, Some("confirm"));
     command_pcie_rtl_init(uart, Some("confirm"));
     net_auto_dhcp_if_needed(uart);
+    if duration_ms.is_none() {
+        command_maint_config_tick(uart);
+    }
 
     let freq = read_cntfrq();
     let limit_ticks = match duration_ms {

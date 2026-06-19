@@ -140,9 +140,9 @@
       :purpose "Prove Xiaojin OS can actively fetch an HTTP endpoint over its own NIC before implementing the cloud maintenance poller.")
     (stage maintainer-poll-client
       :status implemented-narrow-signed-exec
-      :implemented [maint-poll maint-status maint-audit maint-verify maint-verify-hmac maint-local-hmac-key maint-pull-exec maint-loop-bounded maint-loop-xjq-compact maint-config-persistent maint-config-run maint-ack-intent public-poll-text-parse command-digest-check hmac-command-signature-check xiaojindb-audit-event http-post-event]
-      :next [cold-boot-maint-loop signed-artifact-fetch tls-client]
-      :purpose "Let Xiaojin OS poll the GCP maintainer, verify a narrow signed public xj_query command, execute it locally, write XiaojinDB audit events, persist a bounded maintainer endpoint config, and run bounded device-side loops from UART, compact Ethernet XJQ control, or saved config before autonomous cold-boot maintenance is enabled.")
+      :implemented [maint-poll maint-status maint-audit maint-verify maint-verify-hmac maint-local-hmac-key maint-pull-exec maint-loop-bounded maint-loop-xjq-compact maint-config-persistent maint-config-run maint-cold-boot-tick maint-ack-intent public-poll-text-parse command-digest-check hmac-command-signature-check xiaojindb-audit-event http-post-event]
+      :next [scheduled-cold-boot-maint-loop signed-artifact-fetch tls-client]
+      :purpose "Let Xiaojin OS poll the GCP maintainer, verify a narrow signed public xj_query command, execute it locally, write XiaojinDB audit events, persist a bounded maintainer endpoint config, and run bounded device-side loops from UART, compact Ethernet XJQ control, saved config, or one listener-start maintenance tick before scheduled autonomous maintenance is enabled.")
     (stage udp-query-control
       :status implemented-readonly
       :implemented [xjq-caps-query xjq-net-ips-query xjq-net-dns-query xjq-net-tcp-query xjq-net-http-query xjq-maint-status-query rtl-dma-rx-watchdog xjq-wifi-facts-query xjq-wifi-status-query xjq-sd-facts-query xjq-sd-regs-query xjq-sd-read0-query xjq-sd-bpb-query xjq-sd-root-query xjq-sd-slots-query xjq-db-page-store-query xjq-db-table-query xjq-db-btree-query xjq-db-event-log-query]

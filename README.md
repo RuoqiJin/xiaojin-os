@@ -227,8 +227,10 @@ XiaojinDB with
 inspect it with `maint config-status`, and execute the saved bounded loop with
 `maint config-run`. The current compact persistent format stores an IPv4
 maintainer host plus the deployed public poll/event path pair, which keeps the
-first cold-boot maintenance target in one XiaojinDB fixed-table row. Cold-boot
-autostart of that saved loop is still a separate step. The next database
+first cold-boot maintenance target in one XiaojinDB fixed-table row. When the
+network listener starts without a serial escape, it performs one bounded
+`maint config-run` tick if a saved config exists, then continues serving local
+LAN control. The next database
 infrastructure step for PostgreSQL backup is a XiaojinDB blob/import layer:
 the current fixed table and event log are enough for health events and small
 rows, but not for a complete GCP VM PostgreSQL backup or serving replacement.
