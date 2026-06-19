@@ -139,10 +139,10 @@
       :next [tcp-reassembly chunked-body host-auth tls-client]
       :purpose "Prove Xiaojin OS can actively fetch an HTTP endpoint over its own NIC before implementing the cloud maintenance poller.")
     (stage maintainer-poll-client
-      :status implemented-readonly
-      :implemented [maint-poll maint-status pending-command-summary pending-command-digest public-poll-text-parse]
-      :next [device-auth command-fetch signed-command-verification signed-artifact-fetch command-ack tls-client]
-      :purpose "Let Xiaojin OS parse the public GCP maintainer poll endpoint, including safe pending command id/kind/digest summaries without exposing payloads or executing commands.")
+      :status implemented-narrow-signed-exec
+      :implemented [maint-poll maint-status maint-audit maint-verify maint-verify-hmac maint-local-hmac-key maint-pull-exec maint-loop-bounded maint-ack-intent public-poll-text-parse command-digest-check hmac-command-signature-check xiaojindb-audit-event http-post-event]
+      :next [persistent-device-config cold-boot-maint-loop signed-artifact-fetch tls-client compact-loop-xjq-status]
+      :purpose "Let Xiaojin OS poll the GCP maintainer, verify a narrow signed public xj_query command, execute it locally, write XiaojinDB audit events, and run a bounded manual device-side loop before persistent autonomous maintenance is enabled.")
     (stage udp-query-control
       :status implemented-readonly
       :implemented [xjq-caps-query xjq-net-ips-query xjq-net-dns-query xjq-net-tcp-query xjq-net-http-query xjq-maint-status-query rtl-dma-rx-watchdog xjq-wifi-facts-query xjq-wifi-status-query xjq-sd-facts-query xjq-sd-regs-query xjq-sd-read0-query xjq-sd-bpb-query xjq-sd-root-query xjq-sd-slots-query xjq-db-page-store-query xjq-db-table-query xjq-db-btree-query xjq-db-event-log-query]

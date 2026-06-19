@@ -192,8 +192,9 @@ rtl-rx-poll confirm` polls RX descriptors once and re-arms any consumed buffers.
 `net-dev` hot reloads. `net dhcp <if> confirm` runs a manual DHCP client on one
 RTL8125 port: it sends DHCPDISCOVER, waits for DHCPOFFER, sends DHCPREQUEST,
 waits for DHCPACK, and applies the runtime IP/mask/gateway/DNS lease. DHCP is
-manual for now so the known static `net-dev` address remains the cold-boot
-recovery path until host-side discovery is implemented.
+also attempted automatically when `net listen` starts, and then retried while
+gateway/DNS are still missing. The known static `net-dev` address remains the
+early recovery address until DHCP succeeds.
 The same DHCP path is also exposed through the UDP `XJDH` control packet, used
 by `xjctl net-dhcp`, so DHCP can now be triggered over Ethernet without opening
 the UART shell.
@@ -211,7 +212,13 @@ logical table namespace (`table + row` mapped to the current `u32` B+tree key
 space), and an append-only event log. Host tools can verify the full path with
 `xjctl net-db-smoke`, or append one metadata-only event with `xjctl net-event`.
 The GCP maintenance bridge can now schedule these checks through
-`xjctl gcp-bridge` and the `xiaojin-maintainer` service. The next database
+`xjctl gcp-bridge` and the `xiaojin-maintainer` service. Xiaojin OS can also run
+a bounded device-side maintainer loop with
+`maint loop <if> <host|ip> <port> <poll-path> <event-path> <count> <interval-ms> confirm`;
+it reuses the signed `maint pull-exec` path, so a local maintainer HMAC key must
+already be provisioned and every executed query is audited in XiaojinDB. This is
+manual/bounded today; persistent cold-boot maintainer configuration is still a
+separate step. The next database
 infrastructure step for PostgreSQL backup is a XiaojinDB blob/import layer:
 the current fixed table and event log are enough for health events and small
 rows, but not for a complete GCP VM PostgreSQL backup or serving replacement.

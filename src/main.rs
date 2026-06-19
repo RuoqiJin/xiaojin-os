@@ -2079,6 +2079,8 @@ fn print_help(uart: &mut Uart) {
     uart.put_str("                       verify pending command digest and audit the result\n");
     uart.put_str("  maint pull-exec <if> <host|ip> <port> <poll-path> [event-path] confirm\n");
     uart.put_str("                       verify and execute one signed read-only xj_query\n");
+    uart.put_str("  maint loop <if> <host|ip> <port> <poll-path> <event-path> <count> <interval-ms> confirm\n");
+    uart.put_str("                       bounded device-side maintenance polling loop\n");
     uart.put_str("  maint key-status confirm\n");
     uart.put_str("  maint key-set <key-hex> confirm\n");
     uart.put_str("  maint key-clear confirm\n");
@@ -2236,6 +2238,7 @@ fn print_caps(uart: &mut Uart) {
     uart.put_str("  maint command-verify-hmac yes\n");
     uart.put_str("  maint local-hmac-key yes\n");
     uart.put_str("  maint pull-exec yes\n");
+    uart.put_str("  maint loop yes\n");
     uart.put_str("  maint ack-intent yes\n");
     uart.put_str("  maint remote-event yes\n");
     uart.put_str("  maint local-audit yes\n");
@@ -2260,7 +2263,7 @@ fn print_caps(uart: &mut Uart) {
 fn write_caps_query_summary<W: Write>(out: &mut W) {
     let _ = write!(
         out,
-        "XJQ OK caps net-dev=yes dhcp=yes auto-dhcp=yes route=yes arp=yes dns=yes tcp-connect=yes http-get=yes http-post=yes http-trace=yes http-debug=yes maint-poll=yes maint-status=yes maint-pending-summary=yes maint-command-digest=yes maint-command-verify=yes maint-command-verify-hmac=yes maint-local-hmac-key=yes maint-pull-exec=yes maint-ack-intent=yes maint-remote-event=yes maint-local-audit=yes identity=yes query=yes reboot=yes wifi=facts-only wifi-pcie=facts wifi-cru=read-only wifi-apb=read-only wifi-phy=read-only wifi-power=read-only wifi-link=read-only wifi-trace=confirm wifi-pcie-init=confirm wifi-pcie-init-high=confirm wifi-station=planned wifi-ap=planned sd-probe=yes sd-writer=yes ab-persist=yes boot-slot=extlinux db=page-store,catalog,wal,fixed-table,btree,table-namespace,event-log,blob-backup,blob-restore"
+        "XJQ OK caps net-dev=yes dhcp=yes auto-dhcp=yes route=yes arp=yes dns=yes tcp-connect=yes http-get=yes http-post=yes http-trace=yes http-debug=yes maint-poll=yes maint-status=yes maint-pending-summary=yes maint-command-digest=yes maint-command-verify=yes maint-command-verify-hmac=yes maint-local-hmac-key=yes maint-pull-exec=yes maint-loop=yes maint-ack-intent=yes maint-remote-event=yes maint-local-audit=yes identity=yes query=yes reboot=yes wifi=facts-only wifi-pcie=facts wifi-cru=read-only wifi-apb=read-only wifi-phy=read-only wifi-power=read-only wifi-link=read-only wifi-trace=confirm wifi-pcie-init=confirm wifi-pcie-init-high=confirm wifi-station=planned wifi-ap=planned sd-probe=yes sd-writer=yes ab-persist=yes boot-slot=extlinux db=page-store,catalog,wal,fixed-table,btree,table-namespace,event-log,blob-backup,blob-restore"
     );
 }
 
@@ -3178,6 +3181,17 @@ fn command_maint<'a>(uart: &mut Uart, parts: &mut core::str::SplitWhitespace<'a>
             parts.next(),
             parts.next(),
         ),
+        Some("loop") => command_maint_loop(
+            uart,
+            parts.next(),
+            parts.next(),
+            parts.next(),
+            parts.next(),
+            parts.next(),
+            parts.next(),
+            parts.next(),
+            parts.next(),
+        ),
         Some("key-status") => command_maint_key_status(uart, parts.next()),
         Some("key-set") => command_maint_key_set(uart, parts.next(), parts.next()),
         Some("key-clear") => command_maint_key_clear(uart, parts.next()),
@@ -3211,6 +3225,9 @@ fn command_maint<'a>(uart: &mut Uart, parts: &mut core::str::SplitWhitespace<'a>
             );
             uart.put_str(
                 "  maint pull-exec <pcie3x1|pcie3x2|0|1> <host|ip> <port> <poll-path> [event-path] confirm\n",
+            );
+            uart.put_str(
+                "  maint loop <pcie3x1|pcie3x2|0|1> <host|ip> <port> <poll-path> <event-path> <count> <interval-ms> confirm\n",
             );
             uart.put_str("  maint key-status confirm\n");
             uart.put_str("  maint key-set <key-hex> confirm\n");
@@ -10047,6 +10064,99 @@ fn command_maint_pull_exec(
         MaintHmacKey::Raw(&row.value[..row.value_len]),
     );
     uart.put_str("\n");
+}
+
+fn command_maint_loop(
+    uart: &mut Uart,
+    iface: Option<&str>,
+    host: Option<&str>,
+    port: Option<&str>,
+    poll_path: Option<&str>,
+    event_path: Option<&str>,
+    count: Option<&str>,
+    interval_ms: Option<&str>,
+    confirm: Option<&str>,
+) {
+    if confirm != Some("confirm") {
+        uart.put_str(
+            "usage: maint loop <pcie3x1|pcie3x2|0|1> <host|ip> <port> <poll-path> <event-path> <count> <interval-ms> confirm\n",
+        );
+        return;
+    }
+    let Some(iface) = iface else {
+        uart.put_str("missing interface\n");
+        return;
+    };
+    let Some(index) = parse_net_interface(iface) else {
+        uart.put_str("unknown interface; use pcie3x1, pcie3x2, 0, or 1\n");
+        return;
+    };
+    let Some(host) = host else {
+        uart.put_str("missing host\n");
+        return;
+    };
+    let Some(port) = port.and_then(parse_u16) else {
+        uart.put_str("missing or invalid TCP port\n");
+        return;
+    };
+    let Some(poll_path) = poll_path else {
+        uart.put_str("missing poll path\n");
+        return;
+    };
+    if !poll_path.starts_with('/') {
+        uart.put_str("poll path must start with '/'\n");
+        return;
+    }
+    let Some(event_path) = event_path else {
+        uart.put_str("missing event path\n");
+        return;
+    };
+    if !event_path.starts_with('/') {
+        uart.put_str("event path must start with '/'\n");
+        return;
+    }
+    let Some(count) = count.and_then(parse_u64) else {
+        uart.put_str("missing or invalid count\n");
+        return;
+    };
+    if !(1..=16).contains(&count) {
+        uart.put_str("count must be 1..16\n");
+        return;
+    }
+    let Some(interval_ms) = interval_ms.and_then(parse_u64) else {
+        uart.put_str("missing or invalid interval-ms\n");
+        return;
+    };
+    if !(1_000..=600_000).contains(&interval_ms) {
+        uart.put_str("interval-ms must be 1000..600000\n");
+        return;
+    }
+    let Ok(row) = get_maint_hmac_key_row() else {
+        uart.put_str("maint loop error: key-missing\n");
+        return;
+    };
+
+    let _ = writeln!(
+        uart,
+        "maint loop {} http://{host}:{port}{poll_path} -> {event_path} count={count} interval-ms={interval_ms}:",
+        PCIE_CONTROLLERS[index].name
+    );
+    for iteration in 1..=count {
+        let _ = writeln!(uart, "  iteration {iteration}/{count}:");
+        write_maint_pull_exec_summary(
+            uart,
+            index,
+            host,
+            port,
+            poll_path,
+            Some(event_path),
+            MaintHmacKey::Raw(&row.value[..row.value_len]),
+        );
+        uart.put_str("\n");
+        if iteration < count {
+            delay_ms(interval_ms);
+        }
+    }
 }
 
 fn command_maint_key_status(uart: &mut Uart, confirm: Option<&str>) {
