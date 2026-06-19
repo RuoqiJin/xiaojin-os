@@ -307,6 +307,9 @@ const DB_TABLE_RECORD_BYTES: usize = 32;
 const DB_TABLE_VALUE_BYTES: usize = 24;
 const DB_TABLE_RECORDS: u32 = 13;
 const DB_TABLE_RECORD_USED: u16 = 1;
+const DB_TABLE_NAMESPACE_ROW_BITS: u32 = 20;
+const DB_TABLE_NAMESPACE_ROW_MAX: u32 = (1u32 << DB_TABLE_NAMESPACE_ROW_BITS) - 1;
+const DB_TABLE_NAMESPACE_NAME_MAX: usize = 48;
 const DB_TABLE_KEY_MAINT_HMAC: u32 = 0x584a_4d48; // "XJMH"
 const DB_WAL_KIND_TEST: u32 = 1;
 const DB_WAL_KIND_PUT: u32 = 2;
@@ -2138,6 +2141,12 @@ fn print_help(uart: &mut Uart) {
     uart.put_str("                       read one key from the experimental B+tree\n");
     uart.put_str("  db bscan <start> <limit> confirm\n");
     uart.put_str("                       scan up to 8 B+tree rows in key order\n");
+    uart.put_str("  db nskey <table> <row> confirm\n");
+    uart.put_str("                       map logical table + row id to the u32 B+tree key\n");
+    uart.put_str("  db tput <table> <row> <value> confirm\n");
+    uart.put_str("                       upsert one logical table row through the B+tree\n");
+    uart.put_str("  db tget <table> <row> confirm\n");
+    uart.put_str("                       read one logical table row through the B+tree\n");
     uart.put_str("  db bleaf <page> confirm\n");
     uart.put_str("                       read one B+tree leaf header for diagnosis\n");
     uart.put_str("  db event-init confirm\n");
@@ -2240,6 +2249,7 @@ fn print_caps(uart: &mut Uart) {
     uart.put_str("  sd writer yes\n");
     uart.put_str("  db page-store yes\n");
     uart.put_str("  db btree yes\n");
+    uart.put_str("  db table-namespace yes\n");
     let _ = writeln!(uart, "  xload link-address 0x{LOAD_ADDR:016x}");
     let _ = writeln!(
         uart,
@@ -2250,7 +2260,7 @@ fn print_caps(uart: &mut Uart) {
 fn write_caps_query_summary<W: Write>(out: &mut W) {
     let _ = write!(
         out,
-        "XJQ OK caps net-dev=yes dhcp=yes auto-dhcp=yes route=yes arp=yes dns=yes tcp-connect=yes http-get=yes http-post=yes http-trace=yes http-debug=yes maint-poll=yes maint-status=yes maint-pending-summary=yes maint-command-digest=yes maint-command-verify=yes maint-command-verify-hmac=yes maint-local-hmac-key=yes maint-pull-exec=yes maint-ack-intent=yes maint-remote-event=yes maint-local-audit=yes identity=yes query=yes reboot=yes wifi=facts-only wifi-pcie=facts wifi-cru=read-only wifi-apb=read-only wifi-phy=read-only wifi-power=read-only wifi-link=read-only wifi-trace=confirm wifi-pcie-init=confirm wifi-pcie-init-high=confirm wifi-station=planned wifi-ap=planned sd-probe=yes sd-writer=yes ab-persist=yes boot-slot=extlinux db=page-store,catalog,wal,fixed-table,btree,event-log,blob-backup,blob-restore"
+        "XJQ OK caps net-dev=yes dhcp=yes auto-dhcp=yes route=yes arp=yes dns=yes tcp-connect=yes http-get=yes http-post=yes http-trace=yes http-debug=yes maint-poll=yes maint-status=yes maint-pending-summary=yes maint-command-digest=yes maint-command-verify=yes maint-command-verify-hmac=yes maint-local-hmac-key=yes maint-pull-exec=yes maint-ack-intent=yes maint-remote-event=yes maint-local-audit=yes identity=yes query=yes reboot=yes wifi=facts-only wifi-pcie=facts wifi-cru=read-only wifi-apb=read-only wifi-phy=read-only wifi-power=read-only wifi-link=read-only wifi-trace=confirm wifi-pcie-init=confirm wifi-pcie-init-high=confirm wifi-station=planned wifi-ap=planned sd-probe=yes sd-writer=yes ab-persist=yes boot-slot=extlinux db=page-store,catalog,wal,fixed-table,btree,table-namespace,event-log,blob-backup,blob-restore"
     );
 }
 
@@ -4345,6 +4355,40 @@ fn command_db<'a>(uart: &mut Uart, parts: &mut core::str::SplitWhitespace<'a>) {
                 print_db_bscan(uart, start, limit);
             }
         }
+        Some("nskey") => {
+            let table = parts.next();
+            let row = parts.next();
+            let confirm = parts.next();
+            if confirm != Some("confirm") {
+                uart.put_str("usage: db nskey <table> <row> confirm\n");
+                uart.put_str("scope: map logical table + row id to a u32 B+tree key\n");
+            } else {
+                print_db_nskey(uart, table, row);
+            }
+        }
+        Some("tput") => {
+            let table = parts.next();
+            let row = parts.next();
+            let value = parts.next();
+            let confirm = parts.next();
+            if confirm != Some("confirm") {
+                uart.put_str("usage: db tput <table> <row> <value> confirm\n");
+                uart.put_str("scope: WAL-log and upsert one logical table row\n");
+            } else {
+                print_db_tput(uart, table, row, value);
+            }
+        }
+        Some("tget") => {
+            let table = parts.next();
+            let row = parts.next();
+            let confirm = parts.next();
+            if confirm != Some("confirm") {
+                uart.put_str("usage: db tget <table> <row> confirm\n");
+                uart.put_str("scope: read one logical table row\n");
+            } else {
+                print_db_tget(uart, table, row);
+            }
+        }
         Some("bleaf") => {
             let page = parts.next();
             let confirm = parts.next();
@@ -4418,6 +4462,9 @@ fn command_db<'a>(uart: &mut Uart, parts: &mut core::str::SplitWhitespace<'a>) {
             uart.put_str("  db bput <key> <value> confirm\n");
             uart.put_str("  db bget <key> confirm\n");
             uart.put_str("  db bscan <start> <limit> confirm\n");
+            uart.put_str("  db nskey <table> <row> confirm\n");
+            uart.put_str("  db tput <table> <row> <value> confirm\n");
+            uart.put_str("  db tget <table> <row> confirm\n");
             uart.put_str("  db bleaf <page> confirm\n");
             uart.put_str("  db event-init confirm\n");
             uart.put_str("  db event-status confirm\n");
@@ -4838,6 +4885,10 @@ fn print_db_facts<W: Write>(out: &mut W) {
     );
     let _ = writeln!(
         out,
+        "  namespace        table hash bucket + {DB_TABLE_NAMESPACE_ROW_BITS}-bit row id, max row {DB_TABLE_NAMESPACE_ROW_MAX}"
+    );
+    let _ = writeln!(
+        out,
         "  blob backup      meta page {DB_BLOB_META_PAGE}, data starts at page {DB_BLOB_START_PAGE}"
     );
 }
@@ -5074,6 +5125,89 @@ fn print_db_bscan<W: Write>(out: &mut W, start: Option<&str>, limit: Option<&str
         }
         Err(error) => {
             let _ = writeln!(out, "db bscan error: {}", error.as_str());
+        }
+    }
+}
+
+fn print_db_nskey<W: Write>(out: &mut W, table: Option<&str>, row: Option<&str>) {
+    let Some(table) = table else {
+        uart_like_usage(out, "db nskey <table> <row> confirm");
+        return;
+    };
+    let Some(row) = row.and_then(parse_u64) else {
+        uart_like_usage(out, "db nskey <table> <row> confirm");
+        return;
+    };
+    match db_table_namespace_key(table, row) {
+        Some((bucket, key)) => {
+            let _ = writeln!(out, "db nskey ok:");
+            write_db_namespace_key_details(out, "  ", table, row as u32, bucket, key);
+        }
+        None => {
+            let _ = writeln!(out, "db nskey error: bad-table-or-row");
+        }
+    }
+}
+
+fn print_db_tput<W: Write>(
+    out: &mut W,
+    table: Option<&str>,
+    row: Option<&str>,
+    value: Option<&str>,
+) {
+    let Some(table) = table else {
+        uart_like_usage(out, "db tput <table> <row> <value> confirm");
+        return;
+    };
+    let Some(row) = row.and_then(parse_u64) else {
+        uart_like_usage(out, "db tput <table> <row> <value> confirm");
+        return;
+    };
+    let Some(value) = value else {
+        uart_like_usage(out, "db tput <table> <row> <value> confirm");
+        return;
+    };
+    let Some((bucket, key)) = db_table_namespace_key(table, row) else {
+        let _ = writeln!(out, "db tput error: bad-table-or-row");
+        return;
+    };
+    match put_db_btree_row(key, value.as_bytes()) {
+        Ok((_info, _catalog, root, leaf, db_row)) => {
+            let _ = writeln!(out, "db tput ok:");
+            write_db_namespace_key_details(out, "  ", table, row as u32, bucket, key);
+            write_db_btree_root_details(out, "  ", root);
+            write_db_btree_leaf_details(out, "  ", leaf);
+            write_db_row_details(out, "  ", db_row);
+        }
+        Err(error) => {
+            let _ = writeln!(out, "db tput error: {}", error.as_str());
+        }
+    }
+}
+
+fn print_db_tget<W: Write>(out: &mut W, table: Option<&str>, row: Option<&str>) {
+    let Some(table) = table else {
+        uart_like_usage(out, "db tget <table> <row> confirm");
+        return;
+    };
+    let Some(row) = row.and_then(parse_u64) else {
+        uart_like_usage(out, "db tget <table> <row> confirm");
+        return;
+    };
+    let Some((bucket, key)) = db_table_namespace_key(table, row) else {
+        let _ = writeln!(out, "db tget error: bad-table-or-row");
+        return;
+    };
+    match get_db_btree_row(key) {
+        Ok((_info, _catalog, root, leaf, db_row)) => {
+            let _ = writeln!(out, "db tget ok:");
+            write_db_namespace_key_details(out, "  ", table, row as u32, bucket, key);
+            write_db_btree_root_details(out, "  ", root);
+            write_db_btree_leaf_details(out, "  ", leaf);
+            write_db_row_details(out, "  ", db_row);
+        }
+        Err(error) => {
+            let _ = writeln!(out, "db tget error: {}", error.as_str());
         }
     }
 }
@@ -5416,6 +5550,104 @@ fn write_db_bscan_query_summary<W: Write>(query: &str, out: &mut W) {
             write_db_btree_scan_summary_inner(out, scan);
         }
         Err(error) => write_db_error_summary(out, "bscan", error),
+    }
+}
+
+fn write_db_nskey_query_summary<W: Write>(query: &str, out: &mut W) {
+    let mut parts = query.split_whitespace();
+    let _db = parts.next();
+    let _nskey = parts.next();
+    let Some(table) = parts.next() else {
+        let _ = write!(out, "XJQ ERR db-nskey usage");
+        return;
+    };
+    let Some(row) = parts.next().and_then(parse_u64) else {
+        let _ = write!(out, "XJQ ERR db-nskey usage");
+        return;
+    };
+    if parts.next() != Some("confirm") {
+        let _ = write!(out, "XJQ ERR db-nskey usage");
+        return;
+    }
+    let Some((bucket, key)) = db_table_namespace_key(table, row) else {
+        let _ = write!(out, "XJQ ERR db-nskey bad-table-or-row");
+        return;
+    };
+    let _ = write!(out, "XJQ OK ");
+    write_db_namespace_key_summary_inner(out, table, row as u32, bucket, key);
+}
+
+fn write_db_tput_query_summary<W: Write>(query: &str, out: &mut W) {
+    let mut parts = query.split_whitespace();
+    let _db = parts.next();
+    let _tput = parts.next();
+    let Some(table) = parts.next() else {
+        let _ = write!(out, "XJQ ERR db-tput usage");
+        return;
+    };
+    let Some(row) = parts.next().and_then(parse_u64) else {
+        let _ = write!(out, "XJQ ERR db-tput usage");
+        return;
+    };
+    let Some(value) = parts.next() else {
+        let _ = write!(out, "XJQ ERR db-tput usage");
+        return;
+    };
+    if parts.next() != Some("confirm") {
+        let _ = write!(out, "XJQ ERR db-tput usage");
+        return;
+    }
+    let Some((bucket, key)) = db_table_namespace_key(table, row) else {
+        let _ = write!(out, "XJQ ERR db-tput bad-table-or-row");
+        return;
+    };
+    match put_db_btree_row(key, value.as_bytes()) {
+        Ok((_info, _catalog, root, leaf, db_row)) => {
+            let _ = write!(out, "XJQ OK ");
+            write_db_namespace_key_summary_inner(out, table, row as u32, bucket, key);
+            let _ = write!(out, " ");
+            write_db_btree_root_summary_inner(out, root);
+            let _ = write!(out, " ");
+            write_db_btree_leaf_summary_inner(out, leaf);
+            let _ = write!(out, " ");
+            write_db_row_summary_inner(out, db_row);
+        }
+        Err(error) => write_db_error_summary(out, "tput", error),
+    }
+}
+
+fn write_db_tget_query_summary<W: Write>(query: &str, out: &mut W) {
+    let mut parts = query.split_whitespace();
+    let _db = parts.next();
+    let _tget = parts.next();
+    let Some(table) = parts.next() else {
+        let _ = write!(out, "XJQ ERR db-tget usage");
+        return;
+    };
+    let Some(row) = parts.next().and_then(parse_u64) else {
+        let _ = write!(out, "XJQ ERR db-tget usage");
+        return;
+    };
+    if parts.next() != Some("confirm") {
+        let _ = write!(out, "XJQ ERR db-tget usage");
+        return;
+    }
+    let Some((bucket, key)) = db_table_namespace_key(table, row) else {
+        let _ = write!(out, "XJQ ERR db-tget bad-table-or-row");
+        return;
+    };
+    match get_db_btree_row(key) {
+        Ok((_info, _catalog, root, leaf, db_row)) => {
+            let _ = write!(out, "XJQ OK ");
+            write_db_namespace_key_summary_inner(out, table, row as u32, bucket, key);
+            let _ = write!(out, " ");
+            write_db_btree_root_summary_inner(out, root);
+            let _ = write!(out, " ");
+            write_db_btree_leaf_summary_inner(out, leaf);
+            let _ = write!(out, " ");
+            write_db_row_summary_inner(out, db_row);
+        }
+        Err(error) => write_db_error_summary(out, "tget", error),
     }
 }
 
@@ -5799,6 +6031,35 @@ fn write_db_btree_scan_summary_inner<W: Write>(out: &mut W, scan: DbBtreeScan) {
         let _ = write!(out, " row{index}=");
         write_db_row_pair(out, scan.rows[index]);
     }
+}
+
+fn write_db_namespace_key_details<W: Write>(
+    out: &mut W,
+    prefix: &str,
+    table: &str,
+    row: u32,
+    bucket: u32,
+    key: u32,
+) {
+    let _ = writeln!(
+        out,
+        "{prefix}namespace table={} row={} bucket={} key={}",
+        table, row, bucket, key
+    );
+}
+
+fn write_db_namespace_key_summary_inner<W: Write>(
+    out: &mut W,
+    table: &str,
+    row: u32,
+    bucket: u32,
+    key: u32,
+) {
+    let _ = write!(
+        out,
+        "db-nskey table={} row={} bucket={} key={}",
+        table, row, bucket, key
+    );
 }
 
 fn write_db_event_meta_details<W: Write>(out: &mut W, prefix: &str, meta: DbEventMeta) {
@@ -8064,6 +8325,23 @@ fn read_table_row(block: &[u8; SD_BLOCK_BYTES], slot: usize) -> Option<DbRowValu
     })
 }
 
+fn db_table_namespace_key(table: &str, row: u64) -> Option<(u32, u32)> {
+    if row > DB_TABLE_NAMESPACE_ROW_MAX as u64 || !db_table_namespace_name_valid(table) {
+        return None;
+    }
+    let bucket = crc32_bytes(table.as_bytes()) >> DB_TABLE_NAMESPACE_ROW_BITS;
+    let key = (bucket << DB_TABLE_NAMESPACE_ROW_BITS) | row as u32;
+    Some((bucket, key))
+}
+
+fn db_table_namespace_name_valid(table: &str) -> bool {
+    !table.is_empty()
+        && table.len() <= DB_TABLE_NAMESPACE_NAME_MAX
+        && table
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-' | b'.'))
+}
+
 fn db_superblock_crc(block: &[u8; SD_BLOCK_BYTES]) -> u32 {
     db_page_crc(block)
 }
@@ -8077,6 +8355,14 @@ fn db_page_crc(block: &[u8; SD_BLOCK_BYTES]) -> u32 {
 }
 
 fn db_payload_crc(payload: &[u8]) -> u32 {
+    let mut crc = 0xffff_ffffu32;
+    for &byte in payload {
+        crc = crc32_update(crc, byte);
+    }
+    !crc
+}
+
+fn crc32_bytes(payload: &[u8]) -> u32 {
     let mut crc = 0xffff_ffffu32;
     for &byte in payload {
         crc = crc32_update(crc, byte);
@@ -10955,6 +11241,8 @@ fn is_public_xj_query(query: &[u8]) -> bool {
     ]
     .iter()
     .any(|allowed| query.eq_ignore_ascii_case(allowed))
+        || query.starts_with("db nskey ")
+        || query.starts_with("db tget ")
 }
 
 fn write_public_xj_query_result<W: Write>(query: &str, out: &mut W) -> bool {
@@ -10970,7 +11258,7 @@ fn write_public_xj_query_result<W: Write>(query: &str, out: &mut W) -> bool {
     } else if query.eq_ignore_ascii_case("db facts") {
         let _ = write!(
             out,
-            "XJQ OK db-facts file={DB_FILE_NAME_STR} page-bytes={DB_PAGE_BYTES} superblock=0 catalog={DB_ROOT_CATALOG_PAGE} wal-start={DB_WAL_START_PAGE} wal-pages={DB_WAL_PAGE_COUNT} table-root={DB_TABLE_ROOT_PAGE} table-records={DB_TABLE_RECORDS} btree-root={DB_BTREE_ROOT_PAGE} btree-leaf-start={DB_BTREE_LEAF_START_PAGE} btree-leaves={DB_BTREE_LEAF_COUNT} event-meta={DB_EVENT_META_PAGE} event-start={DB_EVENT_START_PAGE} event-pages={DB_EVENT_PAGE_COUNT} blob-meta={DB_BLOB_META_PAGE} blob-start={DB_BLOB_START_PAGE} value-bytes={DB_TABLE_VALUE_BYTES} persistence=preallocated-fat32"
+            "XJQ OK db-facts file={DB_FILE_NAME_STR} page-bytes={DB_PAGE_BYTES} superblock=0 catalog={DB_ROOT_CATALOG_PAGE} wal-start={DB_WAL_START_PAGE} wal-pages={DB_WAL_PAGE_COUNT} table-root={DB_TABLE_ROOT_PAGE} table-records={DB_TABLE_RECORDS} btree-root={DB_BTREE_ROOT_PAGE} btree-leaf-start={DB_BTREE_LEAF_START_PAGE} btree-leaves={DB_BTREE_LEAF_COUNT} namespace-row-bits={DB_TABLE_NAMESPACE_ROW_BITS} namespace-row-max={DB_TABLE_NAMESPACE_ROW_MAX} event-meta={DB_EVENT_META_PAGE} event-start={DB_EVENT_START_PAGE} event-pages={DB_EVENT_PAGE_COUNT} blob-meta={DB_BLOB_META_PAGE} blob-start={DB_BLOB_START_PAGE} value-bytes={DB_TABLE_VALUE_BYTES} persistence=preallocated-fat32"
         );
     } else if query.eq_ignore_ascii_case("db status")
         || query.eq_ignore_ascii_case("db status confirm")
@@ -10984,6 +11272,10 @@ fn write_public_xj_query_result<W: Write>(query: &str, out: &mut W) -> bool {
         || query.eq_ignore_ascii_case("db event-status confirm")
     {
         write_db_event_status_summary(out);
+    } else if query.starts_with("db nskey ") {
+        write_db_nskey_query_summary(query, out);
+    } else if query.starts_with("db tget ") {
+        write_db_tget_query_summary(query, out);
     } else if query.eq_ignore_ascii_case("maint key-status")
         || query.eq_ignore_ascii_case("maint key-status confirm")
     {
@@ -14478,7 +14770,7 @@ fn net_handle_query_packet(
             } else if query.eq_ignore_ascii_case("db facts") {
                 let _ = write!(
                 reply,
-                "XJQ OK db-facts file={DB_FILE_NAME_STR} page-bytes={DB_PAGE_BYTES} superblock=0 catalog={DB_ROOT_CATALOG_PAGE} wal-start={DB_WAL_START_PAGE} wal-pages={DB_WAL_PAGE_COUNT} table-root={DB_TABLE_ROOT_PAGE} table-records={DB_TABLE_RECORDS} btree-root={DB_BTREE_ROOT_PAGE} btree-leaf-start={DB_BTREE_LEAF_START_PAGE} btree-leaves={DB_BTREE_LEAF_COUNT} event-meta={DB_EVENT_META_PAGE} event-start={DB_EVENT_START_PAGE} event-pages={DB_EVENT_PAGE_COUNT} blob-meta={DB_BLOB_META_PAGE} blob-start={DB_BLOB_START_PAGE} value-bytes={DB_TABLE_VALUE_BYTES} persistence=preallocated-fat32"
+                "XJQ OK db-facts file={DB_FILE_NAME_STR} page-bytes={DB_PAGE_BYTES} superblock=0 catalog={DB_ROOT_CATALOG_PAGE} wal-start={DB_WAL_START_PAGE} wal-pages={DB_WAL_PAGE_COUNT} table-root={DB_TABLE_ROOT_PAGE} table-records={DB_TABLE_RECORDS} btree-root={DB_BTREE_ROOT_PAGE} btree-leaf-start={DB_BTREE_LEAF_START_PAGE} btree-leaves={DB_BTREE_LEAF_COUNT} namespace-row-bits={DB_TABLE_NAMESPACE_ROW_BITS} namespace-row-max={DB_TABLE_NAMESPACE_ROW_MAX} event-meta={DB_EVENT_META_PAGE} event-start={DB_EVENT_START_PAGE} event-pages={DB_EVENT_PAGE_COUNT} blob-meta={DB_BLOB_META_PAGE} blob-start={DB_BLOB_START_PAGE} value-bytes={DB_TABLE_VALUE_BYTES} persistence=preallocated-fat32"
             );
             } else if query.eq_ignore_ascii_case("db status")
                 || query.eq_ignore_ascii_case("db status confirm")
@@ -14528,6 +14820,12 @@ fn net_handle_query_packet(
                 write_db_bget_query_summary(query, &mut reply);
             } else if query.starts_with("db bscan ") {
                 write_db_bscan_query_summary(query, &mut reply);
+            } else if query.starts_with("db nskey ") {
+                write_db_nskey_query_summary(query, &mut reply);
+            } else if query.starts_with("db tput ") {
+                write_db_tput_query_summary(query, &mut reply);
+            } else if query.starts_with("db tget ") {
+                write_db_tget_query_summary(query, &mut reply);
             } else if query.starts_with("db bleaf ") {
                 write_db_bleaf_query_summary(query, &mut reply);
             } else if query.eq_ignore_ascii_case("db event-init")

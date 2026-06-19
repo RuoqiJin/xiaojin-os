@@ -92,6 +92,9 @@ Available commands:
 - `db bput <key> <value> confirm`
 - `db bget <key> confirm`
 - `db bscan <start> <limit> confirm`
+- `db nskey <table> <row> confirm`
+- `db tput <table> <row> <value> confirm`
+- `db tget <table> <row> confirm`
 - `db bleaf <page> confirm`
 - `db event-init confirm`
 - `db event-status confirm`
@@ -203,8 +206,9 @@ UART shell for every probe.
 
 XiaojinDB is a preallocated FAT32 page-file database in `/xiaojin-db.dat`.
 Current storage primitives include a superblock, catalog, circular WAL pages, a
-fixed-size key/value table, an experimental B+tree over 512-byte pages, and an
-append-only event log. Host tools can verify the full path with
+fixed-size key/value table, an experimental B+tree over 512-byte pages, a stable
+logical table namespace (`table + row` mapped to the current `u32` B+tree key
+space), and an append-only event log. Host tools can verify the full path with
 `xjctl net-db-smoke`, or append one metadata-only event with `xjctl net-event`.
 The GCP maintenance bridge can now schedule these checks through
 `xjctl gcp-bridge` and the `xiaojin-maintainer` service. The next database
