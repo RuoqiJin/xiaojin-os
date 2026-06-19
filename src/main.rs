@@ -2068,6 +2068,7 @@ fn print_help(uart: &mut Uart) {
     uart.put_str("  maint audit <if> <host|ip> <port> <path> confirm\n");
     uart.put_str("                       append maintainer status summary into XiaojinDB events\n");
     uart.put_str("  maint verify <if> <host|ip> <port> <path> confirm\n");
+    uart.put_str("  maint verify-hmac <if> <host|ip> <port> <path> <key-hex> confirm\n");
     uart.put_str("                       verify pending command digest and audit the result\n");
     uart.put_str("  maint ack-intent <if> <host|ip> <port> <poll-path> <event-path> confirm\n");
     uart.put_str(
@@ -2214,6 +2215,7 @@ fn print_caps(uart: &mut Uart) {
     uart.put_str("  maint pending-summary yes\n");
     uart.put_str("  maint command-digest yes\n");
     uart.put_str("  maint command-verify yes\n");
+    uart.put_str("  maint command-verify-hmac yes\n");
     uart.put_str("  maint ack-intent yes\n");
     uart.put_str("  maint remote-event yes\n");
     uart.put_str("  maint local-audit yes\n");
@@ -3122,6 +3124,15 @@ fn command_maint<'a>(uart: &mut Uart, parts: &mut core::str::SplitWhitespace<'a>
             parts.next(),
             parts.next(),
         ),
+        Some("verify-hmac") => command_maint_verify_hmac(
+            uart,
+            parts.next(),
+            parts.next(),
+            parts.next(),
+            parts.next(),
+            parts.next(),
+            parts.next(),
+        ),
         Some("ack-intent") => command_maint_ack_intent(
             uart,
             parts.next(),
@@ -3146,6 +3157,7 @@ fn command_maint<'a>(uart: &mut Uart, parts: &mut core::str::SplitWhitespace<'a>
             uart.put_str("  maint status <pcie3x1|pcie3x2|0|1> <host|ip> <port> <path> confirm\n");
             uart.put_str("  maint audit <pcie3x1|pcie3x2|0|1> <host|ip> <port> <path> confirm\n");
             uart.put_str("  maint verify <pcie3x1|pcie3x2|0|1> <host|ip> <port> <path> confirm\n");
+            uart.put_str("  maint verify-hmac <pcie3x1|pcie3x2|0|1> <host|ip> <port> <path> <key-hex> confirm\n");
             uart.put_str(
                 "  maint ack-intent <pcie3x1|pcie3x2|0|1> <host|ip> <port> <poll-path> <event-path> confirm\n",
             );
@@ -3737,7 +3749,51 @@ fn write_maint_verify_query_summary<W: Write>(default_index: usize, query: &str,
         return;
     };
 
-    write_maint_verify_summary(out, index, host, port, path);
+    write_maint_verify_summary(out, index, host, port, path, None);
+}
+
+fn write_maint_verify_hmac_query_summary<W: Write>(default_index: usize, query: &str, out: &mut W) {
+    let mut parts = query.split_whitespace();
+    let _maint = parts.next();
+    if parts.next() != Some("verify-hmac") {
+        let _ = write!(out, "XJQ ERR maint-verify-hmac-usage");
+        return;
+    }
+    let Some(first) = parts.next() else {
+        let _ = write!(out, "XJQ ERR maint-verify-hmac-usage");
+        return;
+    };
+    let (index, host) = if let Some(index) = parse_net_interface(first) {
+        let Some(host) = parts.next() else {
+            let _ = write!(out, "XJQ ERR maint-verify-hmac-usage");
+            return;
+        };
+        (index, host)
+    } else {
+        (default_index, first)
+    };
+    let Some(port_text) = parts.next() else {
+        let _ = write!(out, "XJQ ERR maint-verify-hmac-usage");
+        return;
+    };
+    let Some(path) = parts.next() else {
+        let _ = write!(out, "XJQ ERR maint-verify-hmac-usage");
+        return;
+    };
+    let Some(key_hex) = parts.next() else {
+        let _ = write!(out, "XJQ ERR maint-verify-hmac-usage");
+        return;
+    };
+    if parts.next() != Some("confirm") || parts.next().is_some() {
+        let _ = write!(out, "XJQ ERR maint-verify-hmac-usage");
+        return;
+    }
+    let Some(port) = parse_u16(port_text) else {
+        let _ = write!(out, "XJQ ERR maint-verify-hmac-port");
+        return;
+    };
+
+    write_maint_verify_summary(out, index, host, port, path, Some(key_hex));
 }
 
 fn write_maint_ack_intent_query_summary<W: Write>(default_index: usize, query: &str, out: &mut W) {
@@ -9217,7 +9273,56 @@ fn command_maint_verify(
         "maint verify {} http://{host}:{port}{path}:",
         PCIE_CONTROLLERS[index].name
     );
-    write_maint_verify_summary(uart, index, host, port, path);
+    write_maint_verify_summary(uart, index, host, port, path, None);
+    uart.put_str("\n");
+}
+
+fn command_maint_verify_hmac(
+    uart: &mut Uart,
+    iface: Option<&str>,
+    host: Option<&str>,
+    port: Option<&str>,
+    path: Option<&str>,
+    key_hex: Option<&str>,
+    confirm: Option<&str>,
+) {
+    if confirm != Some("confirm") {
+        uart.put_str(
+            "usage: maint verify-hmac <pcie3x1|pcie3x2|0|1> <host|ip> <port> <path> <key-hex> confirm\n",
+        );
+        return;
+    }
+    let Some(iface) = iface else {
+        uart.put_str("missing interface\n");
+        return;
+    };
+    let Some(index) = parse_net_interface(iface) else {
+        uart.put_str("unknown interface; use pcie3x1, pcie3x2, 0, or 1\n");
+        return;
+    };
+    let Some(host) = host else {
+        uart.put_str("missing host\n");
+        return;
+    };
+    let Some(port) = port.and_then(parse_u16) else {
+        uart.put_str("missing or invalid TCP port\n");
+        return;
+    };
+    let Some(path) = path else {
+        uart.put_str("missing path\n");
+        return;
+    };
+    let Some(key_hex) = key_hex else {
+        uart.put_str("missing HMAC key hex\n");
+        return;
+    };
+
+    let _ = writeln!(
+        uart,
+        "maint verify-hmac {} http://{host}:{port}{path}:",
+        PCIE_CONTROLLERS[index].name
+    );
+    write_maint_verify_summary(uart, index, host, port, path, Some(key_hex));
     uart.put_str("\n");
 }
 
@@ -9808,6 +9913,7 @@ fn write_maint_verify_summary<W: Write>(
     host: &str,
     port: u16,
     path: &str,
+    hmac_key_hex: Option<&str>,
 ) {
     match net_http_get(index, host, port, path, HTTP_TIMEOUT_MS) {
         Ok(result) => {
@@ -9822,6 +9928,10 @@ fn write_maint_verify_summary<W: Write>(
             let kind = find_maint_text_field(body, b"next_pending_command_kind");
             let payload_sha = find_maint_text_field(body, b"next_pending_payload_sha256");
             let command_sha = find_maint_text_field(body, b"next_pending_command_sha256");
+            let signature_algorithm =
+                find_maint_text_field(body, b"next_pending_signature_algorithm");
+            let signature_sha = find_maint_text_field(body, b"next_pending_signature_sha256");
+            let signature_present = find_maint_text_field(body, b"next_pending_signature_present");
 
             let mut calculated = [0u8; 32];
             let (pending, digest_ok, digest_calculated, reason) =
@@ -9847,6 +9957,36 @@ fn write_maint_verify_summary<W: Write>(
                     }
                     _ => (true, false, false, "missing-field"),
                 };
+            let mut signature_calculated = [0u8; 32];
+            let (signature_checked, signature_ok, signature_calculated_valid, signature_reason) =
+                if let Some(key_hex) = hmac_key_hex {
+                    match maint_hmac_signature_digest(command_sha, signature_algorithm, key_hex) {
+                        MaintHmacCheckInput::NoPending => (true, false, false, "no-pending"),
+                        MaintHmacCheckInput::DigestNotOk => (true, false, false, "digest-not-ok"),
+                        MaintHmacCheckInput::BadKey => (true, false, false, "bad-key"),
+                        MaintHmacCheckInput::BadAlgorithm => (true, false, false, "bad-algorithm"),
+                        MaintHmacCheckInput::Calculated(digest) => {
+                            signature_calculated = digest;
+                            match (signature_present, signature_sha) {
+                                (Some(present), _) if !ascii_eq(present, b"yes") => {
+                                    (true, false, true, "signature-missing")
+                                }
+                                (_, Some(signature_sha))
+                                    if sha256_hex_matches(&signature_calculated, signature_sha) =>
+                                {
+                                    (true, true, true, "ok")
+                                }
+                                (_, Some(signature_sha)) if !is_sha256_hex(signature_sha) => {
+                                    (true, false, true, "bad-signature-sha")
+                                }
+                                (_, Some(_)) => (true, false, true, "signature-mismatch"),
+                                _ => (true, false, true, "missing-signature-sha"),
+                            }
+                        }
+                    }
+                } else {
+                    (false, false, false, "not-requested")
+                };
 
             let mut event = NetReplyBuf::new();
             let _ = write!(
@@ -9868,6 +10008,16 @@ fn write_maint_verify_summary<W: Write>(
                 yes_no(digest_ok),
                 reason
             );
+            if signature_checked {
+                let _ = write!(
+                    event,
+                    "sig-check=yes sig-ok={} sig-reason={} ",
+                    yes_no(signature_ok),
+                    signature_reason
+                );
+            } else {
+                let _ = write!(event, "sig-check=no sig-ok=no sig-reason=not-requested ");
+            }
             write_maint_compact_field(&mut event, "device_id", body, b"device_id");
             write_maint_compact_field(&mut event, "command_id", body, b"next_pending_command_id");
             write_maint_compact_field(&mut event, "kind", body, b"next_pending_command_kind");
@@ -9880,12 +10030,6 @@ fn write_maint_verify_summary<W: Write>(
             write_maint_compact_field(&mut event, "signer", body, b"next_pending_signer_id");
             write_maint_compact_field(&mut event, "sigsha", body, b"next_pending_signature_sha256");
             write_maint_compact_field(&mut event, "sigp", body, b"next_pending_signature_present");
-            let _ = write!(event, "calculated=");
-            if digest_calculated {
-                write_sha256_hex(&mut event, &calculated);
-            } else {
-                let _ = write!(event, "none");
-            }
 
             if event.as_slice().len() > DB_EVENT_PAYLOAD_BYTES {
                 let _ = write!(
@@ -9931,8 +10075,22 @@ fn write_maint_verify_summary<W: Write>(
                     write_maint_field(out, body, b"next_pending_payload_sha256");
                     write_maint_field(out, body, b"next_pending_command_sha256");
                     write_maint_field(out, body, b"next_pending_signer_id");
+                    write_maint_field(out, body, b"next_pending_signature_algorithm");
                     write_maint_field(out, body, b"next_pending_signature_sha256");
                     write_maint_field(out, body, b"next_pending_signature_present");
+                    let _ = write!(
+                        out,
+                        "signature-checked={} signature-ok={} signature-reason={} signature-calculated=",
+                        yes_no(signature_checked),
+                        yes_no(signature_ok),
+                        signature_reason
+                    );
+                    if signature_calculated_valid {
+                        write_sha256_hex(out, &signature_calculated);
+                    } else {
+                        let _ = write!(out, "none");
+                    }
+                    let _ = write!(out, " ");
                     let _ = write!(out, "calculated=");
                     if digest_calculated {
                         write_sha256_hex(out, &calculated);
@@ -13308,7 +13466,7 @@ fn net_handle_query_packet(
             } else if query.eq_ignore_ascii_case("caps") {
                 let _ = write!(
                 reply,
-                "XJQ OK caps net-dev=yes dhcp=yes auto-dhcp=yes route=yes arp=yes dns=yes tcp-connect=yes http-get=yes http-post=yes http-trace=yes http-debug=yes maint-poll=yes maint-status=yes maint-pending-summary=yes maint-command-digest=yes maint-command-verify=yes maint-ack-intent=yes maint-remote-event=yes maint-local-audit=yes identity=yes query=yes reboot=yes wifi=facts-only wifi-pcie=facts wifi-cru=read-only wifi-apb=read-only wifi-phy=read-only wifi-power=read-only wifi-link=read-only wifi-trace=confirm wifi-pcie-init=confirm wifi-pcie-init-high=confirm wifi-station=planned wifi-ap=planned sd-probe=yes sd-writer=yes ab-persist=yes boot-slot=extlinux db=page-store,catalog,wal,fixed-table,btree,event-log,blob-backup,blob-restore"
+                "XJQ OK caps net-dev=yes dhcp=yes auto-dhcp=yes route=yes arp=yes dns=yes tcp-connect=yes http-get=yes http-post=yes http-trace=yes http-debug=yes maint-poll=yes maint-status=yes maint-pending-summary=yes maint-command-digest=yes maint-command-verify=yes maint-command-verify-hmac=yes maint-ack-intent=yes maint-remote-event=yes maint-local-audit=yes identity=yes query=yes reboot=yes wifi=facts-only wifi-pcie=facts wifi-cru=read-only wifi-apb=read-only wifi-phy=read-only wifi-power=read-only wifi-link=read-only wifi-trace=confirm wifi-pcie-init=confirm wifi-pcie-init-high=confirm wifi-station=planned wifi-ap=planned sd-probe=yes sd-writer=yes ab-persist=yes boot-slot=extlinux db=page-store,catalog,wal,fixed-table,btree,event-log,blob-backup,blob-restore"
             );
             } else if query.eq_ignore_ascii_case("identity")
                 || query.eq_ignore_ascii_case("identity facts")
@@ -13339,6 +13497,8 @@ fn net_handle_query_packet(
                 write_maint_status_query_summary(index, query, &mut reply);
             } else if query.starts_with("maint audit ") {
                 write_maint_audit_query_summary(index, query, &mut reply);
+            } else if query.starts_with("maint verify-hmac ") {
+                write_maint_verify_hmac_query_summary(index, query, &mut reply);
             } else if query.starts_with("maint verify ") {
                 write_maint_verify_query_summary(index, query, &mut reply);
             } else if query.starts_with("maint ack-intent ") {
@@ -16628,6 +16788,132 @@ fn maint_command_digest(command_id: &[u8], kind: &[u8], payload_sha256: &[u8]) -
         }
     }
     Some(sha256_digest(canonical.as_slice()))
+}
+
+enum MaintHmacCheckInput {
+    NoPending,
+    DigestNotOk,
+    BadKey,
+    BadAlgorithm,
+    Calculated([u8; 32]),
+}
+
+fn maint_hmac_signature_digest(
+    command_sha: Option<&[u8]>,
+    signature_algorithm: Option<&[u8]>,
+    key_hex: &str,
+) -> MaintHmacCheckInput {
+    let Some(command_sha) = command_sha.map(trim_ascii_whitespace) else {
+        return MaintHmacCheckInput::DigestNotOk;
+    };
+    if ascii_eq(command_sha, b"none") {
+        return MaintHmacCheckInput::NoPending;
+    }
+    if !is_sha256_hex(command_sha) {
+        return MaintHmacCheckInput::DigestNotOk;
+    }
+    let Some(signature_algorithm) = signature_algorithm.map(trim_ascii_whitespace) else {
+        return MaintHmacCheckInput::BadAlgorithm;
+    };
+    if !ascii_eq(signature_algorithm, b"xiaojin-hmac-sha256-v1") {
+        return MaintHmacCheckInput::BadAlgorithm;
+    }
+
+    let mut key = [0u8; 128];
+    let Some(key_len) = decode_hex_to_buf(key_hex.as_bytes(), &mut key) else {
+        return MaintHmacCheckInput::BadKey;
+    };
+    if key_len == 0 {
+        return MaintHmacCheckInput::BadKey;
+    }
+
+    let signature_digest = hmac_sha256_digest(&key[..key_len], command_sha);
+    let mut signature_hex = [0u8; 64];
+    write_digest_hex_bytes(&signature_digest, &mut signature_hex);
+    MaintHmacCheckInput::Calculated(sha256_digest(&signature_hex))
+}
+
+fn decode_hex_to_buf(input: &[u8], out: &mut [u8]) -> Option<usize> {
+    let input = trim_ascii_whitespace(input);
+    if input.len() % 2 != 0 || input.len() / 2 > out.len() {
+        return None;
+    }
+    let mut index = 0usize;
+    while index < input.len() {
+        let high = hex_nibble(input[index])?;
+        let low = hex_nibble(input[index + 1])?;
+        out[index / 2] = (high << 4) | low;
+        index += 2;
+    }
+    Some(input.len() / 2)
+}
+
+fn write_digest_hex_bytes(digest: &[u8; 32], out: &mut [u8; 64]) {
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    for (index, byte) in digest.iter().enumerate() {
+        out[index * 2] = HEX[(byte >> 4) as usize];
+        out[index * 2 + 1] = HEX[(byte & 0x0f) as usize];
+    }
+}
+
+fn hmac_sha256_digest(key: &[u8], message: &[u8]) -> [u8; 32] {
+    let mut key_block = [0u8; 64];
+    if key.len() > key_block.len() {
+        let digest = sha256_digest(key);
+        key_block[..digest.len()].copy_from_slice(&digest);
+    } else {
+        key_block[..key.len()].copy_from_slice(key);
+    }
+
+    let mut inner_pad = [0x36u8; 64];
+    let mut outer_pad = [0x5cu8; 64];
+    let mut index = 0usize;
+    while index < 64 {
+        inner_pad[index] ^= key_block[index];
+        outer_pad[index] ^= key_block[index];
+        index += 1;
+    }
+
+    let mut inner_message = [0u8; 128];
+    inner_message[..64].copy_from_slice(&inner_pad);
+    let inner_len = 64 + message.len().min(64);
+    if message.len() <= 64 {
+        inner_message[64..inner_len].copy_from_slice(message);
+        let inner_digest = sha256_digest(&inner_message[..inner_len]);
+        let mut outer_message = [0u8; 96];
+        outer_message[..64].copy_from_slice(&outer_pad);
+        outer_message[64..].copy_from_slice(&inner_digest);
+        return sha256_digest(&outer_message);
+    }
+
+    hmac_sha256_digest_slow(&key_block, &inner_pad, &outer_pad, message)
+}
+
+fn hmac_sha256_digest_slow(
+    _key_block: &[u8; 64],
+    inner_pad: &[u8; 64],
+    outer_pad: &[u8; 64],
+    message: &[u8],
+) -> [u8; 32] {
+    let mut scratch = [0u8; 256];
+    if message.len() + 64 <= scratch.len() {
+        scratch[..64].copy_from_slice(inner_pad);
+        scratch[64..64 + message.len()].copy_from_slice(message);
+        let inner_digest = sha256_digest(&scratch[..64 + message.len()]);
+        let mut outer_message = [0u8; 96];
+        outer_message[..64].copy_from_slice(outer_pad);
+        outer_message[64..].copy_from_slice(&inner_digest);
+        return sha256_digest(&outer_message);
+    }
+
+    let mut fallback = NetReplyBuf::new();
+    fallback.push_slice(inner_pad);
+    fallback.push_slice(message);
+    let inner_digest = sha256_digest(fallback.as_slice());
+    let mut outer_message = [0u8; 96];
+    outer_message[..64].copy_from_slice(outer_pad);
+    outer_message[64..].copy_from_slice(&inner_digest);
+    sha256_digest(&outer_message)
 }
 
 fn crc32_update(mut crc: u32, byte: u8) -> u32 {
