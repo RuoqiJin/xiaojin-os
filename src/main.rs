@@ -2074,7 +2074,7 @@ fn print_help(uart: &mut Uart) {
     uart.put_str("  maint verify-hmac <if> <host|ip> <port> <path> <key-hex> confirm\n");
     uart.put_str("  maint verify-local <if> <host|ip> <port> <path> confirm\n");
     uart.put_str("                       verify pending command digest and audit the result\n");
-    uart.put_str("  maint pull-exec <if> <host|ip> <port> <path> confirm\n");
+    uart.put_str("  maint pull-exec <if> <host|ip> <port> <poll-path> [event-path] confirm\n");
     uart.put_str("                       verify and execute one signed read-only xj_query\n");
     uart.put_str("  maint key-status confirm\n");
     uart.put_str("  maint key-set <key-hex> confirm\n");
@@ -3166,6 +3166,7 @@ fn command_maint<'a>(uart: &mut Uart, parts: &mut core::str::SplitWhitespace<'a>
             parts.next(),
             parts.next(),
             parts.next(),
+            parts.next(),
         ),
         Some("key-status") => command_maint_key_status(uart, parts.next()),
         Some("key-set") => command_maint_key_set(uart, parts.next(), parts.next()),
@@ -3199,7 +3200,7 @@ fn command_maint<'a>(uart: &mut Uart, parts: &mut core::str::SplitWhitespace<'a>
                 "  maint verify-local <pcie3x1|pcie3x2|0|1> <host|ip> <port> <path> confirm\n",
             );
             uart.put_str(
-                "  maint pull-exec <pcie3x1|pcie3x2|0|1> <host|ip> <port> <path> confirm\n",
+                "  maint pull-exec <pcie3x1|pcie3x2|0|1> <host|ip> <port> <poll-path> [event-path] confirm\n",
             );
             uart.put_str("  maint key-status confirm\n");
             uart.put_str("  maint key-set <key-hex> confirm\n");
@@ -3925,14 +3926,37 @@ fn write_maint_pull_exec_query_summary<W: Write>(default_index: usize, query: &s
         let _ = write!(out, "XJQ ERR maint-pull-exec-usage");
         return;
     };
-    if parts.next() != Some("confirm") || parts.next().is_some() {
-        let _ = write!(out, "XJQ ERR maint-pull-exec-usage");
-        return;
-    }
+    let next = parts.next();
+    let event_path = match next {
+        Some("confirm") => {
+            if parts.next().is_some() {
+                let _ = write!(out, "XJQ ERR maint-pull-exec-usage");
+                return;
+            }
+            None
+        }
+        Some(event_path) => {
+            if parts.next() != Some("confirm") || parts.next().is_some() {
+                let _ = write!(out, "XJQ ERR maint-pull-exec-usage");
+                return;
+            }
+            Some(event_path)
+        }
+        None => {
+            let _ = write!(out, "XJQ ERR maint-pull-exec-usage");
+            return;
+        }
+    };
     let Some(port) = parse_u16(port_text) else {
         let _ = write!(out, "XJQ ERR maint-pull-exec-port");
         return;
     };
+    if let Some(event_path) = event_path {
+        if !event_path.starts_with('/') {
+            let _ = write!(out, "XJQ ERR maint-pull-exec-event-path");
+            return;
+        }
+    }
     let Ok(row) = get_maint_hmac_key_row() else {
         let _ = write!(out, "XJQ ERR maint-pull-exec key-missing");
         return;
@@ -3944,6 +3968,7 @@ fn write_maint_pull_exec_query_summary<W: Write>(default_index: usize, query: &s
         host,
         port,
         path,
+        event_path,
         MaintHmacKey::Raw(&row.value[..row.value_len]),
     );
 }
@@ -9677,13 +9702,24 @@ fn command_maint_pull_exec(
     host: Option<&str>,
     port: Option<&str>,
     path: Option<&str>,
+    event_path_or_confirm: Option<&str>,
     confirm: Option<&str>,
 ) {
-    if confirm != Some("confirm") {
-        uart.put_str(
-            "usage: maint pull-exec <pcie3x1|pcie3x2|0|1> <host|ip> <port> <path> confirm\n",
-        );
-        return;
+    let event_path = match (event_path_or_confirm, confirm) {
+        (Some("confirm"), None) => None,
+        (Some(event_path), Some("confirm")) => Some(event_path),
+        _ => {
+            uart.put_str(
+                "usage: maint pull-exec <pcie3x1|pcie3x2|0|1> <host|ip> <port> <poll-path> [event-path] confirm\n",
+            );
+            return;
+        }
+    };
+    if let Some(event_path) = event_path {
+        if !event_path.starts_with('/') {
+            uart.put_str("event path must start with '/'\n");
+            return;
+        }
     }
     let Some(iface) = iface else {
         uart.put_str("missing interface\n");
@@ -9721,6 +9757,7 @@ fn command_maint_pull_exec(
         host,
         port,
         path,
+        event_path,
         MaintHmacKey::Raw(&row.value[..row.value_len]),
     );
     uart.put_str("\n");
@@ -10551,6 +10588,7 @@ fn write_maint_pull_exec_summary<W: Write>(
     host: &str,
     port: u16,
     path: &str,
+    event_path: Option<&str>,
     hmac_key: MaintHmacKey<'_>,
 ) {
     match net_http_get(index, host, port, path, HTTP_TIMEOUT_MS) {
@@ -10728,6 +10766,20 @@ fn write_maint_pull_exec_summary<W: Write>(
                 event.as_slice(),
             ) {
                 Ok((_info, _catalog, meta, db_event)) => {
+                    let report = event_path.map(|event_path| {
+                        post_maint_pull_exec_event(
+                            index,
+                            host,
+                            port,
+                            event_path,
+                            command_id,
+                            command_sha,
+                            signature_sha,
+                            query_bytes,
+                            &result_digest,
+                            db_event,
+                        )
+                    });
                     let _ = write!(
                         out,
                         "XJQ OK maint-pull-exec iface={} host={} ip={}.{}.{}.{} port={} status={} signature-ok=yes seq={} page={} events={} next-page={} query=\"",
@@ -10747,6 +10799,24 @@ fn write_maint_pull_exec_summary<W: Write>(
                     write_http_sample_line(out, query_bytes);
                     let _ = write!(out, "\" command_id=");
                     write_ascii_token(out, command_id);
+                    match report {
+                        Some(Ok(report)) => {
+                            let _ = write!(
+                                out,
+                                " report=ok report-status={} report-bytes={} report-sent={} report-src-port={}",
+                                report.status_code,
+                                report.response_bytes,
+                                report.sent_payload_len,
+                                report.tcp.src_port
+                            );
+                        }
+                        Some(Err(error)) => {
+                            let _ = write!(out, " report=err report-error={}", error.as_str());
+                        }
+                        None => {
+                            let _ = write!(out, " report=skipped");
+                        }
+                    }
                     let _ = write!(out, " result=\"");
                     write_http_sample_line(out, query_result.as_slice());
                     let _ = write!(out, "\"");
@@ -10765,6 +10835,77 @@ fn write_maint_pull_exec_summary<W: Write>(
             let _ = write!(out, "XJQ ERR maint-pull-exec {}", error.as_str());
         }
     }
+}
+
+fn post_maint_pull_exec_event(
+    index: usize,
+    host: &str,
+    port: u16,
+    event_path: &str,
+    command_id: &[u8],
+    command_sha: &[u8],
+    signature_sha: &[u8],
+    query: &[u8],
+    result_digest: &[u8; 32],
+    db_event: DbEventPage,
+) -> Result<HttpPostResult, HttpError> {
+    let mut post_body = NetReplyBuf::new();
+    write!(
+        post_body,
+        "{{\"events\":[{{\"kind\":\"maint_pull_exec\",\"payload\":{{\"source\":\"xiaojin-os\",\"device_id\":\"{XIAOJIN_DEVICE_ID}\",\"iface\":\"{}\",\"command_id\":\"",
+        PCIE_CONTROLLERS[index].name,
+    )
+    .map_err(|_| HttpError::BadBody)?;
+    if !write_json_ascii_value(&mut post_body, command_id, 96) {
+        return Err(HttpError::BadBody);
+    }
+    write!(post_body, "\",\"command_sha256\":\"").map_err(|_| HttpError::BadBody)?;
+    if !write_json_ascii_value(&mut post_body, command_sha, 64) {
+        return Err(HttpError::BadBody);
+    }
+    write!(post_body, "\",\"signature_sha256\":\"").map_err(|_| HttpError::BadBody)?;
+    if !write_json_ascii_value(&mut post_body, signature_sha, 64) {
+        return Err(HttpError::BadBody);
+    }
+    write!(post_body, "\",\"query\":\"").map_err(|_| HttpError::BadBody)?;
+    if !write_json_ascii_value(&mut post_body, query, 96) {
+        return Err(HttpError::BadBody);
+    }
+    write!(post_body, "\",\"result_sha256\":\"").map_err(|_| HttpError::BadBody)?;
+    write_sha256_hex(&mut post_body, result_digest);
+    write!(
+        post_body,
+        "\",\"db_seq\":{},\"db_page\":{},\"ok\":true}}}}]}}",
+        db_event.sequence, db_event.page
+    )
+    .map_err(|_| HttpError::BadBody)?;
+
+    if post_body.as_slice().len() > 1024 {
+        return Err(HttpError::BadBody);
+    }
+
+    net_http_post(
+        index,
+        host,
+        port,
+        event_path,
+        post_body.as_slice(),
+        HTTP_TIMEOUT_MS,
+    )
+}
+
+fn write_json_ascii_value(buffer: &mut NetReplyBuf, value: &[u8], max: usize) -> bool {
+    for byte in value.iter().copied().take(max) {
+        let out = match byte {
+            b'"' | b'\\' => '_',
+            0x20..=0x7e => byte as char,
+            _ => '_',
+        };
+        if write!(buffer, "{out}").is_err() {
+            return false;
+        }
+    }
+    true
 }
 
 fn maint_public_query_payload_digest(query: &[u8]) -> Option<[u8; 32]> {
@@ -10896,7 +11037,7 @@ fn write_maint_compact_field<W: Write>(out: &mut W, name: &str, body: &[u8], key
 fn is_public_maint_event_kind(kind: &str) -> bool {
     matches!(
         kind,
-        "maint_poll" | "maint_verify" | "maint_ack_intent" | "heartbeat"
+        "maint_poll" | "maint_verify" | "maint_ack_intent" | "maint_pull_exec" | "heartbeat"
     )
 }
 
