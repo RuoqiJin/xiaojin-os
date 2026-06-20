@@ -14434,18 +14434,19 @@ fn net_tls_client_hello(
                 &response.sample[..response.sample_len],
             ),
         ) {
-            let traffic = tls13_handshake_key_schedule_fingerprints(
+            transcript_sha256 = Some(transcript_hash);
+            if let Some(traffic) = tls13_handshake_key_schedule_fingerprints(
                 shared_secret.as_bytes(),
                 &transcript_hash,
                 cipher_suite,
-            );
-            transcript_sha256 = Some(transcript_hash);
-            client_handshake_traffic_sha256 = Some(traffic.client_secret_sha256);
-            server_handshake_traffic_sha256 = Some(traffic.server_secret_sha256);
-            client_handshake_key_sha256 = Some(traffic.client_key_sha256);
-            server_handshake_key_sha256 = Some(traffic.server_key_sha256);
-            client_handshake_iv_sha256 = Some(traffic.client_iv_sha256);
-            server_handshake_iv_sha256 = Some(traffic.server_iv_sha256);
+            ) {
+                client_handshake_traffic_sha256 = Some(traffic.client_secret_sha256);
+                server_handshake_traffic_sha256 = Some(traffic.server_secret_sha256);
+                client_handshake_key_sha256 = Some(traffic.client_key_sha256);
+                server_handshake_key_sha256 = Some(traffic.server_key_sha256);
+                client_handshake_iv_sha256 = Some(traffic.client_iv_sha256);
+                server_handshake_iv_sha256 = Some(traffic.server_iv_sha256);
+            }
         }
     }
 
@@ -14536,10 +14537,9 @@ fn build_tls_client_hello(sni: &str, x25519_public: &[u8; 32], out: &mut [u8]) -
     tls_put_bytes(out, &mut offset, &random)?;
     tls_put_u8(out, &mut offset, 0)?;
 
-    tls_put_u16(out, &mut offset, 6)?;
-    tls_put_u16(out, &mut offset, 0x1301)?;
-    tls_put_u16(out, &mut offset, 0x1302)?;
+    tls_put_u16(out, &mut offset, 4)?;
     tls_put_u16(out, &mut offset, 0x1303)?;
+    tls_put_u16(out, &mut offset, 0x1301)?;
 
     tls_put_u8(out, &mut offset, 1)?;
     tls_put_u8(out, &mut offset, 0)?;
@@ -14719,7 +14719,7 @@ fn tls13_handshake_key_schedule_fingerprints(
     shared_secret: &[u8; 32],
     transcript_hash: &[u8; 32],
     cipher_suite: u16,
-) -> Tls13HandshakeKeySchedule {
+) -> Option<Tls13HandshakeKeySchedule> {
     let zero = [0u8; 32];
     let empty_hash = sha256_digest(&[]);
     let early_secret = hkdf_extract_sha256(&zero, &[]);
@@ -14727,19 +14727,19 @@ fn tls13_handshake_key_schedule_fingerprints(
     let handshake_secret = hkdf_extract_sha256(&derived_secret, shared_secret);
     let client_secret = tls13_derive_secret(&handshake_secret, b"c hs traffic", transcript_hash);
     let server_secret = tls13_derive_secret(&handshake_secret, b"s hs traffic", transcript_hash);
-    let key_len = tls13_cipher_suite_key_len(cipher_suite).unwrap_or(32);
+    let key_len = tls13_cipher_suite_key_len(cipher_suite)?;
     let client_key = tls13_hkdf_expand_label_sha256_to(&client_secret, b"key", &[], key_len);
     let server_key = tls13_hkdf_expand_label_sha256_to(&server_secret, b"key", &[], key_len);
     let client_iv = tls13_hkdf_expand_label_sha256_to(&client_secret, b"iv", &[], 12);
     let server_iv = tls13_hkdf_expand_label_sha256_to(&server_secret, b"iv", &[], 12);
-    Tls13HandshakeKeySchedule {
+    Some(Tls13HandshakeKeySchedule {
         client_secret_sha256: sha256_digest(&client_secret),
         server_secret_sha256: sha256_digest(&server_secret),
         client_key_sha256: sha256_digest(&client_key[..key_len]),
         server_key_sha256: sha256_digest(&server_key[..key_len]),
         client_iv_sha256: sha256_digest(&client_iv[..12]),
         server_iv_sha256: sha256_digest(&server_iv[..12]),
-    }
+    })
 }
 
 fn tls13_derive_secret(secret: &[u8; 32], label: &[u8], transcript_hash: &[u8; 32]) -> [u8; 32] {
@@ -14749,7 +14749,7 @@ fn tls13_derive_secret(secret: &[u8; 32], label: &[u8], transcript_hash: &[u8; 3
 fn tls13_cipher_suite_key_len(cipher_suite: u16) -> Option<usize> {
     match cipher_suite {
         0x1301 => Some(16),
-        0x1302 | 0x1303 => Some(32),
+        0x1303 => Some(32),
         _ => None,
     }
 }
