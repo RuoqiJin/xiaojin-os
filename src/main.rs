@@ -214,6 +214,9 @@ const HTTP_IDLE_TIMEOUT_MS: u64 = 500;
 const HTTP_REQUEST_BYTES: usize = 768;
 const HTTP_RESPONSE_MAX_BYTES: usize = 8 * 1024;
 const HTTP_RESPONSE_SAMPLE_BYTES: usize = 2048;
+const TLS_CLIENT_HELLO_BYTES: usize = 512;
+const TLS_RECORD_HANDSHAKE: u8 = 0x16;
+const TLS_RECORD_ALERT: u8 = 0x15;
 const TCP_FLAG_PSH: u16 = 0x008;
 const TCP_FLAG_SYN: u16 = 0x002;
 const TCP_FLAG_RST: u16 = 0x004;
@@ -1111,6 +1114,25 @@ struct HttpDebugResult {
 }
 
 #[derive(Clone, Copy)]
+struct TlsClientHelloResult {
+    tcp: TcpSession,
+    sent_payload_len: u32,
+    record_type: u8,
+    record_version: u16,
+    record_len: u16,
+    response_bytes: usize,
+    payload_bytes: usize,
+    segments: u32,
+    fin: bool,
+    truncated: bool,
+    alert_level: Option<u8>,
+    alert_description: Option<u8>,
+    handshake_type: Option<u8>,
+    sample_len: usize,
+    sample: [u8; HTTP_RESPONSE_SAMPLE_BYTES],
+}
+
+#[derive(Clone, Copy)]
 struct TcpDebugSegment {
     seq: u32,
     ack: u32,
@@ -1142,6 +1164,31 @@ impl HttpError {
             Self::RequestTx => "request-tx",
             Self::ResponseTimeout => "response-timeout",
             Self::MalformedResponse => "malformed-response",
+        }
+    }
+}
+
+#[derive(Clone, Copy)]
+enum TlsError {
+    BadServerName,
+    ClientHelloTooLong,
+    Tcp(TcpError),
+    ClientHelloTx,
+    ResponseTimeout,
+    Response(HttpError),
+    MalformedRecord,
+}
+
+impl TlsError {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::BadServerName => "bad-server-name",
+            Self::ClientHelloTooLong => "client-hello-too-long",
+            Self::Tcp(error) => error.as_str(),
+            Self::ClientHelloTx => "client-hello-tx",
+            Self::ResponseTimeout => "response-timeout",
+            Self::Response(error) => error.as_str(),
+            Self::MalformedRecord => "malformed-record",
         }
     }
 }
@@ -2131,6 +2178,8 @@ fn print_help(uart: &mut Uart) {
     uart.put_str("                       perform minimal HTTP/1.0 GET over outbound TCP\n");
     uart.put_str("  net http-post <if> <host|ip> <port> <path> <body> confirm\n");
     uart.put_str("                       perform minimal HTTP/1.0 POST over outbound TCP\n");
+    uart.put_str("  net tls <if> <host|ip> <port> [sni] confirm\n");
+    uart.put_str("                       send TLS ClientHello and parse first TLS record\n");
     uart.put_str("  maint poll <if> <host|ip> <port> <path> confirm\n");
     uart.put_str("                       pull one cleartext maintainer endpoint summary\n");
     uart.put_str("  maint status <if> <host|ip> <port> <path> confirm\n");
@@ -2292,6 +2341,7 @@ fn print_caps(uart: &mut Uart) {
     uart.put_str("  net default-route yes\n");
     uart.put_str("  net arp-resolve yes\n");
     uart.put_str("  net dns-client yes\n");
+    uart.put_str("  net tls-clienthello yes\n");
     uart.put_str("  net udp-dhcp-control yes\n");
     uart.put_str("  net udp-query-control yes\n");
     uart.put_str("  net routed-udp-loader yes\n");
@@ -2329,7 +2379,7 @@ fn print_caps(uart: &mut Uart) {
 fn write_caps_query_summary<W: Write>(out: &mut W) {
     let _ = write!(
         out,
-        "XJQ OK caps net-dev=yes dhcp=yes auto-dhcp=yes route=yes arp=yes dns=yes tcp-connect=yes http-get=yes http-post=yes http-trace=yes http-debug=yes maint-poll=yes maint-status=yes maint-pending-summary=yes maint-command-digest=yes maint-command-verify=yes maint-command-verify-hmac=yes maint-local-hmac-key=yes maint-pull-exec=yes maint-loop=yes maint-config=yes maint-cold-boot-tick=yes maint-ack-intent=yes maint-remote-event=yes maint-local-audit=yes identity=yes rng=development-hmac-drbg query=yes reboot=yes wifi=facts-only wifi-pcie=facts wifi-cru=read-only wifi-apb=read-only wifi-phy=read-only wifi-power=read-only wifi-link=read-only wifi-trace=confirm wifi-pcie-init=confirm wifi-pcie-init-high=confirm wifi-pcie-init-linux=confirm wifi-pcie-init-dt=confirm wifi-station=planned wifi-ap=planned sd-probe=yes sd-writer=yes ab-persist=yes boot-slot=extlinux db=page-store,catalog,wal,fixed-table,btree,table-namespace,event-log,blob-backup,blob-restore"
+        "XJQ OK caps net-dev=yes dhcp=yes auto-dhcp=yes route=yes arp=yes dns=yes tcp-connect=yes http-get=yes http-post=yes http-trace=yes http-debug=yes tls-clienthello=yes maint-poll=yes maint-status=yes maint-pending-summary=yes maint-command-digest=yes maint-command-verify=yes maint-command-verify-hmac=yes maint-local-hmac-key=yes maint-pull-exec=yes maint-loop=yes maint-config=yes maint-cold-boot-tick=yes maint-ack-intent=yes maint-remote-event=yes maint-local-audit=yes identity=yes rng=development-hmac-drbg query=yes reboot=yes wifi=facts-only wifi-pcie=facts wifi-cru=read-only wifi-apb=read-only wifi-phy=read-only wifi-power=read-only wifi-link=read-only wifi-trace=confirm wifi-pcie-init=confirm wifi-pcie-init-high=confirm wifi-pcie-init-linux=confirm wifi-pcie-init-dt=confirm wifi-station=planned wifi-ap=planned sd-probe=yes sd-writer=yes ab-persist=yes boot-slot=extlinux db=page-store,catalog,wal,fixed-table,btree,table-namespace,event-log,blob-backup,blob-restore"
     );
 }
 
@@ -3343,6 +3393,14 @@ fn command_net<'a>(uart: &mut Uart, parts: &mut core::str::SplitWhitespace<'a>) 
             parts.next(),
             parts.next(),
         ),
+        Some("tls") => command_net_tls(
+            uart,
+            parts.next(),
+            parts.next(),
+            parts.next(),
+            parts.next(),
+            parts.next(),
+        ),
         Some("loop") => command_net_loop(uart, parts.next()),
         Some("listen") => command_net_listen(uart, parts.next()),
         Some("sniff") => command_net_sniff(uart, parts.next()),
@@ -3358,6 +3416,7 @@ fn command_net<'a>(uart: &mut Uart, parts: &mut core::str::SplitWhitespace<'a>) 
             uart.put_str(
                 "  net http-post <pcie3x1|pcie3x2|0|1> <host|ip> <port> <path> <body> confirm\n",
             );
+            uart.put_str("  net tls <pcie3x1|pcie3x2|0|1> <host|ip> <port> [sni] confirm\n");
             uart.put_str("  net loop confirm\n");
             uart.put_str("  net listen confirm\n");
             uart.put_str("  net sniff confirm\n");
@@ -3907,6 +3966,77 @@ fn write_net_http_debug_query_summary<W: Write>(default_index: usize, query: &st
         }
         Err(error) => {
             let _ = write!(out, "XJQ ERR http-debug {}", error.as_str());
+        }
+    }
+}
+
+fn write_net_tls_query_summary<W: Write>(default_index: usize, query: &str, out: &mut W) {
+    let mut parts = query.split_whitespace();
+    let _net = parts.next();
+    let _tls = parts.next();
+    let Some(first) = parts.next() else {
+        let _ = write!(out, "XJQ ERR tls-usage");
+        return;
+    };
+    let (index, host) = if let Some(index) = parse_net_interface(first) {
+        let Some(host) = parts.next() else {
+            let _ = write!(out, "XJQ ERR tls-usage");
+            return;
+        };
+        (index, host)
+    } else {
+        (default_index, first)
+    };
+    let Some(port) = parts.next().and_then(parse_u16) else {
+        let _ = write!(out, "XJQ ERR tls-usage");
+        return;
+    };
+    let Some(next) = parts.next() else {
+        let _ = write!(out, "XJQ ERR tls-usage");
+        return;
+    };
+    let (sni, confirm) = if next.eq_ignore_ascii_case("confirm") {
+        (host, next)
+    } else {
+        (next, parts.next().unwrap_or(""))
+    };
+    if !confirm.eq_ignore_ascii_case("confirm") {
+        let _ = write!(out, "XJQ ERR tls-usage");
+        return;
+    }
+
+    match net_tls_client_hello(index, host, port, sni, HTTP_TIMEOUT_MS) {
+        Ok(result) => {
+            let _ = write!(
+                out,
+                "XJQ OK tls iface={} host={} sni={} ip={}.{}.{}.{} port={} src-port={} sent={} record-type=0x{:02x} record-version=0x{:04x} record-len={} bytes={} payload={} segments={} fin={} truncated={} alert-level={} alert-description={} handshake-type={} raw=\"",
+                PCIE_CONTROLLERS[index].name,
+                host,
+                sni,
+                result.tcp.dst_ip[0],
+                result.tcp.dst_ip[1],
+                result.tcp.dst_ip[2],
+                result.tcp.dst_ip[3],
+                result.tcp.dst_port,
+                result.tcp.src_port,
+                result.sent_payload_len,
+                result.record_type,
+                result.record_version,
+                result.record_len,
+                result.response_bytes,
+                result.payload_bytes,
+                result.segments,
+                yes_no(result.fin),
+                yes_no(result.truncated),
+                optional_u8_hex(result.alert_level),
+                optional_u8_hex(result.alert_description),
+                optional_u8_hex(result.handshake_type)
+            );
+            write_http_raw_sample_line(out, &result.sample[..result.sample_len]);
+            let _ = write!(out, "\"");
+        }
+        Err(error) => {
+            let _ = write!(out, "XJQ ERR tls {}", error.as_str());
         }
     }
 }
@@ -10387,6 +10517,54 @@ fn command_net_http_post(
     }
 }
 
+fn command_net_tls(
+    uart: &mut Uart,
+    iface: Option<&str>,
+    host: Option<&str>,
+    port: Option<&str>,
+    sni_or_confirm: Option<&str>,
+    confirm: Option<&str>,
+) {
+    let (sni, confirmed) = match (host, sni_or_confirm, confirm) {
+        (Some(host), Some(value), _) if value.eq_ignore_ascii_case("confirm") => (host, true),
+        (_, Some(sni), Some(value)) if value.eq_ignore_ascii_case("confirm") => (sni, true),
+        _ => ("", false),
+    };
+    if !confirmed {
+        uart.put_str("usage: net tls <pcie3x1|pcie3x2|0|1> <host|ip> <port> [sni] confirm\n");
+        uart.put_str("scope: send one TLS ClientHello and parse the first server TLS record\n");
+        return;
+    }
+    let Some(iface) = iface else {
+        uart.put_str("missing interface\n");
+        return;
+    };
+    let Some(index) = parse_net_interface(iface) else {
+        uart.put_str("unknown interface; use pcie3x1, pcie3x2, 0, or 1\n");
+        return;
+    };
+    let Some(host) = host else {
+        uart.put_str("missing host\n");
+        return;
+    };
+    let Some(port) = port.and_then(parse_u16) else {
+        uart.put_str("missing or invalid TCP port\n");
+        return;
+    };
+
+    let _ = writeln!(
+        uart,
+        "net tls {} tls://{host}:{port} sni={sni}:",
+        PCIE_CONTROLLERS[index].name
+    );
+    match net_tls_client_hello(index, host, port, sni, HTTP_TIMEOUT_MS) {
+        Ok(result) => print_tls_client_hello_result(uart, result),
+        Err(error) => {
+            let _ = writeln!(uart, "  error           {}", error.as_str());
+        }
+    }
+}
+
 fn command_maint_event(
     uart: &mut Uart,
     iface: Option<&str>,
@@ -10998,6 +11176,42 @@ fn print_http_post_result(uart: &mut Uart, result: HttpPostResult) {
     );
     uart.put_str("  first-line      ");
     write_http_sample_line(uart, &result.sample[..result.sample_len]);
+    uart.put_str("\n");
+}
+
+fn print_tls_client_hello_result(uart: &mut Uart, result: TlsClientHelloResult) {
+    let _ = writeln!(
+        uart,
+        "  record          type=0x{:02x} version=0x{:04x} len={} alert-level={} alert-description={} handshake-type={}",
+        result.record_type,
+        result.record_version,
+        result.record_len,
+        optional_u8_hex(result.alert_level),
+        optional_u8_hex(result.alert_description),
+        optional_u8_hex(result.handshake_type)
+    );
+    let _ = writeln!(
+        uart,
+        "  transfer        sent={} bytes={} payload={} segments={} fin={} truncated={}",
+        result.sent_payload_len,
+        result.response_bytes,
+        result.payload_bytes,
+        result.segments,
+        yes_no(result.fin),
+        yes_no(result.truncated)
+    );
+    let _ = writeln!(
+        uart,
+        "  peer            {}.{}.{}.{}:{} src-port={}",
+        result.tcp.dst_ip[0],
+        result.tcp.dst_ip[1],
+        result.tcp.dst_ip[2],
+        result.tcp.dst_ip[3],
+        result.tcp.dst_port,
+        result.tcp.src_port
+    );
+    uart.put_str("  raw             ");
+    write_http_raw_sample_line(uart, &result.sample[..result.sample_len]);
     uart.put_str("\n");
 }
 
@@ -14087,6 +14301,267 @@ fn net_http_debug(
     })
 }
 
+fn net_tls_client_hello(
+    index: usize,
+    host: &str,
+    dst_port: u16,
+    sni: &str,
+    timeout_ms: u64,
+) -> Result<TlsClientHelloResult, TlsError> {
+    if !valid_tls_server_name(sni) {
+        return Err(TlsError::BadServerName);
+    }
+    let mut client_hello = [0u8; TLS_CLIENT_HELLO_BYTES];
+    let Some(client_hello_len) = build_tls_client_hello(sni, &mut client_hello) else {
+        return Err(TlsError::ClientHelloTooLong);
+    };
+
+    let session = net_tcp_open(index, host, dst_port, timeout_ms).map_err(TlsError::Tcp)?;
+    if !net_send_tcp_packet(
+        index,
+        session.next_hop_mac,
+        net_device_ip(index),
+        session.dst_ip,
+        session.src_port,
+        session.dst_port,
+        session.local_seq,
+        session.remote_seq_next,
+        TCP_FLAG_ACK | TCP_FLAG_PSH,
+        &client_hello[..client_hello_len],
+    ) {
+        let _ = net_tcp_reset(index, session);
+        return Err(TlsError::ClientHelloTx);
+    }
+
+    let sent_payload_len = client_hello_len as u32;
+    let Some(response) = net_wait_http_response(index, session, sent_payload_len, timeout_ms)
+    else {
+        let _ = net_tcp_reset(index, session);
+        return Err(TlsError::ResponseTimeout);
+    };
+    let response = match response {
+        Ok(response) => response,
+        Err(error) => {
+            let _ = net_tcp_reset(index, session);
+            return Err(TlsError::Response(error));
+        }
+    };
+    let record = parse_tls_first_record(&response.sample[..response.sample_len])
+        .ok_or(TlsError::MalformedRecord)?;
+
+    let _ = net_send_tcp_packet(
+        index,
+        session.next_hop_mac,
+        net_device_ip(index),
+        session.dst_ip,
+        session.src_port,
+        session.dst_port,
+        session.local_seq.wrapping_add(sent_payload_len),
+        response.next_remote_seq,
+        TCP_FLAG_ACK | TCP_FLAG_RST,
+        &[],
+    );
+
+    Ok(TlsClientHelloResult {
+        tcp: session,
+        sent_payload_len,
+        record_type: record.record_type,
+        record_version: record.version,
+        record_len: record.len,
+        response_bytes: response.response_bytes,
+        payload_bytes: response.payload_bytes,
+        segments: response.segments,
+        fin: response.fin,
+        truncated: response.truncated,
+        alert_level: record.alert_level,
+        alert_description: record.alert_description,
+        handshake_type: record.handshake_type,
+        sample_len: response.sample_len,
+        sample: response.sample,
+    })
+}
+
+#[derive(Clone, Copy)]
+struct TlsRecordSummary {
+    record_type: u8,
+    version: u16,
+    len: u16,
+    alert_level: Option<u8>,
+    alert_description: Option<u8>,
+    handshake_type: Option<u8>,
+}
+
+fn build_tls_client_hello(sni: &str, out: &mut [u8]) -> Option<usize> {
+    let mut offset = 0usize;
+    tls_put_u8(out, &mut offset, TLS_RECORD_HANDSHAKE)?;
+    tls_put_u16(out, &mut offset, 0x0301)?;
+    let record_len_offset = offset;
+    tls_put_u16(out, &mut offset, 0)?;
+
+    tls_put_u8(out, &mut offset, 0x01)?;
+    let handshake_len_offset = offset;
+    tls_put_u24(out, &mut offset, 0)?;
+
+    let body_start = offset;
+    tls_put_u16(out, &mut offset, 0x0303)?;
+    let mut random = [0u8; 32];
+    rng_fill(&mut random);
+    tls_put_bytes(out, &mut offset, &random)?;
+    tls_put_u8(out, &mut offset, 0)?;
+
+    tls_put_u16(out, &mut offset, 6)?;
+    tls_put_u16(out, &mut offset, 0x1301)?;
+    tls_put_u16(out, &mut offset, 0x1302)?;
+    tls_put_u16(out, &mut offset, 0x1303)?;
+
+    tls_put_u8(out, &mut offset, 1)?;
+    tls_put_u8(out, &mut offset, 0)?;
+
+    let extensions_len_offset = offset;
+    tls_put_u16(out, &mut offset, 0)?;
+    let extensions_start = offset;
+
+    if !parse_ipv4(sni).is_some() {
+        let sni_bytes = sni.as_bytes();
+        if sni_bytes.len() > 253 {
+            return None;
+        }
+        tls_put_u16(out, &mut offset, 0x0000)?;
+        tls_put_u16(out, &mut offset, (5 + sni_bytes.len()) as u16)?;
+        tls_put_u16(out, &mut offset, (3 + sni_bytes.len()) as u16)?;
+        tls_put_u8(out, &mut offset, 0)?;
+        tls_put_u16(out, &mut offset, sni_bytes.len() as u16)?;
+        tls_put_bytes(out, &mut offset, sni_bytes)?;
+    }
+
+    tls_put_u16(out, &mut offset, 0x002b)?;
+    tls_put_u16(out, &mut offset, 5)?;
+    tls_put_u8(out, &mut offset, 4)?;
+    tls_put_u16(out, &mut offset, 0x0304)?;
+    tls_put_u16(out, &mut offset, 0x0303)?;
+
+    tls_put_u16(out, &mut offset, 0x000a)?;
+    tls_put_u16(out, &mut offset, 6)?;
+    tls_put_u16(out, &mut offset, 4)?;
+    tls_put_u16(out, &mut offset, 0x001d)?;
+    tls_put_u16(out, &mut offset, 0x0017)?;
+
+    tls_put_u16(out, &mut offset, 0x000d)?;
+    tls_put_u16(out, &mut offset, 8)?;
+    tls_put_u16(out, &mut offset, 6)?;
+    tls_put_u16(out, &mut offset, 0x0403)?;
+    tls_put_u16(out, &mut offset, 0x0804)?;
+    tls_put_u16(out, &mut offset, 0x0401)?;
+
+    let mut key_share = [0u8; 32];
+    rng_fill(&mut key_share);
+    tls_put_u16(out, &mut offset, 0x0033)?;
+    tls_put_u16(out, &mut offset, 38)?;
+    tls_put_u16(out, &mut offset, 36)?;
+    tls_put_u16(out, &mut offset, 0x001d)?;
+    tls_put_u16(out, &mut offset, 32)?;
+    tls_put_bytes(out, &mut offset, &key_share)?;
+
+    let extensions_len = offset.checked_sub(extensions_start)?;
+    if extensions_len > u16::MAX as usize {
+        return None;
+    }
+    write_be16(out, extensions_len_offset, extensions_len as u16);
+
+    let body_len = offset.checked_sub(body_start)?;
+    if body_len > 0x00ff_ffff {
+        return None;
+    }
+    tls_write_u24(out, handshake_len_offset, body_len as u32);
+
+    let record_len = offset.checked_sub(5)?;
+    if record_len > u16::MAX as usize {
+        return None;
+    }
+    write_be16(out, record_len_offset, record_len as u16);
+    Some(offset)
+}
+
+fn parse_tls_first_record(sample: &[u8]) -> Option<TlsRecordSummary> {
+    if sample.len() < 5 {
+        return None;
+    }
+    let record_type = sample[0];
+    let version = read_be16(sample, 1)?;
+    let len = read_be16(sample, 3)?;
+    let mut alert_level = None;
+    let mut alert_description = None;
+    let mut handshake_type = None;
+    if record_type == TLS_RECORD_ALERT && sample.len() >= 7 {
+        alert_level = Some(sample[5]);
+        alert_description = Some(sample[6]);
+    } else if record_type == TLS_RECORD_HANDSHAKE && sample.len() >= 6 {
+        handshake_type = Some(sample[5]);
+    }
+    Some(TlsRecordSummary {
+        record_type,
+        version,
+        len,
+        alert_level,
+        alert_description,
+        handshake_type,
+    })
+}
+
+fn valid_tls_server_name(value: &str) -> bool {
+    let bytes = value.as_bytes();
+    !bytes.is_empty()
+        && bytes.len() <= 253
+        && bytes
+            .iter()
+            .all(|b| matches!(*b, b'a'..=b'z' | b'A'..=b'Z' | b'0'..=b'9' | b'.' | b'-'))
+}
+
+fn tls_put_u8(out: &mut [u8], offset: &mut usize, value: u8) -> Option<()> {
+    if *offset >= out.len() {
+        return None;
+    }
+    out[*offset] = value;
+    *offset += 1;
+    Some(())
+}
+
+fn tls_put_u16(out: &mut [u8], offset: &mut usize, value: u16) -> Option<()> {
+    if out.len().saturating_sub(*offset) < 2 {
+        return None;
+    }
+    write_be16(out, *offset, value);
+    *offset += 2;
+    Some(())
+}
+
+fn tls_put_u24(out: &mut [u8], offset: &mut usize, value: u32) -> Option<()> {
+    if value > 0x00ff_ffff || out.len().saturating_sub(*offset) < 3 {
+        return None;
+    }
+    tls_write_u24(out, *offset, value);
+    *offset += 3;
+    Some(())
+}
+
+fn tls_write_u24(out: &mut [u8], offset: usize, value: u32) {
+    if out.len().saturating_sub(offset) < 3 {
+        return;
+    }
+    out[offset] = (value >> 16) as u8;
+    out[offset + 1] = (value >> 8) as u8;
+    out[offset + 2] = value as u8;
+}
+
+fn tls_put_bytes(out: &mut [u8], offset: &mut usize, bytes: &[u8]) -> Option<()> {
+    if out.len().saturating_sub(*offset) < bytes.len() {
+        return None;
+    }
+    out[*offset..*offset + bytes.len()].copy_from_slice(bytes);
+    *offset += bytes.len();
+    Some(())
+}
+
 fn net_http_exchange(
     index: usize,
     host: &str,
@@ -15422,6 +15897,8 @@ fn net_handle_query_packet(
                 write_net_http_trace_query_summary(index, query, &mut reply);
             } else if query.starts_with("net http-post ") {
                 write_net_http_post_query_summary(index, query, &mut reply);
+            } else if query.starts_with("net tls ") {
+                write_net_tls_query_summary(index, query, &mut reply);
             } else if query.starts_with("net http ") {
                 write_net_http_query_summary(index, query, &mut reply);
             } else if query.starts_with("maint poll ") {
@@ -19654,6 +20131,22 @@ fn yes_no(value: bool) -> &'static str {
     } else {
         "no"
     }
+}
+
+#[derive(Clone, Copy)]
+struct OptionalU8Hex(Option<u8>);
+
+impl fmt::Display for OptionalU8Hex {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self.0 {
+            Some(value) => write!(f, "0x{value:02x}"),
+            None => f.write_str("none"),
+        }
+    }
+}
+
+fn optional_u8_hex(value: Option<u8>) -> OptionalU8Hex {
+    OptionalU8Hex(value)
 }
 
 fn data_access_size_name(sas: u64) -> &'static str {

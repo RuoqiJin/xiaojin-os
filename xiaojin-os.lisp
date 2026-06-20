@@ -138,6 +138,11 @@
       :implemented [http10-get request-build tcp-psh-ack sequential-payload-ack status-code-parse response-sample-cap udp-xjq-control]
       :next [tcp-reassembly chunked-body host-auth tls-client]
       :purpose "Prove Xiaojin OS can actively fetch an HTTP endpoint over its own NIC before implementing the cloud maintenance poller.")
+    (stage tls-first-flight
+      :status implemented-probe
+      :implemented [clienthello-build sni-extension supported-versions supported-groups signature-algorithms keyshare-placeholder tls-record-parse udp-xjq-control]
+      :next [real-x25519-keyshare transcript-hash certificate-parse record-decrypt https-client]
+      :purpose "Prove Xiaojin OS can move from DNS/TCP to the TLS record layer by sending a ClientHello and parsing the first server record without claiming full TLS yet.")
     (stage maintainer-poll-client
       :status implemented-narrow-signed-exec
       :implemented [maint-poll maint-status maint-audit maint-verify maint-verify-hmac maint-local-hmac-key maint-pull-exec maint-loop-bounded maint-loop-xjq-compact maint-config-persistent maint-config-run maint-cold-boot-tick maint-ack-intent public-poll-text-parse command-digest-check hmac-command-signature-check xiaojindb-audit-event http-post-event]
@@ -284,7 +289,7 @@
       :hardware-trng false
       :purpose "Expose a timer/identity mixed HMAC-SHA256 DRBG for nonce/session bring-up before a hardware TRNG is wired.")
     (command net
-      :subcommands [facts ips ip dhcp dns tcp http loop listen sniff]
+      :subcommands [facts ips ip dhcp dns tcp http tls loop listen sniff]
       :write-commands [ip dhcp loop listen sniff]
       :confirmed-write-commands [ip dhcp loop listen sniff]
       :loop-duration-ms 120000
