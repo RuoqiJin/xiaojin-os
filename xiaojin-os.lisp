@@ -140,9 +140,9 @@
       :purpose "Prove Xiaojin OS can actively fetch an HTTP endpoint over its own NIC before implementing the cloud maintenance poller.")
     (stage tls-first-flight
       :status implemented-probe
-      :implemented [clienthello-build sni-extension supported-versions supported-groups signature-algorithms x25519-keyshare tls-record-parse udp-xjq-control]
-      :next [transcript-hash server-keyshare-parse certificate-parse record-decrypt https-client]
-      :purpose "Prove Xiaojin OS can move from DNS/TCP to the TLS record layer by sending a ClientHello and parsing the first server record without claiming full TLS yet.")
+      :implemented [clienthello-build sni-extension supported-versions supported-groups signature-algorithms x25519-keyshare serverhello-parse shared-secret-fingerprint tls-record-parse udp-xjq-control]
+      :next [transcript-hash hkdf-traffic-secrets certificate-parse record-decrypt https-client]
+      :purpose "Prove Xiaojin OS can move from DNS/TCP to the TLS key-agreement layer by sending a ClientHello, parsing ServerHello key-share metadata, and deriving a non-secret shared-secret fingerprint without claiming full TLS yet.")
     (stage maintainer-poll-client
       :status implemented-narrow-signed-exec
       :implemented [maint-poll maint-status maint-audit maint-verify maint-verify-hmac maint-local-hmac-key maint-pull-exec maint-loop-bounded maint-loop-xjq-compact maint-config-persistent maint-config-run maint-cold-boot-tick maint-ack-intent public-poll-text-parse command-digest-check hmac-command-signature-check xiaojindb-audit-event http-post-event]

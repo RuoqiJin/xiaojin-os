@@ -1129,6 +1129,11 @@ struct TlsClientHelloResult {
     alert_level: Option<u8>,
     alert_description: Option<u8>,
     handshake_type: Option<u8>,
+    selected_version: Option<u16>,
+    cipher_suite: Option<u16>,
+    key_share_group: Option<u16>,
+    key_share_len: Option<u16>,
+    shared_secret_sha256: Option<[u8; 32]>,
     sample_len: usize,
     sample: [u8; HTTP_RESPONSE_SAMPLE_BYTES],
 }
@@ -4010,7 +4015,7 @@ fn write_net_tls_query_summary<W: Write>(default_index: usize, query: &str, out:
         Ok(result) => {
             let _ = write!(
                 out,
-                "XJQ OK tls iface={} host={} sni={} ip={}.{}.{}.{} port={} src-port={} sent={} record-type=0x{:02x} record-version=0x{:04x} record-len={} bytes={} payload={} segments={} fin={} truncated={} alert-level={} alert-description={} handshake-type={} raw=\"",
+                "XJQ OK tls iface={} host={} sni={} ip={}.{}.{}.{} port={} src-port={} sent={} record-type=0x{:02x} record-version=0x{:04x} record-len={} bytes={} payload={} segments={} fin={} truncated={} alert-level={} alert-description={} handshake-type={} selected-version={} cipher-suite={} keyshare-group={} keyshare-len={} shared-secret-sha256=",
                 PCIE_CONTROLLERS[index].name,
                 host,
                 sni,
@@ -4031,8 +4036,14 @@ fn write_net_tls_query_summary<W: Write>(default_index: usize, query: &str, out:
                 yes_no(result.truncated),
                 optional_u8_hex(result.alert_level),
                 optional_u8_hex(result.alert_description),
-                optional_u8_hex(result.handshake_type)
+                optional_u8_hex(result.handshake_type),
+                optional_u16_hex(result.selected_version),
+                optional_u16_hex(result.cipher_suite),
+                optional_u16_hex(result.key_share_group),
+                optional_u16_dec(result.key_share_len)
             );
+            write_optional_sha256_hex(out, &result.shared_secret_sha256);
+            let _ = write!(out, " raw=\"");
             write_http_raw_sample_line(out, &result.sample[..result.sample_len]);
             let _ = write!(out, "\"");
         }
@@ -11193,6 +11204,17 @@ fn print_tls_client_hello_result(uart: &mut Uart, result: TlsClientHelloResult) 
     );
     let _ = writeln!(
         uart,
+        "  server-hello    selected-version={} cipher-suite={} keyshare-group={} keyshare-len={}",
+        optional_u16_hex(result.selected_version),
+        optional_u16_hex(result.cipher_suite),
+        optional_u16_hex(result.key_share_group),
+        optional_u16_dec(result.key_share_len)
+    );
+    uart.put_str("  shared-secret   sha256=");
+    write_optional_sha256_hex(uart, &result.shared_secret_sha256);
+    uart.put_str("\n");
+    let _ = writeln!(
+        uart,
         "  transfer        sent={} bytes={} payload={} segments={} fin={} truncated={}",
         result.sent_payload_len,
         result.response_bytes,
@@ -14312,8 +14334,11 @@ fn net_tls_client_hello(
     if !valid_tls_server_name(sni) {
         return Err(TlsError::BadServerName);
     }
+    let x25519_secret = tls_x25519_secret();
+    let x25519_public = X25519PublicKey::from(&x25519_secret).to_bytes();
     let mut client_hello = [0u8; TLS_CLIENT_HELLO_BYTES];
-    let Some(client_hello_len) = build_tls_client_hello(sni, &mut client_hello) else {
+    let Some(client_hello_len) = build_tls_client_hello(sni, &x25519_public, &mut client_hello)
+    else {
         return Err(TlsError::ClientHelloTooLong);
     };
 
@@ -14349,6 +14374,11 @@ fn net_tls_client_hello(
     };
     let record = parse_tls_first_record(&response.sample[..response.sample_len])
         .ok_or(TlsError::MalformedRecord)?;
+    let shared_secret_sha256 = record.server_x25519_key_share.map(|server_key| {
+        let server_public = X25519PublicKey::from(server_key);
+        let shared_secret = x25519_secret.diffie_hellman(&server_public);
+        sha256_digest(shared_secret.as_bytes())
+    });
 
     let _ = net_send_tcp_packet(
         index,
@@ -14377,6 +14407,11 @@ fn net_tls_client_hello(
         alert_level: record.alert_level,
         alert_description: record.alert_description,
         handshake_type: record.handshake_type,
+        selected_version: record.selected_version,
+        cipher_suite: record.cipher_suite,
+        key_share_group: record.key_share_group,
+        key_share_len: record.key_share_len,
+        shared_secret_sha256,
         sample_len: response.sample_len,
         sample: response.sample,
     })
@@ -14390,9 +14425,14 @@ struct TlsRecordSummary {
     alert_level: Option<u8>,
     alert_description: Option<u8>,
     handshake_type: Option<u8>,
+    selected_version: Option<u16>,
+    cipher_suite: Option<u16>,
+    key_share_group: Option<u16>,
+    key_share_len: Option<u16>,
+    server_x25519_key_share: Option<[u8; 32]>,
 }
 
-fn build_tls_client_hello(sni: &str, out: &mut [u8]) -> Option<usize> {
+fn build_tls_client_hello(sni: &str, x25519_public: &[u8; 32], out: &mut [u8]) -> Option<usize> {
     let mut offset = 0usize;
     tls_put_u8(out, &mut offset, TLS_RECORD_HANDSHAKE)?;
     tls_put_u16(out, &mut offset, 0x0301)?;
@@ -14454,13 +14494,12 @@ fn build_tls_client_hello(sni: &str, out: &mut [u8]) -> Option<usize> {
     tls_put_u16(out, &mut offset, 0x0804)?;
     tls_put_u16(out, &mut offset, 0x0401)?;
 
-    let key_share = tls_x25519_public_key();
     tls_put_u16(out, &mut offset, 0x0033)?;
     tls_put_u16(out, &mut offset, 38)?;
     tls_put_u16(out, &mut offset, 36)?;
     tls_put_u16(out, &mut offset, 0x001d)?;
     tls_put_u16(out, &mut offset, 32)?;
-    tls_put_bytes(out, &mut offset, &key_share)?;
+    tls_put_bytes(out, &mut offset, x25519_public)?;
 
     let extensions_len = offset.checked_sub(extensions_start)?;
     if extensions_len > u16::MAX as usize {
@@ -14482,11 +14521,10 @@ fn build_tls_client_hello(sni: &str, out: &mut [u8]) -> Option<usize> {
     Some(offset)
 }
 
-fn tls_x25519_public_key() -> [u8; 32] {
+fn tls_x25519_secret() -> X25519StaticSecret {
     let mut private = [0u8; 32];
     rng_fill(&mut private);
-    let secret = X25519StaticSecret::from(private);
-    X25519PublicKey::from(&secret).to_bytes()
+    X25519StaticSecret::from(private)
 }
 
 fn parse_tls_first_record(sample: &[u8]) -> Option<TlsRecordSummary> {
@@ -14496,23 +14534,77 @@ fn parse_tls_first_record(sample: &[u8]) -> Option<TlsRecordSummary> {
     let record_type = sample[0];
     let version = read_be16(sample, 1)?;
     let len = read_be16(sample, 3)?;
-    let mut alert_level = None;
-    let mut alert_description = None;
-    let mut handshake_type = None;
-    if record_type == TLS_RECORD_ALERT && sample.len() >= 7 {
-        alert_level = Some(sample[5]);
-        alert_description = Some(sample[6]);
-    } else if record_type == TLS_RECORD_HANDSHAKE && sample.len() >= 6 {
-        handshake_type = Some(sample[5]);
-    }
-    Some(TlsRecordSummary {
+    let mut summary = TlsRecordSummary {
         record_type,
         version,
         len,
-        alert_level,
-        alert_description,
-        handshake_type,
-    })
+        alert_level: None,
+        alert_description: None,
+        handshake_type: None,
+        selected_version: None,
+        cipher_suite: None,
+        key_share_group: None,
+        key_share_len: None,
+        server_x25519_key_share: None,
+    };
+    if record_type == TLS_RECORD_ALERT && sample.len() >= 7 {
+        summary.alert_level = Some(sample[5]);
+        summary.alert_description = Some(sample[6]);
+    } else if record_type == TLS_RECORD_HANDSHAKE && sample.len() >= 6 {
+        summary.handshake_type = Some(sample[5]);
+        if sample[5] == 0x02 {
+            parse_tls_server_hello(sample, &mut summary);
+        }
+    }
+    Some(summary)
+}
+
+fn parse_tls_server_hello(sample: &[u8], summary: &mut TlsRecordSummary) -> Option<()> {
+    let mut offset = 9usize;
+    let _legacy_version = read_be16(sample, offset)?;
+    offset = offset.checked_add(2 + 32)?;
+    let session_id_len = *sample.get(offset)? as usize;
+    offset = offset.checked_add(1 + session_id_len)?;
+    summary.cipher_suite = Some(read_be16(sample, offset)?);
+    offset = offset.checked_add(2)?;
+    let _compression = *sample.get(offset)?;
+    offset = offset.checked_add(1)?;
+    let extensions_len = read_be16(sample, offset)? as usize;
+    offset = offset.checked_add(2)?;
+    let extensions_end = offset.checked_add(extensions_len)?;
+    if extensions_end > sample.len() {
+        return None;
+    }
+
+    while offset.checked_add(4)? <= extensions_end {
+        let extension_type = read_be16(sample, offset)?;
+        let extension_len = read_be16(sample, offset + 2)? as usize;
+        offset = offset.checked_add(4)?;
+        let value_end = offset.checked_add(extension_len)?;
+        if value_end > extensions_end {
+            return None;
+        }
+        let value = &sample[offset..value_end];
+        match extension_type {
+            0x002b if value.len() >= 2 => {
+                summary.selected_version = read_be16(value, 0);
+            }
+            0x0033 if value.len() >= 4 => {
+                let group = read_be16(value, 0)?;
+                let key_len = read_be16(value, 2)?;
+                summary.key_share_group = Some(group);
+                summary.key_share_len = Some(key_len);
+                if group == 0x001d && key_len == 32 && value.len() >= 36 {
+                    let mut key = [0u8; 32];
+                    key.copy_from_slice(&value[4..36]);
+                    summary.server_x25519_key_share = Some(key);
+                }
+            }
+            _ => {}
+        }
+        offset = value_end;
+    }
+    Some(())
 }
 
 fn valid_tls_server_name(value: &str) -> bool {
@@ -20154,6 +20246,46 @@ impl fmt::Display for OptionalU8Hex {
 
 fn optional_u8_hex(value: Option<u8>) -> OptionalU8Hex {
     OptionalU8Hex(value)
+}
+
+#[derive(Clone, Copy)]
+struct OptionalU16Hex(Option<u16>);
+
+impl fmt::Display for OptionalU16Hex {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self.0 {
+            Some(value) => write!(f, "0x{value:04x}"),
+            None => f.write_str("none"),
+        }
+    }
+}
+
+fn optional_u16_hex(value: Option<u16>) -> OptionalU16Hex {
+    OptionalU16Hex(value)
+}
+
+#[derive(Clone, Copy)]
+struct OptionalU16Dec(Option<u16>);
+
+impl fmt::Display for OptionalU16Dec {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self.0 {
+            Some(value) => write!(f, "{value}"),
+            None => f.write_str("none"),
+        }
+    }
+}
+
+fn optional_u16_dec(value: Option<u16>) -> OptionalU16Dec {
+    OptionalU16Dec(value)
+}
+
+fn write_optional_sha256_hex<W: Write>(out: &mut W, digest: &Option<[u8; 32]>) {
+    if let Some(digest) = digest {
+        write_sha256_hex(out, digest);
+    } else {
+        let _ = write!(out, "none");
+    }
 }
 
 fn data_access_size_name(sas: u64) -> &'static str {
