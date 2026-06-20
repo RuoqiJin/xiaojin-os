@@ -37,6 +37,8 @@ Available commands:
 - `uptime`
 - `sleep <ms>`
 - `bench [iters]`
+- `rng status`
+- `rng sample <n> confirm`
 - `net facts`
 - `net ips`
 - `net ip <if> <ip> confirm`
@@ -112,6 +114,12 @@ Rust constants until a generated ABI exists.
 `time`, `uptime`, `sleep`, and `bench` use the ARM generic timer registers
 `CNTFRQ_EL0` and `CNTPCT_EL0`. This is the first timebase for the kernel:
 interrupt-driven timers and scheduling can build on the same counter path later.
+
+`rng status` and `rng sample <n> confirm` expose the first kernel nonce source:
+an HMAC-SHA256 counter DRBG seeded from the generic timer, device identity,
+board constants, and a stack-address mix. This is explicitly a development
+source (`hardware-trng=no`) so TLS and signed-session work can share one API
+while a real RK3568 or x86_64 hardware entropy source is added.
 
 `xload` is the first resident serial loader. A kernel that was started from SD
 can receive another raw image over UART, validate CRC32, flush caches, and jump

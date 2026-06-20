@@ -458,6 +458,10 @@ impl ExceptionSnapshot {
 
 static mut LAST_EXCEPTION: ExceptionSnapshot = ExceptionSnapshot::empty();
 static mut BOOT_CNTPCT: u64 = 0;
+static mut RNG_STATE: [u8; 32] = [0; 32];
+static mut RNG_COUNTER: u64 = 0;
+static mut RNG_RESEED_COUNT: u64 = 0;
+static mut RNG_INITIALIZED: bool = false;
 static mut RTL_TX_RINGS: RtlTxRings =
     RtlTxRings([[RtlDesc::zero(); RTL_TX_DESC_COUNT]; RTL_DEVICE_COUNT]);
 static mut RTL_RX_RINGS: RtlRxRings =
@@ -1952,6 +1956,7 @@ impl Write for Uart {
 pub extern "C" fn kernel_main() -> ! {
     let mut uart = Uart::new(UART2_BASE);
     init_timebase();
+    init_rng();
     load_net_config_from_boot();
     let (runtime_start, runtime_end) = resident_memory_range();
 
@@ -2059,6 +2064,8 @@ fn handle_command(uart: &mut Uart, input: &str) {
         command_sleep(uart, parts.next());
     } else if command.eq_ignore_ascii_case("bench") {
         command_bench(uart, parts.next());
+    } else if command.eq_ignore_ascii_case("rng") {
+        command_rng(uart, parts.next(), parts.next(), parts.next());
     } else if command.eq_ignore_ascii_case("net") {
         command_net(uart, &mut parts);
     } else if command.eq_ignore_ascii_case("maint") {
@@ -2107,6 +2114,9 @@ fn print_help(uart: &mut Uart) {
     uart.put_str("  uptime               show elapsed kernel time\n");
     uart.put_str("  sleep <ms>           busy-wait with generic timer, max 10000\n");
     uart.put_str("  bench [iters]        run timer-backed CPU microbenchmarks\n");
+    uart.put_str("  rng status           show development RNG state\n");
+    uart.put_str("  rng sample <n> confirm\n");
+    uart.put_str("                       derive up to 32 bytes for nonce/session probes\n");
     uart.put_str("  net facts            show wired-network bring-up plan\n");
     uart.put_str("  net ips              show runtime IP config\n");
     uart.put_str("  net ip <if> <ip> confirm\n");
@@ -2298,6 +2308,7 @@ fn print_caps(uart: &mut Uart) {
     uart.put_str("  maint remote-event yes\n");
     uart.put_str("  maint local-audit yes\n");
     uart.put_str("  identity facts yes\n");
+    uart.put_str("  rng development-hmac-drbg yes\n");
     uart.put_str("  wifi facts yes\n");
     uart.put_str("  wifi pcie-facts yes\n");
     uart.put_str("  wifi link-readonly yes\n");
@@ -2318,7 +2329,7 @@ fn print_caps(uart: &mut Uart) {
 fn write_caps_query_summary<W: Write>(out: &mut W) {
     let _ = write!(
         out,
-        "XJQ OK caps net-dev=yes dhcp=yes auto-dhcp=yes route=yes arp=yes dns=yes tcp-connect=yes http-get=yes http-post=yes http-trace=yes http-debug=yes maint-poll=yes maint-status=yes maint-pending-summary=yes maint-command-digest=yes maint-command-verify=yes maint-command-verify-hmac=yes maint-local-hmac-key=yes maint-pull-exec=yes maint-loop=yes maint-config=yes maint-cold-boot-tick=yes maint-ack-intent=yes maint-remote-event=yes maint-local-audit=yes identity=yes query=yes reboot=yes wifi=facts-only wifi-pcie=facts wifi-cru=read-only wifi-apb=read-only wifi-phy=read-only wifi-power=read-only wifi-link=read-only wifi-trace=confirm wifi-pcie-init=confirm wifi-pcie-init-high=confirm wifi-pcie-init-linux=confirm wifi-pcie-init-dt=confirm wifi-station=planned wifi-ap=planned sd-probe=yes sd-writer=yes ab-persist=yes boot-slot=extlinux db=page-store,catalog,wal,fixed-table,btree,table-namespace,event-log,blob-backup,blob-restore"
+        "XJQ OK caps net-dev=yes dhcp=yes auto-dhcp=yes route=yes arp=yes dns=yes tcp-connect=yes http-get=yes http-post=yes http-trace=yes http-debug=yes maint-poll=yes maint-status=yes maint-pending-summary=yes maint-command-digest=yes maint-command-verify=yes maint-command-verify-hmac=yes maint-local-hmac-key=yes maint-pull-exec=yes maint-loop=yes maint-config=yes maint-cold-boot-tick=yes maint-ack-intent=yes maint-remote-event=yes maint-local-audit=yes identity=yes rng=development-hmac-drbg query=yes reboot=yes wifi=facts-only wifi-pcie=facts wifi-cru=read-only wifi-apb=read-only wifi-phy=read-only wifi-power=read-only wifi-link=read-only wifi-trace=confirm wifi-pcie-init=confirm wifi-pcie-init-high=confirm wifi-pcie-init-linux=confirm wifi-pcie-init-dt=confirm wifi-station=planned wifi-ap=planned sd-probe=yes sd-writer=yes ab-persist=yes boot-slot=extlinux db=page-store,catalog,wal,fixed-table,btree,table-namespace,event-log,blob-backup,blob-restore"
     );
 }
 
@@ -2345,6 +2356,157 @@ fn write_identity_summary<W: Write>(out: &mut W) {
         "identity format={XIAOJIN_IDENTITY_FORMAT} device_id={XIAOJIN_DEVICE_ID} board_id={XIAOJIN_BOARD_ID} soc={XIAOJIN_SOC_ID} arch={XIAOJIN_ARCH_ID} fingerprint="
     );
     write_sha256_hex(out, &fingerprint);
+}
+
+fn command_rng(uart: &mut Uart, action: Option<&str>, value: Option<&str>, confirm: Option<&str>) {
+    match action {
+        None | Some("status") => {
+            write_rng_status_summary(uart);
+            uart.put_str("\n");
+        }
+        Some("sample") => {
+            if confirm != Some("confirm") {
+                uart.put_str("usage: rng sample <1..32> confirm\n");
+                return;
+            }
+            let Some(count) = value.and_then(parse_u64) else {
+                uart.put_str("usage: rng sample <1..32> confirm\n");
+                return;
+            };
+            if count == 0 || count > 32 {
+                uart.put_str("rng sample byte count must be 1..=32\n");
+                return;
+            }
+            let mut bytes = [0u8; 32];
+            rng_fill(&mut bytes[..count as usize]);
+            let _ = write!(uart, "rng sample bytes={count} hex=");
+            write_hex_bytes(uart, &bytes[..count as usize]);
+            uart.put_str("\n");
+        }
+        _ => {
+            uart.put_str("usage: rng status | rng sample <1..32> confirm\n");
+        }
+    }
+}
+
+fn write_rng_status_summary<W: Write>(out: &mut W) {
+    rng_ensure_initialized();
+    let (initialized, counter, reseed_count, state) =
+        unsafe { (RNG_INITIALIZED, RNG_COUNTER, RNG_RESEED_COUNT, RNG_STATE) };
+    let state_digest = sha256_digest(&state);
+    let _ = write!(
+        out,
+        "rng initialized={} grade=development-hmac-drbg hardware-trng=no seed=timer-identity-stack counter={counter} reseed-count={reseed_count} state-sha256=",
+        yes_no(initialized)
+    );
+    write_sha256_hex(out, &state_digest);
+}
+
+fn write_rng_sample_query_summary<W: Write>(query: &str, out: &mut W) {
+    let mut parts = query.split_whitespace();
+    if parts.next() != Some("rng") || parts.next() != Some("sample") {
+        let _ = write!(out, "XJQ ERR rng-sample-usage");
+        return;
+    }
+    let Some(count) = parts.next().and_then(parse_u64) else {
+        let _ = write!(out, "XJQ ERR rng-sample-usage");
+        return;
+    };
+    if parts.next() != Some("confirm") || count == 0 || count > 32 {
+        let _ = write!(out, "XJQ ERR rng-sample-usage");
+        return;
+    }
+    let mut bytes = [0u8; 32];
+    rng_fill(&mut bytes[..count as usize]);
+    let _ = write!(out, "XJQ OK rng-sample bytes={count} hex=");
+    write_hex_bytes(out, &bytes[..count as usize]);
+}
+
+fn rng_ensure_initialized() {
+    let initialized = unsafe { RNG_INITIALIZED };
+    if !initialized {
+        init_rng();
+    }
+}
+
+fn init_rng() {
+    let mut seed = [0u8; 160];
+    let mut offset = 0usize;
+    rng_seed_put(&mut seed, &mut offset, b"xiaojin-rng-seed-v1");
+    rng_seed_put_u64(&mut seed, &mut offset, read_cntfrq());
+    rng_seed_put_u64(&mut seed, &mut offset, read_cntpct());
+    rng_seed_put_u64(&mut seed, &mut offset, boot_cntpct());
+    let stack_marker = 0u8;
+    rng_seed_put_u64(
+        &mut seed,
+        &mut offset,
+        &stack_marker as *const u8 as usize as u64,
+    );
+    rng_seed_put(&mut seed, &mut offset, XIAOJIN_DEVICE_ID.as_bytes());
+    rng_seed_put(&mut seed, &mut offset, XIAOJIN_BOARD_ID.as_bytes());
+    rng_seed_put(&mut seed, &mut offset, XIAOJIN_SOC_ID.as_bytes());
+    rng_seed_put(&mut seed, &mut offset, &device_identity_digest());
+    let state = sha256_digest(&seed[..offset]);
+    unsafe {
+        RNG_STATE = state;
+        RNG_COUNTER = 0;
+        RNG_RESEED_COUNT = RNG_RESEED_COUNT.wrapping_add(1);
+        RNG_INITIALIZED = true;
+    }
+}
+
+fn rng_fill(out: &mut [u8]) {
+    rng_ensure_initialized();
+    let mut written = 0usize;
+    while written < out.len() {
+        let block = rng_next_block();
+        let n = (out.len() - written).min(block.len());
+        out[written..written + n].copy_from_slice(&block[..n]);
+        written += n;
+    }
+}
+
+fn rng_next_block() -> [u8; 32] {
+    rng_ensure_initialized();
+    let (key, counter) = unsafe {
+        RNG_COUNTER = RNG_COUNTER.wrapping_add(1);
+        (RNG_STATE, RNG_COUNTER)
+    };
+    let mut msg = [0u8; 40];
+    msg[..16].copy_from_slice(b"xiaojin-rng-v1\0\0");
+    rng_write_u64_be(&mut msg, 16, counter);
+    rng_write_u64_be(&mut msg, 24, read_cntpct());
+    rng_write_u64_be(&mut msg, 32, boot_cntpct());
+    let block = hmac_sha256_digest(&key, &msg);
+    let next_state = hmac_sha256_digest(&key, &block);
+    unsafe {
+        RNG_STATE = next_state;
+    }
+    block
+}
+
+fn rng_seed_put(out: &mut [u8], offset: &mut usize, bytes: &[u8]) {
+    let available = out.len().saturating_sub(*offset);
+    let n = bytes.len().min(available);
+    out[*offset..*offset + n].copy_from_slice(&bytes[..n]);
+    *offset += n;
+}
+
+fn rng_seed_put_u64(out: &mut [u8], offset: &mut usize, value: u64) {
+    if out.len().saturating_sub(*offset) < 8 {
+        return;
+    }
+    rng_write_u64_be(out, *offset, value);
+    *offset += 8;
+}
+
+fn rng_write_u64_be(out: &mut [u8], offset: usize, value: u64) {
+    if out.len().saturating_sub(offset) < 8 {
+        return;
+    }
+    for i in 0..8 {
+        out[offset + i] = (value >> (56 - i * 8)) as u8;
+    }
 }
 
 fn command_wifi<'a>(uart: &mut Uart, parts: &mut core::str::SplitWhitespace<'a>) {
@@ -15239,6 +15401,11 @@ fn net_handle_query_packet(
             {
                 let _ = write!(reply, "XJQ OK ");
                 write_identity_summary(&mut reply);
+            } else if query.eq_ignore_ascii_case("rng status") {
+                let _ = write!(reply, "XJQ OK ");
+                write_rng_status_summary(&mut reply);
+            } else if query.starts_with("rng sample ") {
+                write_rng_sample_query_summary(query, &mut reply);
             } else if query.eq_ignore_ascii_case("reboot confirm") {
                 let _ = write!(reply, "XJQ OK reboot=after-reply");
                 reboot_after_reply = true;
@@ -18582,7 +18749,11 @@ fn sha256_hex_matches(digest: &[u8; 32], expected: &[u8]) -> bool {
 }
 
 fn write_sha256_hex<W: Write>(out: &mut W, digest: &[u8; 32]) {
-    for byte in digest {
+    write_hex_bytes(out, digest);
+}
+
+fn write_hex_bytes<W: Write>(out: &mut W, bytes: &[u8]) {
+    for byte in bytes {
         let _ = write!(out, "{byte:02x}");
     }
 }

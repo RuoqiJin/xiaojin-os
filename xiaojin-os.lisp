@@ -277,6 +277,12 @@
       :default-iters 1000000
       :max-iters 20000000
       :purpose "Run timer-backed CPU microbenchmarks.")
+    (command rng
+      :subcommands [status sample]
+      :confirmed-write-commands [sample]
+      :grade "development-hmac-drbg"
+      :hardware-trng false
+      :purpose "Expose a timer/identity mixed HMAC-SHA256 DRBG for nonce/session bring-up before a hardware TRNG is wired.")
     (command net
       :subcommands [facts ips ip dhcp dns tcp http loop listen sniff]
       :write-commands [ip dhcp loop listen sniff]
