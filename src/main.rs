@@ -2161,6 +2161,7 @@ fn print_help(uart: &mut Uart) {
     uart.put_str("  wifi pcie-init confirm\n");
     uart.put_str("  wifi pcie-init-high confirm\n");
     uart.put_str("  wifi pcie-init-linux confirm\n");
+    uart.put_str("  wifi pcie-init-dt confirm\n");
     uart.put_str("                       initialize PCIe2/combphy2 and probe WiFi config\n");
     uart.put_str("  wifi scan confirm    reserved station-mode scan command\n");
     uart.put_str("  wifi join <ssid> confirm\n");
@@ -2317,7 +2318,7 @@ fn print_caps(uart: &mut Uart) {
 fn write_caps_query_summary<W: Write>(out: &mut W) {
     let _ = write!(
         out,
-        "XJQ OK caps net-dev=yes dhcp=yes auto-dhcp=yes route=yes arp=yes dns=yes tcp-connect=yes http-get=yes http-post=yes http-trace=yes http-debug=yes maint-poll=yes maint-status=yes maint-pending-summary=yes maint-command-digest=yes maint-command-verify=yes maint-command-verify-hmac=yes maint-local-hmac-key=yes maint-pull-exec=yes maint-loop=yes maint-config=yes maint-cold-boot-tick=yes maint-ack-intent=yes maint-remote-event=yes maint-local-audit=yes identity=yes query=yes reboot=yes wifi=facts-only wifi-pcie=facts wifi-cru=read-only wifi-apb=read-only wifi-phy=read-only wifi-power=read-only wifi-link=read-only wifi-trace=confirm wifi-pcie-init=confirm wifi-pcie-init-high=confirm wifi-station=planned wifi-ap=planned sd-probe=yes sd-writer=yes ab-persist=yes boot-slot=extlinux db=page-store,catalog,wal,fixed-table,btree,table-namespace,event-log,blob-backup,blob-restore"
+        "XJQ OK caps net-dev=yes dhcp=yes auto-dhcp=yes route=yes arp=yes dns=yes tcp-connect=yes http-get=yes http-post=yes http-trace=yes http-debug=yes maint-poll=yes maint-status=yes maint-pending-summary=yes maint-command-digest=yes maint-command-verify=yes maint-command-verify-hmac=yes maint-local-hmac-key=yes maint-pull-exec=yes maint-loop=yes maint-config=yes maint-cold-boot-tick=yes maint-ack-intent=yes maint-remote-event=yes maint-local-audit=yes identity=yes query=yes reboot=yes wifi=facts-only wifi-pcie=facts wifi-cru=read-only wifi-apb=read-only wifi-phy=read-only wifi-power=read-only wifi-link=read-only wifi-trace=confirm wifi-pcie-init=confirm wifi-pcie-init-high=confirm wifi-pcie-init-linux=confirm wifi-pcie-init-dt=confirm wifi-station=planned wifi-ap=planned sd-probe=yes sd-writer=yes ab-persist=yes boot-slot=extlinux db=page-store,catalog,wal,fixed-table,btree,table-namespace,event-log,blob-backup,blob-restore"
     );
 }
 
@@ -2363,6 +2364,7 @@ fn command_wifi<'a>(uart: &mut Uart, parts: &mut core::str::SplitWhitespace<'a>)
         Some("pcie-init") => command_wifi_pcie_init(uart, parts.next()),
         Some("pcie-init-high") => command_wifi_pcie_init_high(uart, parts.next()),
         Some("pcie-init-linux") => command_wifi_pcie_init_linux(uart, parts.next()),
+        Some("pcie-init-dt") => command_wifi_pcie_init_dt(uart, parts.next()),
         Some("scan") => command_wifi_scan(uart, parts.next()),
         Some("join") => command_wifi_ssid_not_ready(uart, "join", parts.next(), parts.next()),
         Some("ap") => command_wifi_ssid_not_ready(uart, "ap", parts.next(), parts.next()),
@@ -2382,6 +2384,7 @@ fn command_wifi<'a>(uart: &mut Uart, parts: &mut core::str::SplitWhitespace<'a>)
             uart.put_str("  wifi pcie-init confirm\n");
             uart.put_str("  wifi pcie-init-high confirm\n");
             uart.put_str("  wifi pcie-init-linux confirm\n");
+            uart.put_str("  wifi pcie-init-dt confirm\n");
             uart.put_str("  wifi scan confirm\n");
             uart.put_str("  wifi join <ssid> confirm\n");
             uart.put_str("  wifi ap <ssid> confirm\n");
@@ -2604,7 +2607,10 @@ fn print_wifi_link_status(uart: &mut Uart) {
     print_wifi_phy_status(uart);
     print_wifi_apb_status(uart);
 
-    if wifi_pcie2_dbi_safe() {
+    let dbi_safe = wifi_pcie2_dbi_safe();
+    let ltssm = probe_read32(PCIE2X1_APB_BASE + PCIE_CLIENT_LTSSM_STATUS).unwrap_or(0);
+    let link_up = pcie_link_is_up(ltssm);
+    if dbi_safe && link_up {
         uart.put_str("  dbi             safe-to-read yes\n");
         print_pcie_reg(
             uart,
@@ -2631,11 +2637,11 @@ fn print_wifi_link_status(uart: &mut Uart) {
             probe_read32(PCIE2X1_DBI_BASE + PCIE_ATU_VIEWPORT),
         );
     } else {
-        uart.put_str("  dbi             safe-to-read no; skipped to avoid bus stall\n");
+        uart.put_str(
+            "  dbi             skipped; requires clocks/resets deasserted and PCIe2 link up\n",
+        );
     }
 
-    let ltssm = probe_read32(PCIE2X1_APB_BASE + PCIE_CLIENT_LTSSM_STATUS).unwrap_or(0);
-    let link_up = ltssm & PCIE_CLIENT_LINKUP_MASK == PCIE_CLIENT_LINKUP;
     if link_up {
         pcie_program_cfg_atu(
             PCIE2_CONTROLLER,
@@ -2708,8 +2714,23 @@ fn command_wifi_pcie_init_linux(uart: &mut Uart, confirm: Option<&str>) {
     }
 
     uart.put_str("wifi PCIe2 init-linux:\n");
-    uart.put_str("  reset-policy    upstream-order pipe-reset then hold-low release-high\n");
+    uart.put_str("  reset-policy    upstream-order pipe-reset then hold-high release-low\n");
     let result = wifi_pcie2_init_sequence_linux_order();
+    print_wifi_pcie_init_result(uart, result);
+}
+
+fn command_wifi_pcie_init_dt(uart: &mut Uart, confirm: Option<&str>) {
+    if !matches!(confirm, Some(value) if value.eq_ignore_ascii_case("confirm")) {
+        uart.put_str("usage: wifi pcie-init-dt confirm\n");
+        uart.put_str(
+            "scope: writes only PCIe2 device-tree reset path: pipe reset plus active-high PC1 PERST\n",
+        );
+        return;
+    }
+
+    uart.put_str("wifi PCIe2 init-dt:\n");
+    uart.put_str("  reset-policy    dt-pipe-reset hold-high release-low\n");
+    let result = wifi_pcie2_init_sequence_dt_order();
     print_wifi_pcie_init_result(uart, result);
 }
 
@@ -2973,14 +2994,16 @@ fn write_wifi_power_summary<W: Write>(out: &mut W) {
 fn write_wifi_link_summary<W: Write>(out: &mut W) {
     let ltssm = probe_read32(PCIE2X1_APB_BASE + PCIE_CLIENT_LTSSM_STATUS).unwrap_or(0);
     let state = ltssm & PCIE_CLIENT_LTSSM_STATUS_MASK;
-    let link_up = ltssm & PCIE_CLIENT_LINKUP_MASK == PCIE_CLIENT_LINKUP;
+    let link_up = pcie_link_is_up(ltssm);
     let dbi_safe = wifi_pcie2_dbi_safe();
+    let dbi_read = link_up && dbi_safe;
     let _ = write!(
         out,
-        "wifi-link link={} ltssm=0x{ltssm:08x} state=0x{state:02x} state-name={} dbi-safe={}",
+        "wifi-link link={} ltssm=0x{ltssm:08x} state=0x{state:02x} state-name={} dbi-safe={} dbi-read={}",
         if link_up { "up" } else { "down" },
         pcie_ltssm_state_name(state),
-        if dbi_safe { "yes" } else { "no" }
+        if dbi_safe { "yes" } else { "no" },
+        if dbi_read { "yes" } else { "no" }
     );
     write_probe32_summary(out, "general", PCIE2X1_APB_BASE + PCIE_CLIENT_GENERAL_CON);
     write_probe32_summary(out, "misc", PCIE2X1_APB_BASE + PCIE_CLIENT_INTR_STATUS_MISC);
@@ -2991,7 +3014,7 @@ fn write_wifi_link_summary<W: Write>(out: &mut W) {
         PCIE2X1_APB_BASE + PCIE_CLIENT_HOT_RESET_CTRL,
     );
     write_gpio_pin_summary(out, "pinctrl-pd2", GPIO2, PCIE20_PINCTRL_PIN);
-    if dbi_safe {
+    if dbi_read {
         write_probe32_summary(out, "dbi0", PCIE2X1_DBI_BASE);
         write_probe32_summary(out, "dbi4", PCIE2X1_DBI_BASE + 0x04);
         write_probe32_summary(out, "dbi8", PCIE2X1_DBI_BASE + 0x08);
@@ -3069,8 +3092,14 @@ fn write_wifi_pcie_init_high_summary<W: Write>(out: &mut W) {
 }
 
 fn write_wifi_pcie_init_linux_summary<W: Write>(out: &mut W) {
-    let _ = write!(out, "reset-policy=linux-order-hold-low-release-high ");
+    let _ = write!(out, "reset-policy=linux-order-hold-high-release-low ");
     let result = wifi_pcie2_init_sequence_linux_order();
+    write_wifi_pcie_init_result_summary(out, result);
+}
+
+fn write_wifi_pcie_init_dt_summary<W: Write>(out: &mut W) {
+    let _ = write!(out, "reset-policy=dt-pipe-reset-hold-high-release-low ");
+    let result = wifi_pcie2_init_sequence_dt_order();
     write_wifi_pcie_init_result_summary(out, result);
 }
 
@@ -15307,6 +15336,9 @@ fn net_handle_query_packet(
             } else if query.eq_ignore_ascii_case("wifi pcie-init-linux confirm") {
                 let _ = write!(reply, "XJQ OK ");
                 write_wifi_pcie_init_linux_summary(&mut reply);
+            } else if query.eq_ignore_ascii_case("wifi pcie-init-dt confirm") {
+                let _ = write!(reply, "XJQ OK ");
+                write_wifi_pcie_init_dt_summary(&mut reply);
             } else if query.eq_ignore_ascii_case("sd facts") {
                 let _ = write!(
                 reply,
@@ -16992,8 +17024,11 @@ fn wifi_pcie2_wait_link_and_cfg() -> WifiPcieInitResult {
 }
 
 fn wifi_pcie2_init_sequence_with_reset_release(release_high: bool) -> WifiPcieInitResult {
+    set_pcie_ltssm(PCIE2_CONTROLLER, false);
     gpio_v2_write_bit(GPIO0, GPIO_V2_PORT_DR, PCIE_POWER_PIN, true);
     gpio_v2_write_bit(GPIO0, GPIO_V2_PORT_DDR, PCIE_POWER_PIN, true);
+    set_pcie_reset_pin_level(&PCIE_RESET_PINS[2], !release_high);
+    delay_ms(20);
 
     wifi_pcie2_enable_clocks();
 
@@ -17006,22 +17041,20 @@ fn wifi_pcie2_init_sequence_with_reset_release(release_high: bool) -> WifiPcieIn
 
     wifi_pcie2_configure_combphy();
 
-    set_pcie_reset_pin_level(&PCIE_RESET_PINS[2], !release_high);
-    delay_ms(20);
-
     wifi_pcie2_configure_rc();
-    set_pcie_ltssm(PCIE2_CONTROLLER, true);
-    delay_ms(100);
     set_pcie_reset_pin_level(&PCIE_RESET_PINS[2], release_high);
+    delay_ms(100);
+    set_pcie_ltssm(PCIE2_CONTROLLER, true);
 
     wifi_pcie2_wait_link_and_cfg()
 }
 
 fn wifi_pcie2_init_sequence_linux_order() -> WifiPcieInitResult {
+    set_pcie_ltssm(PCIE2_CONTROLLER, false);
     gpio_v2_write_bit(GPIO0, GPIO_V2_PORT_DR, PCIE_POWER_PIN, true);
     gpio_v2_write_bit(GPIO0, GPIO_V2_PORT_DDR, PCIE_POWER_PIN, true);
 
-    set_pcie_reset_pin_level(&PCIE_RESET_PINS[2], false);
+    set_pcie_reset_pin_level(&PCIE_RESET_PINS[2], true);
     cru_reset_assert(PCIE2_RESETS[1]);
     delay_ms(20);
 
@@ -17038,18 +17071,45 @@ fn wifi_pcie2_init_sequence_linux_order() -> WifiPcieInitResult {
     delay_ms(1);
 
     wifi_pcie2_configure_rc();
-    set_pcie_ltssm(PCIE2_CONTROLLER, true);
+    set_pcie_reset_pin_level(&PCIE_RESET_PINS[2], false);
     delay_ms(100);
+    set_pcie_ltssm(PCIE2_CONTROLLER, true);
+
+    wifi_pcie2_wait_link_and_cfg()
+}
+
+fn wifi_pcie2_init_sequence_dt_order() -> WifiPcieInitResult {
+    set_pcie_ltssm(PCIE2_CONTROLLER, false);
+    gpio_v2_write_bit(GPIO0, GPIO_V2_PORT_DR, PCIE_POWER_PIN, true);
+    gpio_v2_write_bit(GPIO0, GPIO_V2_PORT_DDR, PCIE_POWER_PIN, true);
+
     set_pcie_reset_pin_level(&PCIE_RESET_PINS[2], true);
+    cru_reset_assert(PCIE2_RESETS[1]);
+    delay_ms(100);
+
+    wifi_pcie2_enable_clocks();
+    for reset in COMBPHY2_RESETS {
+        cru_reset_deassert(*reset);
+    }
+    wifi_pcie2_configure_combphy();
+
+    cru_reset_deassert(PCIE2_RESETS[1]);
+    delay_ms(10);
+    wifi_pcie2_configure_rc();
+
+    set_pcie_reset_pin_level(&PCIE_RESET_PINS[2], false);
+    delay_ms(100);
+    set_pcie_ltssm(PCIE2_CONTROLLER, true);
 
     wifi_pcie2_wait_link_and_cfg()
 }
 
 fn wifi_pcie2_trace_sequence() -> WifiPcieTraceResult {
+    set_pcie_ltssm(PCIE2_CONTROLLER, false);
     gpio_v2_write_bit(GPIO0, GPIO_V2_PORT_DR, PCIE_POWER_PIN, true);
     gpio_v2_write_bit(GPIO0, GPIO_V2_PORT_DDR, PCIE_POWER_PIN, true);
 
-    set_pcie_reset_pin_level(&PCIE_RESET_PINS[2], false);
+    set_pcie_reset_pin_level(&PCIE_RESET_PINS[2], true);
     cru_reset_assert(PCIE2_RESETS[1]);
     delay_ms(20);
 
@@ -17070,9 +17130,9 @@ fn wifi_pcie2_trace_sequence() -> WifiPcieTraceResult {
         PCIE2X1_APB_BASE + PCIE_CLIENT_DBG_FIFO_MODE_CON,
         PCIE_CLIENT_DBG_EN,
     );
+    set_pcie_reset_pin_level(&PCIE_RESET_PINS[2], false);
+    delay_ms(100);
     set_pcie_ltssm(PCIE2_CONTROLLER, true);
-    delay_ms(10);
-    set_pcie_reset_pin_level(&PCIE_RESET_PINS[2], true);
 
     let mut samples = [0u32; 8];
     for sample in samples.iter_mut() {
@@ -17227,13 +17287,17 @@ fn set_pcie_ltssm(controller: PcieController, enable: bool) {
     write_mmio32(controller.apb_base + PCIE_CLIENT_GENERAL_CON, value);
 }
 
+fn pcie_link_is_up(ltssm: u32) -> bool {
+    ltssm & PCIE_CLIENT_LINKUP_MASK == PCIE_CLIENT_LINKUP
+}
+
 fn wait_pcie_link(controller: PcieController, timeout_ms: u64) -> Option<u32> {
     let freq = read_cntfrq();
     let timeout_ticks = ms_to_ticks(timeout_ms, freq)?;
     let start = read_cntpct();
     loop {
         if let Ok(ltssm) = probe_read32(controller.apb_base + PCIE_CLIENT_LTSSM_STATUS) {
-            if ltssm & PCIE_CLIENT_LINKUP_MASK == PCIE_CLIENT_LINKUP {
+            if pcie_link_is_up(ltssm) {
                 return Some(ltssm);
             }
         }

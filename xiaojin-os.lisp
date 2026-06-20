@@ -185,8 +185,8 @@
       :safety "Read-only vcc3v3_pcie regulator GPIO status; init path only drives it active-high enabled.")
     (stage pcie2x1-enumeration
       :status in-progress
-      :commands [wifi pcie-init]
-      :queries [xjq-wifi-pcie-init]
+      :commands [wifi pcie-init wifi pcie-init-dt]
+      :queries [xjq-wifi-pcie-init xjq-wifi-pcie-init-dt]
       :requires [safe-reset-gpio-pc1 pcie2-clock-map pcie2-combphy-map pcie2-config-window rtl8822ce-vendor-id]
       :safety "Requires explicit confirm; writes only PCIe2/combphy2 WiFi path while wired RTL8125 OTA remains active."
       :purpose "Enumerate the RTL8822CE path without changing the proven wired PCIe3 controllers.")

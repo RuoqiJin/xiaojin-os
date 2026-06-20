@@ -256,13 +256,18 @@ one lane, and reset GPIO `gpio3 PC1` active-high. `wifi cru` reads the PCIe2
 clock gate, soft reset, and reset-GPIO state without writing any WiFi/PCIe2
 registers. `wifi apb` reads controller-local APB status without DBI/config
 access. `wifi phy` reads RK3568 combphy2 and pipe-phy-grf status without writes.
-`wifi power` reads the `vcc3v3_pcie` regulator GPIO state. These facts are also available
-over Ethernet through `xjctl wifi-facts`, `xjctl wifi-status`, and
-`xjctl wifi-pcie`/`xjctl wifi-cru`/`xjctl wifi-apb`/`xjctl wifi-phy`/`xjctl wifi-power`. Station
-mode and AP mode are not implemented yet. `wifi pcie-init confirm` /
-`xjctl wifi-init` is the first write-stage probe: it initializes only the
-PCIe2/combphy2 WiFi path, waits for LTSSM, and reads config word 0 when the link
-comes up. The already-working RTL8125 wired OTA path remains the rescue channel.
+`wifi power` reads the `vcc3v3_pcie` regulator GPIO state. These facts are also
+available over Ethernet through `xjctl wifi-facts`, `xjctl wifi-status`, and
+`xjctl wifi-pcie`/`xjctl wifi-cru`/`xjctl wifi-apb`/`xjctl wifi-phy`/
+`xjctl wifi-power`. Station mode and AP mode are not implemented yet. `wifi
+pcie-init confirm` / `xjctl wifi-init` is the first write-stage probe: it
+initializes only the PCIe2/combphy2 WiFi path, waits for LTSSM, and reads config
+word 0 when the link comes up. `wifi pcie-init-dt confirm` / `xjctl
+wifi-init-dt` is the narrower device-tree-aligned probe: it only drives the
+declared PCIe2 pipe reset and active-high PC1 PERST before starting LTSSM. WiFi
+DBI/config reads are skipped until PCIe2 reports link-up, because unlinked DBI
+windows can stall the board. The already-working RTL8125 wired OTA path remains
+the rescue channel.
 
 ## Network Bring-Up Plan
 
