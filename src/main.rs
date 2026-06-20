@@ -216,6 +216,7 @@ const HTTP_REQUEST_BYTES: usize = 768;
 const HTTP_RESPONSE_MAX_BYTES: usize = 8 * 1024;
 const HTTP_RESPONSE_SAMPLE_BYTES: usize = 2048;
 const TLS_CLIENT_HELLO_BYTES: usize = 512;
+const TLS_TRANSCRIPT_MAX_BYTES: usize = 2048;
 const TLS_RECORD_HANDSHAKE: u8 = 0x16;
 const TLS_RECORD_ALERT: u8 = 0x15;
 const TCP_FLAG_PSH: u16 = 0x008;
@@ -1134,6 +1135,9 @@ struct TlsClientHelloResult {
     key_share_group: Option<u16>,
     key_share_len: Option<u16>,
     shared_secret_sha256: Option<[u8; 32]>,
+    transcript_sha256: Option<[u8; 32]>,
+    client_handshake_traffic_sha256: Option<[u8; 32]>,
+    server_handshake_traffic_sha256: Option<[u8; 32]>,
     sample_len: usize,
     sample: [u8; HTTP_RESPONSE_SAMPLE_BYTES],
 }
@@ -4043,6 +4047,12 @@ fn write_net_tls_query_summary<W: Write>(default_index: usize, query: &str, out:
                 optional_u16_dec(result.key_share_len)
             );
             write_optional_sha256_hex(out, &result.shared_secret_sha256);
+            let _ = write!(out, " transcript-sha256=");
+            write_optional_sha256_hex(out, &result.transcript_sha256);
+            let _ = write!(out, " client-hs-traffic-sha256=");
+            write_optional_sha256_hex(out, &result.client_handshake_traffic_sha256);
+            let _ = write!(out, " server-hs-traffic-sha256=");
+            write_optional_sha256_hex(out, &result.server_handshake_traffic_sha256);
             let _ = write!(out, " raw=\"");
             write_http_raw_sample_line(out, &result.sample[..result.sample_len]);
             let _ = write!(out, "\"");
@@ -11213,6 +11223,15 @@ fn print_tls_client_hello_result(uart: &mut Uart, result: TlsClientHelloResult) 
     uart.put_str("  shared-secret   sha256=");
     write_optional_sha256_hex(uart, &result.shared_secret_sha256);
     uart.put_str("\n");
+    uart.put_str("  transcript      sha256=");
+    write_optional_sha256_hex(uart, &result.transcript_sha256);
+    uart.put_str("\n");
+    uart.put_str("  client-hs       traffic-sha256=");
+    write_optional_sha256_hex(uart, &result.client_handshake_traffic_sha256);
+    uart.put_str("\n");
+    uart.put_str("  server-hs       traffic-sha256=");
+    write_optional_sha256_hex(uart, &result.server_handshake_traffic_sha256);
+    uart.put_str("\n");
     let _ = writeln!(
         uart,
         "  transfer        sent={} bytes={} payload={} segments={} fin={} truncated={}",
@@ -14374,11 +14393,25 @@ fn net_tls_client_hello(
     };
     let record = parse_tls_first_record(&response.sample[..response.sample_len])
         .ok_or(TlsError::MalformedRecord)?;
-    let shared_secret_sha256 = record.server_x25519_key_share.map(|server_key| {
+    let mut shared_secret_sha256 = None;
+    let mut transcript_sha256 = None;
+    let mut client_handshake_traffic_sha256 = None;
+    let mut server_handshake_traffic_sha256 = None;
+    if let Some(server_key) = record.server_x25519_key_share {
         let server_public = X25519PublicKey::from(server_key);
         let shared_secret = x25519_secret.diffie_hellman(&server_public);
-        sha256_digest(shared_secret.as_bytes())
-    });
+        shared_secret_sha256 = Some(sha256_digest(shared_secret.as_bytes()));
+        if let Some(transcript_hash) = tls_handshake_transcript_hash(
+            &client_hello[..client_hello_len],
+            &response.sample[..response.sample_len],
+        ) {
+            let traffic =
+                tls13_handshake_traffic_secret_digests(shared_secret.as_bytes(), &transcript_hash);
+            transcript_sha256 = Some(transcript_hash);
+            client_handshake_traffic_sha256 = Some(traffic.0);
+            server_handshake_traffic_sha256 = Some(traffic.1);
+        }
+    }
 
     let _ = net_send_tcp_packet(
         index,
@@ -14412,6 +14445,9 @@ fn net_tls_client_hello(
         key_share_group: record.key_share_group,
         key_share_len: record.key_share_len,
         shared_secret_sha256,
+        transcript_sha256,
+        client_handshake_traffic_sha256,
+        server_handshake_traffic_sha256,
         sample_len: response.sample_len,
         sample: response.sample,
     })
@@ -14605,6 +14641,85 @@ fn parse_tls_server_hello(sample: &[u8], summary: &mut TlsRecordSummary) -> Opti
         offset = value_end;
     }
     Some(())
+}
+
+fn tls_handshake_transcript_hash(client_record: &[u8], server_record: &[u8]) -> Option<[u8; 32]> {
+    if client_record.len() < 5 || server_record.len() < 9 {
+        return None;
+    }
+    let server_handshake_len = read_be24(server_record, 6)? as usize;
+    let server_handshake_total = server_handshake_len.checked_add(4)?;
+    let server_handshake_end = 5usize.checked_add(server_handshake_total)?;
+    if server_handshake_end > server_record.len() {
+        return None;
+    }
+    let client_handshake = &client_record[5..];
+    let server_handshake = &server_record[5..server_handshake_end];
+    let transcript_len = client_handshake.len().checked_add(server_handshake.len())?;
+    if transcript_len > TLS_TRANSCRIPT_MAX_BYTES {
+        return None;
+    }
+    let mut transcript = [0u8; TLS_TRANSCRIPT_MAX_BYTES];
+    transcript[..client_handshake.len()].copy_from_slice(client_handshake);
+    transcript[client_handshake.len()..transcript_len].copy_from_slice(server_handshake);
+    Some(sha256_digest(&transcript[..transcript_len]))
+}
+
+fn tls13_handshake_traffic_secret_digests(
+    shared_secret: &[u8; 32],
+    transcript_hash: &[u8; 32],
+) -> ([u8; 32], [u8; 32]) {
+    let zero = [0u8; 32];
+    let empty_hash = sha256_digest(&[]);
+    let early_secret = hkdf_extract_sha256(&zero, &[]);
+    let derived_secret = tls13_derive_secret(&early_secret, b"derived", &empty_hash);
+    let handshake_secret = hkdf_extract_sha256(&derived_secret, shared_secret);
+    let client_secret = tls13_derive_secret(&handshake_secret, b"c hs traffic", transcript_hash);
+    let server_secret = tls13_derive_secret(&handshake_secret, b"s hs traffic", transcript_hash);
+    (sha256_digest(&client_secret), sha256_digest(&server_secret))
+}
+
+fn tls13_derive_secret(secret: &[u8; 32], label: &[u8], transcript_hash: &[u8; 32]) -> [u8; 32] {
+    tls13_hkdf_expand_label_sha256(secret, label, transcript_hash)
+}
+
+fn tls13_hkdf_expand_label_sha256(secret: &[u8; 32], label: &[u8], context: &[u8; 32]) -> [u8; 32] {
+    let full_label_len = 6usize.saturating_add(label.len());
+    if full_label_len > u8::MAX as usize {
+        return [0u8; 32];
+    }
+    let mut info = [0u8; 96];
+    let mut offset = 0usize;
+    write_be16(&mut info, offset, 32);
+    offset += 2;
+    info[offset] = full_label_len as u8;
+    offset += 1;
+    info[offset..offset + 6].copy_from_slice(b"tls13 ");
+    offset += 6;
+    if info.len().saturating_sub(offset) < label.len() {
+        return [0u8; 32];
+    }
+    info[offset..offset + label.len()].copy_from_slice(label);
+    offset += label.len();
+    info[offset] = context.len() as u8;
+    offset += 1;
+    info[offset..offset + context.len()].copy_from_slice(context);
+    offset += context.len();
+    hkdf_expand_sha256(secret, &info[..offset])
+}
+
+fn hkdf_extract_sha256(salt: &[u8], ikm: &[u8]) -> [u8; 32] {
+    hmac_sha256_digest(salt, ikm)
+}
+
+fn hkdf_expand_sha256(prk: &[u8; 32], info: &[u8]) -> [u8; 32] {
+    if info.len() + 1 > 128 {
+        return [0u8; 32];
+    }
+    let mut message = [0u8; 128];
+    message[..info.len()].copy_from_slice(info);
+    message[info.len()] = 1;
+    hmac_sha256_digest(prk, &message[..info.len() + 1])
 }
 
 fn valid_tls_server_name(value: &str) -> bool {
@@ -18459,6 +18574,17 @@ fn read_be16(bytes: &[u8], offset: usize) -> Option<u16> {
         return None;
     }
     Some(((bytes[offset] as u16) << 8) | bytes[offset + 1] as u16)
+}
+
+fn read_be24(bytes: &[u8], offset: usize) -> Option<u32> {
+    if offset + 2 >= bytes.len() {
+        return None;
+    }
+    Some(
+        ((bytes[offset] as u32) << 16)
+            | ((bytes[offset + 1] as u32) << 8)
+            | bytes[offset + 2] as u32,
+    )
 }
 
 fn read_be32(bytes: &[u8], offset: usize) -> Option<u32> {

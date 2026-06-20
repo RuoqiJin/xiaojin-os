@@ -260,9 +260,10 @@ probe. It builds a small TLS ClientHello with SNI, TLS 1.3 cipher suites, a
 development RNG random, supported versions/groups/signature extensions, and an
 ephemeral X25519 key share. It then parses the first server TLS record, extracts
 ServerHello selected-version/key-share metadata when present, and reports a
-SHA-256 fingerprint of the derived shared secret. This proves DNS/route/ARP/TCP
-plus TLS key-agreement reachability, but it is not yet a complete TLS stack or
-HTTPS client.
+SHA-256 fingerprint of the derived shared secret plus the TLS 1.3 transcript and
+handshake traffic secret fingerprints. This proves DNS/route/ARP/TCP plus TLS
+key-agreement and secret-schedule reachability, but it is not yet a complete TLS
+stack or HTTPS client.
 
 `wifi facts`, `wifi status`, `wifi pcie`, `wifi cru`, `wifi apb`, `wifi phy`,
 and `wifi roadmap` expose the R5C
