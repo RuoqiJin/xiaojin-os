@@ -268,8 +268,8 @@ the first encrypted server handshake record. It is not yet a complete TLS stack
 or HTTPS client.
 
 `wifi facts`, `wifi status`, `wifi pcie`, `wifi cru`, `wifi apb`, `wifi phy`,
-and `wifi roadmap` expose the R5C
-wireless plan without touching WiFi registers. The current hardware assumption
+`wifi enum confirm`, and `wifi roadmap` expose the R5C
+wireless bring-up path before the full WiFi driver exists. The current hardware assumption
 is an RTL8822CE-family M.2 E-Key WiFi/BT module. The OpenWrt R5C device tree
 places the candidate WiFi PCIe controller at `/pcie@fe260000`, with
 DBI `0x3c0000000`, APB `0xfe260000`, config `0xf4000000`, bus `0x00..0x0f`,
@@ -287,8 +287,10 @@ word 0 when the link comes up. `wifi pcie-init-dt confirm` / `xjctl
 wifi-init-dt` is the narrower device-tree-aligned probe: it only drives the
 declared PCIe2 pipe reset and active-high PC1 PERST before starting LTSSM. WiFi
 DBI/config reads are skipped until PCIe2 reports link-up, because unlinked DBI
-windows can stall the board. The already-working RTL8125 wired OTA path remains
-the rescue channel.
+windows can stall the board. `wifi enum confirm` / `xjctl wifi-enum` runs the
+DT-aligned PCIe2 bring-up path and reads endpoint vendor/device/class/BAR and
+subsystem config-space words without sizing BARs or touching WiFi firmware/MMIO.
+The already-working RTL8125 wired OTA path remains the rescue channel.
 
 ## Network Bring-Up Plan
 

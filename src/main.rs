@@ -834,6 +834,20 @@ struct WifiPcieTraceResult {
     samples: [u32; 8],
 }
 
+#[derive(Clone, Copy)]
+struct WifiPcieEndpointConfig {
+    cfg0: u32,
+    command_status: u32,
+    class_revision: u32,
+    bar0: u32,
+    bar1: u32,
+    bar2: u32,
+    bar3: u32,
+    bar4: u32,
+    bar5: u32,
+    subsystem: u32,
+}
+
 impl NetPollStats {
     const fn empty() -> Self {
         Self {
@@ -2268,7 +2282,8 @@ fn print_help(uart: &mut Uart) {
     uart.put_str("  wifi pcie-init-high confirm\n");
     uart.put_str("  wifi pcie-init-linux confirm\n");
     uart.put_str("  wifi pcie-init-dt confirm\n");
-    uart.put_str("                       initialize PCIe2/combphy2 and probe WiFi config\n");
+    uart.put_str("                       initialize PCIe2/combphy2 and probe WiFi cfg0\n");
+    uart.put_str("  wifi enum confirm    initialize PCIe2 and read endpoint config space\n");
     uart.put_str("  wifi scan confirm    reserved station-mode scan command\n");
     uart.put_str("  wifi join <ssid> confirm\n");
     uart.put_str("                       reserved station-mode association command\n");
@@ -2410,6 +2425,7 @@ fn print_caps(uart: &mut Uart) {
     uart.put_str("  wifi facts yes\n");
     uart.put_str("  wifi pcie-facts yes\n");
     uart.put_str("  wifi link-readonly yes\n");
+    uart.put_str("  wifi enum-confirm yes\n");
     uart.put_str("  wifi station planned\n");
     uart.put_str("  wifi ap planned\n");
     uart.put_str("  sd probe-readonly yes\n");
@@ -2427,7 +2443,7 @@ fn print_caps(uart: &mut Uart) {
 fn write_caps_query_summary<W: Write>(out: &mut W) {
     let _ = write!(
         out,
-        "XJQ OK caps net-dev=yes dhcp=yes auto-dhcp=yes route=yes arp=yes dns=yes tcp-connect=yes http-get=yes http-post=yes http-trace=yes http-debug=yes tls-clienthello=yes tls-chacha20poly1305-decrypt=yes maint-poll=yes maint-status=yes maint-pending-summary=yes maint-command-digest=yes maint-command-verify=yes maint-command-verify-hmac=yes maint-local-hmac-key=yes maint-pull-exec=yes maint-loop=yes maint-config=yes maint-cold-boot-tick=yes maint-ack-intent=yes maint-remote-event=yes maint-local-audit=yes identity=yes rng=development-hmac-drbg query=yes reboot=yes wifi=facts-only wifi-pcie=facts wifi-cru=read-only wifi-apb=read-only wifi-phy=read-only wifi-power=read-only wifi-link=read-only wifi-trace=confirm wifi-pcie-init=confirm wifi-pcie-init-high=confirm wifi-pcie-init-linux=confirm wifi-pcie-init-dt=confirm wifi-station=planned wifi-ap=planned sd-probe=yes sd-writer=yes ab-persist=yes boot-slot=extlinux db=page-store,catalog,wal,fixed-table,btree,table-namespace,event-log,blob-backup,blob-restore"
+        "XJQ OK caps net-dev=yes dhcp=yes auto-dhcp=yes route=yes arp=yes dns=yes tcp-connect=yes http-get=yes http-post=yes http-trace=yes http-debug=yes tls-clienthello=yes tls-chacha20poly1305-decrypt=yes maint-poll=yes maint-status=yes maint-pending-summary=yes maint-command-digest=yes maint-command-verify=yes maint-command-verify-hmac=yes maint-local-hmac-key=yes maint-pull-exec=yes maint-loop=yes maint-config=yes maint-cold-boot-tick=yes maint-ack-intent=yes maint-remote-event=yes maint-local-audit=yes identity=yes rng=development-hmac-drbg query=yes reboot=yes wifi=pcie-enum wifi-pcie=facts wifi-cru=read-only wifi-apb=read-only wifi-phy=read-only wifi-power=read-only wifi-link=read-only wifi-trace=confirm wifi-pcie-init=confirm wifi-pcie-init-high=confirm wifi-pcie-init-linux=confirm wifi-pcie-init-dt=confirm wifi-enum=confirm wifi-station=planned wifi-ap=planned sd-probe=yes sd-writer=yes ab-persist=yes boot-slot=extlinux db=page-store,catalog,wal,fixed-table,btree,table-namespace,event-log,blob-backup,blob-restore"
     );
 }
 
@@ -2625,6 +2641,7 @@ fn command_wifi<'a>(uart: &mut Uart, parts: &mut core::str::SplitWhitespace<'a>)
         Some("pcie-init-high") => command_wifi_pcie_init_high(uart, parts.next()),
         Some("pcie-init-linux") => command_wifi_pcie_init_linux(uart, parts.next()),
         Some("pcie-init-dt") => command_wifi_pcie_init_dt(uart, parts.next()),
+        Some("enum") => command_wifi_enum(uart, parts.next()),
         Some("scan") => command_wifi_scan(uart, parts.next()),
         Some("join") => command_wifi_ssid_not_ready(uart, "join", parts.next(), parts.next()),
         Some("ap") => command_wifi_ssid_not_ready(uart, "ap", parts.next(), parts.next()),
@@ -2645,6 +2662,7 @@ fn command_wifi<'a>(uart: &mut Uart, parts: &mut core::str::SplitWhitespace<'a>)
             uart.put_str("  wifi pcie-init-high confirm\n");
             uart.put_str("  wifi pcie-init-linux confirm\n");
             uart.put_str("  wifi pcie-init-dt confirm\n");
+            uart.put_str("  wifi enum confirm\n");
             uart.put_str("  wifi scan confirm\n");
             uart.put_str("  wifi join <ssid> confirm\n");
             uart.put_str("  wifi ap <ssid> confirm\n");
@@ -2657,7 +2675,7 @@ fn print_wifi_facts(uart: &mut Uart) {
     uart.put_str("  module          RTL8822CE family M.2 E-Key WiFi/BT module\n");
     uart.put_str("  wifi path       candidate PCIe2 x1 behind R5C M.2 E-Key slot\n");
     uart.put_str("  bt path         sideband likely USB/UART; not enumerated by Xiaojin OS yet\n");
-    uart.put_str("  current stage   facts-only, no WiFi register writes\n");
+    uart.put_str("  current stage   PCIe2 endpoint enumeration, no WiFi firmware yet\n");
     uart.put_str("  station mode    planned: enumerate, load firmware, scan, WPA, DHCP, route\n");
     uart.put_str(
         "  AP mode         planned: SoftAP, beacon/probe/auth/assoc, DHCP server, NAT/route\n",
@@ -2667,18 +2685,20 @@ fn print_wifi_facts(uart: &mut Uart) {
 
 fn print_wifi_status(uart: &mut Uart) {
     uart.put_str("wifi status:\n");
-    uart.put_str("  state           facts-only\n");
-    uart.put_str("  link            down\n");
+    uart.put_str("  state           pcie-enum\n");
+    uart.put_str("  link            use `wifi enum confirm` for live endpoint status\n");
     uart.put_str("  scan            unavailable\n");
     uart.put_str("  join            unavailable\n");
     uart.put_str("  ap              unavailable\n");
-    uart.put_str("  reason          RTL8822CE PCIe/firmware/802.11/WPA driver not implemented\n");
+    uart.put_str("  reason          RTL8822CE firmware/802.11/WPA driver not implemented\n");
 }
 
 fn print_wifi_roadmap(uart: &mut Uart) {
     uart.put_str("wifi roadmap:\n");
     uart.put_str("  1 pcie2x1 facts + safe reset/status probes\n");
-    uart.put_str("  2 config-space enumeration for RTL8822CE without touching wired NICs\n");
+    uart.put_str(
+        "  2 config-space enumeration for RTL8822CE without touching wired NICs [current]\n",
+    );
     uart.put_str("  3 firmware loader and MMIO/interrupt/DMA skeleton\n");
     uart.put_str("  4 station scan/auth/assoc plus WPA2-PSK and DHCP route\n");
     uart.put_str("  5 AP mode: beacon/probe/auth/assoc plus local DHCP service\n");
@@ -3025,6 +3045,29 @@ fn command_wifi_trace(uart: &mut Uart, confirm: Option<&str>) {
     }
 }
 
+fn command_wifi_enum(uart: &mut Uart, confirm: Option<&str>) {
+    if !matches!(confirm, Some(value) if value.eq_ignore_ascii_case("confirm")) {
+        uart.put_str("usage: wifi enum confirm\n");
+        uart.put_str(
+            "scope: initialize PCIe2/combphy2 WiFi path and read endpoint config space only\n",
+        );
+        return;
+    }
+
+    uart.put_str("wifi PCIe2 endpoint enum:\n");
+    uart.put_str("  reset-policy    dt-pipe-reset hold-high release-low\n");
+    let result = wifi_pcie2_init_sequence_dt_order();
+    print_wifi_pcie_init_result(uart, result);
+    if !result.link_up {
+        uart.put_str("  endpoint        skipped; PCIe2 link is not up\n");
+        return;
+    }
+    match wifi_pcie2_endpoint_config() {
+        Some(config) => print_wifi_endpoint_config(uart, config),
+        None => uart.put_str("  endpoint        absent-or-unreadable\n"),
+    }
+}
+
 fn print_wifi_pcie_init_result(uart: &mut Uart, result: WifiPcieInitResult) {
     let _ = writeln!(
         uart,
@@ -3054,6 +3097,39 @@ fn print_wifi_pcie_init_result(uart: &mut Uart, result: WifiPcieInitResult) {
             let _ = writeln!(uart, "  cfg-class       0x{class:08x}");
         }
     }
+}
+
+fn print_wifi_endpoint_config(uart: &mut Uart, config: WifiPcieEndpointConfig) {
+    let vendor = (config.cfg0 & 0xffff) as u16;
+    let device = (config.cfg0 >> 16) as u16;
+    let revision = (config.class_revision & 0xff) as u8;
+    let prog_if = ((config.class_revision >> 8) & 0xff) as u8;
+    let subclass = ((config.class_revision >> 16) & 0xff) as u8;
+    let class = ((config.class_revision >> 24) & 0xff) as u8;
+    let subsystem_vendor = (config.subsystem & 0xffff) as u16;
+    let subsystem_device = (config.subsystem >> 16) as u16;
+
+    let _ = writeln!(
+        uart,
+        "  endpoint        {}",
+        wifi_endpoint_name(vendor, device)
+    );
+    let _ = writeln!(uart, "  vendor-device   0x{vendor:04x}:0x{device:04x}");
+    let _ = writeln!(
+        uart,
+        "  class           0x{class:02x} subclass=0x{subclass:02x} prog-if=0x{prog_if:02x} rev=0x{revision:02x}"
+    );
+    let _ = writeln!(uart, "  command-status  0x{:08x}", config.command_status);
+    let _ = writeln!(
+        uart,
+        "  subsystem       0x{subsystem_vendor:04x}:0x{subsystem_device:04x}"
+    );
+    let _ = writeln!(uart, "  bar0            0x{:08x}", config.bar0);
+    let _ = writeln!(uart, "  bar1            0x{:08x}", config.bar1);
+    let _ = writeln!(uart, "  bar2            0x{:08x}", config.bar2);
+    let _ = writeln!(uart, "  bar3            0x{:08x}", config.bar3);
+    let _ = writeln!(uart, "  bar4            0x{:08x}", config.bar4);
+    let _ = writeln!(uart, "  bar5            0x{:08x}", config.bar5);
 }
 
 fn command_wifi_sideband(uart: &mut Uart, mode: Option<&str>, confirm: Option<&str>) {
@@ -3118,14 +3194,14 @@ fn command_wifi_ssid_not_ready(
 fn write_wifi_facts_summary<W: Write>(out: &mut W) {
     let _ = write!(
         out,
-        "wifi chip=rtl8822ce bus=candidate-pcie2x1 slot=m2-e-key stage=facts-only station=planned ap=planned driver=not-loaded firmware=needed"
+        "wifi chip=rtl8822ce bus=candidate-pcie2x1 slot=m2-e-key stage=pcie-enum station=planned ap=planned driver=not-loaded firmware=needed"
     );
 }
 
 fn write_wifi_status_summary<W: Write>(out: &mut W) {
     let _ = write!(
         out,
-        "wifi status=facts-only link=down scan=no join=no ap=no reason=rtl8822ce-driver-not-implemented"
+        "wifi status=pcie-enum link=run-wifi-enum scan=no join=no ap=no reason=rtl8822ce-firmware-80211-wpa-driver-not-implemented"
     );
 }
 
@@ -3384,6 +3460,25 @@ fn write_wifi_trace_summary<W: Write>(out: &mut W) {
     }
 }
 
+fn write_wifi_enum_summary<W: Write>(out: &mut W) {
+    let _ = write!(
+        out,
+        "wifi-enum reset-policy=dt-pipe-reset-hold-high-release-low "
+    );
+    let result = wifi_pcie2_init_sequence_dt_order();
+    write_wifi_pcie_init_result_summary(out, result);
+    if !result.link_up {
+        let _ = write!(out, " endpoint=skipped");
+        return;
+    }
+    match wifi_pcie2_endpoint_config() {
+        Some(config) => write_wifi_endpoint_config_summary(out, config),
+        None => {
+            let _ = write!(out, " endpoint=absent-or-unreadable");
+        }
+    }
+}
+
 fn write_wifi_pcie_init_result_summary<W: Write>(out: &mut W, result: WifiPcieInitResult) {
     let _ = write!(
         out,
@@ -3410,6 +3505,29 @@ fn write_wifi_pcie_init_result_summary<W: Write>(out: &mut W, result: WifiPcieIn
         out,
         "phy-status",
         PIPE_PHY_GRF_BASE + RK3568_PIPE_PHY_GRF_STATUS,
+    );
+}
+
+fn write_wifi_endpoint_config_summary<W: Write>(out: &mut W, config: WifiPcieEndpointConfig) {
+    let vendor = (config.cfg0 & 0xffff) as u16;
+    let device = (config.cfg0 >> 16) as u16;
+    let revision = (config.class_revision & 0xff) as u8;
+    let prog_if = ((config.class_revision >> 8) & 0xff) as u8;
+    let subclass = ((config.class_revision >> 16) & 0xff) as u8;
+    let class = ((config.class_revision >> 24) & 0xff) as u8;
+    let subsystem_vendor = (config.subsystem & 0xffff) as u16;
+    let subsystem_device = (config.subsystem >> 16) as u16;
+    let _ = write!(
+        out,
+        " endpoint={} vendor=0x{vendor:04x} device=0x{device:04x} class=0x{class:02x} subclass=0x{subclass:02x} prog-if=0x{prog_if:02x} rev=0x{revision:02x} command-status=0x{:08x} subsystem-vendor=0x{subsystem_vendor:04x} subsystem-device=0x{subsystem_device:04x} bar0=0x{:08x} bar1=0x{:08x} bar2=0x{:08x} bar3=0x{:08x} bar4=0x{:08x} bar5=0x{:08x}",
+        wifi_endpoint_name(vendor, device),
+        config.command_status,
+        config.bar0,
+        config.bar1,
+        config.bar2,
+        config.bar3,
+        config.bar4,
+        config.bar5
     );
 }
 
@@ -16499,6 +16617,9 @@ fn net_handle_query_packet(
             } else if query.eq_ignore_ascii_case("wifi pcie-init-dt confirm") {
                 let _ = write!(reply, "XJQ OK ");
                 write_wifi_pcie_init_dt_summary(&mut reply);
+            } else if query.eq_ignore_ascii_case("wifi enum confirm") {
+                let _ = write!(reply, "XJQ OK ");
+                write_wifi_enum_summary(&mut reply);
             } else if query.eq_ignore_ascii_case("sd facts") {
                 let _ = write!(
                 reply,
@@ -18180,6 +18301,48 @@ fn wifi_pcie2_wait_link_and_cfg() -> WifiPcieInitResult {
         link_up,
         ltssm,
         cfg0,
+    }
+}
+
+fn wifi_pcie2_endpoint_config() -> Option<WifiPcieEndpointConfig> {
+    let ltssm = probe_read32(PCIE2X1_APB_BASE + PCIE_CLIENT_LTSSM_STATUS).ok()?;
+    if !pcie_link_is_up(ltssm) {
+        return None;
+    }
+    pcie_program_cfg_atu(
+        PCIE2_CONTROLLER,
+        PCIE2_CONTROLLER.root_bus.wrapping_add(1),
+        0,
+        0,
+        PCIE_ATU_TYPE_CFG0,
+    );
+    delay_ms(1);
+    let cfg0 = probe_read32(PCIE2X1_CFG_BASE).ok()?;
+    if cfg0 == 0 || cfg0 == 0xffff_ffff {
+        return None;
+    }
+    Some(WifiPcieEndpointConfig {
+        cfg0,
+        command_status: probe_read32(PCIE2X1_CFG_BASE + 0x04).unwrap_or(0),
+        class_revision: probe_read32(PCIE2X1_CFG_BASE + 0x08).unwrap_or(0),
+        bar0: probe_read32(PCIE2X1_CFG_BASE + 0x10).unwrap_or(0),
+        bar1: probe_read32(PCIE2X1_CFG_BASE + 0x14).unwrap_or(0),
+        bar2: probe_read32(PCIE2X1_CFG_BASE + 0x18).unwrap_or(0),
+        bar3: probe_read32(PCIE2X1_CFG_BASE + 0x1c).unwrap_or(0),
+        bar4: probe_read32(PCIE2X1_CFG_BASE + 0x20).unwrap_or(0),
+        bar5: probe_read32(PCIE2X1_CFG_BASE + 0x24).unwrap_or(0),
+        subsystem: probe_read32(PCIE2X1_CFG_BASE + 0x2c).unwrap_or(0),
+    })
+}
+
+fn wifi_endpoint_name(vendor: u16, device: u16) -> &'static str {
+    match (vendor, device) {
+        (0x10ec, 0xc822) => "rtl8822ce",
+        (0x10ec, 0xb822) => "rtl8822be",
+        (0x10ec, 0xb852) => "rtl8852be",
+        (0x10ec, 0xc852) => "rtl8852ce",
+        (0x10ec, _) => "realtek-wifi-family",
+        _ => "unknown",
     }
 }
 
