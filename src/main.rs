@@ -160,6 +160,8 @@ const NET_HOST_PORT: u16 = 5511;
 const NET_AUTO_DHCP: bool = true;
 const NET_AUTO_DHCP_TIMEOUT_MS: u64 = 2_500;
 const NET_AUTO_DHCP_RETRY_MS: u64 = 15_000;
+const NET_MAINT_COLD_BOOT_DELAY_MS: u64 = 20_000;
+const NET_MAINT_PERIODIC_MS: u64 = 60_000;
 const DEFAULT_NET_DEVICE_IPS: [[u8; 4]; RTL_DEVICE_COUNT] =
     [[192, 168, 80, 251], [192, 168, 80, 250]];
 const DEFAULT_NET_NETMASKS: [[u8; 4]; RTL_DEVICE_COUNT] = [[255, 255, 255, 0], [255, 255, 255, 0]];
@@ -4085,7 +4087,7 @@ fn write_maint_loop_execute_summary<W: Write>(
             MaintHmacKey::Raw(&row.value[..row.value_len]),
         );
         let text = str::from_utf8(iteration_reply.as_slice()).unwrap_or("");
-        if text.starts_with("XJQ OK maint-pull-exec ") {
+        if text.starts_with("XJQ OK maint-pull-exec ") && text.contains(" report=ok ") {
             ok_flags[iteration] = true;
             ok_count += 1;
         } else {
@@ -12115,9 +12117,6 @@ fn command_net_polling(uart: &mut Uart, label: &str, duration_ms: Option<u64>) {
     command_pcie_link_start(uart, Some("confirm"));
     command_pcie_rtl_init(uart, Some("confirm"));
     net_auto_dhcp_if_needed(uart);
-    if duration_ms.is_none() {
-        command_maint_config_tick(uart);
-    }
 
     let freq = read_cntfrq();
     let limit_ticks = match duration_ms {
@@ -12140,9 +12139,15 @@ fn command_net_polling(uart: &mut Uart, label: &str, duration_ms: Option<u64>) {
     let announce_ticks = ms_to_ticks(2_000, freq).unwrap_or(1);
     let watchdog_ticks = ms_to_ticks(NET_RX_WATCHDOG_MS, freq).unwrap_or(announce_ticks);
     let auto_dhcp_retry_ticks = ms_to_ticks(NET_AUTO_DHCP_RETRY_MS, freq).unwrap_or(watchdog_ticks);
+    let maint_tick_ticks =
+        ms_to_ticks(NET_MAINT_COLD_BOOT_DELAY_MS, freq).unwrap_or(announce_ticks);
+    let maint_tick_interval_ticks =
+        ms_to_ticks(NET_MAINT_PERIODIC_MS, freq).unwrap_or(auto_dhcp_retry_ticks);
     let mut next_announce_elapsed = 0u64;
     let mut next_watchdog_elapsed = watchdog_ticks;
     let mut next_auto_dhcp_elapsed = auto_dhcp_retry_ticks;
+    let maint_tick_enabled = duration_ms.is_none();
+    let mut next_maint_tick_elapsed = maint_tick_ticks;
     let mut last_watchdog_udp_replies = 0u32;
     let mut last_watchdog_control_replies = 0u32;
     let mut last_watchdog_rx_packets = 0u32;
@@ -12172,6 +12177,12 @@ fn command_net_polling(uart: &mut Uart, label: &str, duration_ms: Option<u64>) {
                 }
             }
             next_announce_elapsed = next_announce_elapsed.wrapping_add(announce_ticks);
+        }
+        if maint_tick_enabled && elapsed >= next_maint_tick_elapsed {
+            command_maint_config_tick(uart);
+            next_maint_tick_elapsed = read_cntpct()
+                .wrapping_sub(start)
+                .wrapping_add(maint_tick_interval_ticks);
         }
         for index in 0..RTL_DEVICE_COUNT {
             let stats = net_poll_device(index);
