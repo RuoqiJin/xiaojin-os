@@ -258,9 +258,9 @@ configured NIC addresses, periodically sends gratuitous ARP plus UDP
 `net tls <if> <host|ip> <port> [sni] confirm` is the first TLS first-flight
 probe. It builds a small TLS ClientHello with SNI, TLS 1.3 cipher suites, a
 development RNG random, supported versions/groups/signature extensions, and an
-X25519-shaped key-share placeholder, then parses the first server TLS record.
-This proves DNS/route/ARP/TCP plus TLS record reachability, but it is not yet a
-complete TLS stack or HTTPS client.
+ephemeral X25519 key share, then parses the first server TLS record. This proves
+DNS/route/ARP/TCP plus TLS record reachability, but it is not yet a complete TLS
+stack or HTTPS client.
 
 `wifi facts`, `wifi status`, `wifi pcie`, `wifi cru`, `wifi apb`, `wifi phy`,
 and `wifi roadmap` expose the R5C

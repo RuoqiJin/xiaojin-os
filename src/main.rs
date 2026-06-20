@@ -6,6 +6,7 @@ use core::fmt::{self, Write};
 use core::panic::PanicInfo;
 use core::ptr::{addr_of, addr_of_mut, read_volatile, write_volatile};
 use core::str;
+use x25519_dalek::{PublicKey as X25519PublicKey, StaticSecret as X25519StaticSecret};
 
 global_asm!(include_str!("boot.S"));
 
@@ -14453,8 +14454,7 @@ fn build_tls_client_hello(sni: &str, out: &mut [u8]) -> Option<usize> {
     tls_put_u16(out, &mut offset, 0x0804)?;
     tls_put_u16(out, &mut offset, 0x0401)?;
 
-    let mut key_share = [0u8; 32];
-    rng_fill(&mut key_share);
+    let key_share = tls_x25519_public_key();
     tls_put_u16(out, &mut offset, 0x0033)?;
     tls_put_u16(out, &mut offset, 38)?;
     tls_put_u16(out, &mut offset, 36)?;
@@ -14480,6 +14480,13 @@ fn build_tls_client_hello(sni: &str, out: &mut [u8]) -> Option<usize> {
     }
     write_be16(out, record_len_offset, record_len as u16);
     Some(offset)
+}
+
+fn tls_x25519_public_key() -> [u8; 32] {
+    let mut private = [0u8; 32];
+    rng_fill(&mut private);
+    let secret = X25519StaticSecret::from(private);
+    X25519PublicKey::from(&secret).to_bytes()
 }
 
 fn parse_tls_first_record(sample: &[u8]) -> Option<TlsRecordSummary> {

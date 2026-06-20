@@ -3,6 +3,9 @@ name = "xiaojin-os"
 version = "0.1.0"
 edition = "2021"
 
+[dependencies]
+x25519-dalek = { version = "2.0.1", default-features = false, features = ["static_secrets"] }
+
 [workspace]
 
 [profile.dev]
