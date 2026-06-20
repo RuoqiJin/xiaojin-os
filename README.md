@@ -263,7 +263,9 @@ TLS record, extracts ServerHello selected-version/key-share metadata when
 present, and reports a SHA-256 fingerprint of the derived shared secret plus the
 TLS 1.3 transcript and handshake traffic secret/key/IV fingerprints. This proves
 DNS/route/ARP/TCP plus TLS key-agreement and record-key schedule reachability,
-but it is not yet a complete TLS stack or HTTPS client.
+and, when the server selects `TLS_CHACHA20_POLY1305_SHA256`, attempts to decrypt
+the first encrypted server handshake record. It is not yet a complete TLS stack
+or HTTPS client.
 
 `wifi facts`, `wifi status`, `wifi pcie`, `wifi cru`, `wifi apb`, `wifi phy`,
 and `wifi roadmap` expose the R5C

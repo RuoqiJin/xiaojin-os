@@ -1,6 +1,8 @@
 #![no_std]
 #![no_main]
 
+use chacha20poly1305::aead::{AeadInPlace, KeyInit};
+use chacha20poly1305::{ChaCha20Poly1305, Key as ChaCha20Poly1305Key, Nonce, Tag};
 use core::arch::{asm, global_asm};
 use core::fmt::{self, Write};
 use core::panic::PanicInfo;
@@ -217,8 +219,11 @@ const HTTP_RESPONSE_MAX_BYTES: usize = 8 * 1024;
 const HTTP_RESPONSE_SAMPLE_BYTES: usize = 2048;
 const TLS_CLIENT_HELLO_BYTES: usize = 512;
 const TLS_TRANSCRIPT_MAX_BYTES: usize = 2048;
+const TLS_DECRYPT_MAX_BYTES: usize = 2048;
 const TLS_RECORD_HANDSHAKE: u8 = 0x16;
 const TLS_RECORD_ALERT: u8 = 0x15;
+const TLS_RECORD_CHANGE_CIPHER_SPEC: u8 = 0x14;
+const TLS_RECORD_APPLICATION_DATA: u8 = 0x17;
 const TCP_FLAG_PSH: u16 = 0x008;
 const TCP_FLAG_SYN: u16 = 0x002;
 const TCP_FLAG_RST: u16 = 0x004;
@@ -1142,8 +1147,36 @@ struct TlsClientHelloResult {
     server_handshake_key_sha256: Option<[u8; 32]>,
     client_handshake_iv_sha256: Option<[u8; 32]>,
     server_handshake_iv_sha256: Option<[u8; 32]>,
+    decrypt_status: TlsDecryptStatus,
+    decrypted_record_type: Option<u8>,
+    decrypted_inner_type: Option<u8>,
+    decrypted_handshake_type: Option<u8>,
+    decrypted_payload_len: Option<u16>,
     sample_len: usize,
     sample: [u8; HTTP_RESPONSE_SAMPLE_BYTES],
+}
+
+#[derive(Clone, Copy)]
+enum TlsDecryptStatus {
+    NotAttempted,
+    UnsupportedCipher,
+    NoEncryptedRecord,
+    TooLarge,
+    AuthFailed,
+    Ok,
+}
+
+impl TlsDecryptStatus {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::NotAttempted => "not-attempted",
+            Self::UnsupportedCipher => "unsupported-cipher",
+            Self::NoEncryptedRecord => "no-encrypted-record",
+            Self::TooLarge => "too-large",
+            Self::AuthFailed => "auth-failed",
+            Self::Ok => "ok",
+        }
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -2193,7 +2226,7 @@ fn print_help(uart: &mut Uart) {
     uart.put_str("  net http-post <if> <host|ip> <port> <path> <body> confirm\n");
     uart.put_str("                       perform minimal HTTP/1.0 POST over outbound TCP\n");
     uart.put_str("  net tls <if> <host|ip> <port> [sni] confirm\n");
-    uart.put_str("                       send TLS ClientHello and parse first TLS record\n");
+    uart.put_str("                       send TLS ClientHello and probe first encrypted record\n");
     uart.put_str("  maint poll <if> <host|ip> <port> <path> confirm\n");
     uart.put_str("                       pull one cleartext maintainer endpoint summary\n");
     uart.put_str("  maint status <if> <host|ip> <port> <path> confirm\n");
@@ -2356,6 +2389,7 @@ fn print_caps(uart: &mut Uart) {
     uart.put_str("  net arp-resolve yes\n");
     uart.put_str("  net dns-client yes\n");
     uart.put_str("  net tls-clienthello yes\n");
+    uart.put_str("  net tls-chacha20poly1305-decrypt yes\n");
     uart.put_str("  net udp-dhcp-control yes\n");
     uart.put_str("  net udp-query-control yes\n");
     uart.put_str("  net routed-udp-loader yes\n");
@@ -2393,7 +2427,7 @@ fn print_caps(uart: &mut Uart) {
 fn write_caps_query_summary<W: Write>(out: &mut W) {
     let _ = write!(
         out,
-        "XJQ OK caps net-dev=yes dhcp=yes auto-dhcp=yes route=yes arp=yes dns=yes tcp-connect=yes http-get=yes http-post=yes http-trace=yes http-debug=yes tls-clienthello=yes maint-poll=yes maint-status=yes maint-pending-summary=yes maint-command-digest=yes maint-command-verify=yes maint-command-verify-hmac=yes maint-local-hmac-key=yes maint-pull-exec=yes maint-loop=yes maint-config=yes maint-cold-boot-tick=yes maint-ack-intent=yes maint-remote-event=yes maint-local-audit=yes identity=yes rng=development-hmac-drbg query=yes reboot=yes wifi=facts-only wifi-pcie=facts wifi-cru=read-only wifi-apb=read-only wifi-phy=read-only wifi-power=read-only wifi-link=read-only wifi-trace=confirm wifi-pcie-init=confirm wifi-pcie-init-high=confirm wifi-pcie-init-linux=confirm wifi-pcie-init-dt=confirm wifi-station=planned wifi-ap=planned sd-probe=yes sd-writer=yes ab-persist=yes boot-slot=extlinux db=page-store,catalog,wal,fixed-table,btree,table-namespace,event-log,blob-backup,blob-restore"
+        "XJQ OK caps net-dev=yes dhcp=yes auto-dhcp=yes route=yes arp=yes dns=yes tcp-connect=yes http-get=yes http-post=yes http-trace=yes http-debug=yes tls-clienthello=yes tls-chacha20poly1305-decrypt=yes maint-poll=yes maint-status=yes maint-pending-summary=yes maint-command-digest=yes maint-command-verify=yes maint-command-verify-hmac=yes maint-local-hmac-key=yes maint-pull-exec=yes maint-loop=yes maint-config=yes maint-cold-boot-tick=yes maint-ack-intent=yes maint-remote-event=yes maint-local-audit=yes identity=yes rng=development-hmac-drbg query=yes reboot=yes wifi=facts-only wifi-pcie=facts wifi-cru=read-only wifi-apb=read-only wifi-phy=read-only wifi-power=read-only wifi-link=read-only wifi-trace=confirm wifi-pcie-init=confirm wifi-pcie-init-high=confirm wifi-pcie-init-linux=confirm wifi-pcie-init-dt=confirm wifi-station=planned wifi-ap=planned sd-probe=yes sd-writer=yes ab-persist=yes boot-slot=extlinux db=page-store,catalog,wal,fixed-table,btree,table-namespace,event-log,blob-backup,blob-restore"
     );
 }
 
@@ -4023,7 +4057,7 @@ fn write_net_tls_query_summary<W: Write>(default_index: usize, query: &str, out:
         Ok(result) => {
             let _ = write!(
                 out,
-                "XJQ OK tls iface={} host={} sni={} ip={}.{}.{}.{} port={} src-port={} sent={} record-type=0x{:02x} record-version=0x{:04x} record-len={} bytes={} payload={} segments={} fin={} truncated={} alert-level={} alert-description={} handshake-type={} selected-version={} cipher-suite={} keyshare-group={} keyshare-len={} shared-secret-sha256=",
+                "XJQ OK tls iface={} host={} sni={} ip={}.{}.{}.{} port={} src-port={} sent={} record-type=0x{:02x} record-version=0x{:04x} record-len={} bytes={} payload={} segments={} fin={} truncated={} alert-level={} alert-description={} handshake-type={} selected-version={} cipher-suite={} keyshare-group={} keyshare-len={} decrypt-status={} decrypted-record-type={} decrypted-inner-type={} decrypted-handshake-type={} decrypted-payload-len={} shared-secret-sha256=",
                 PCIE_CONTROLLERS[index].name,
                 host,
                 sni,
@@ -4048,7 +4082,12 @@ fn write_net_tls_query_summary<W: Write>(default_index: usize, query: &str, out:
                 optional_u16_hex(result.selected_version),
                 optional_u16_hex(result.cipher_suite),
                 optional_u16_hex(result.key_share_group),
-                optional_u16_dec(result.key_share_len)
+                optional_u16_dec(result.key_share_len),
+                result.decrypt_status.as_str(),
+                optional_u8_hex(result.decrypted_record_type),
+                optional_u8_hex(result.decrypted_inner_type),
+                optional_u8_hex(result.decrypted_handshake_type),
+                optional_u16_dec(result.decrypted_payload_len)
             );
             write_optional_sha256_hex(out, &result.shared_secret_sha256);
             let _ = write!(out, " transcript-sha256=");
@@ -10566,7 +10605,9 @@ fn command_net_tls(
     };
     if !confirmed {
         uart.put_str("usage: net tls <pcie3x1|pcie3x2|0|1> <host|ip> <port> [sni] confirm\n");
-        uart.put_str("scope: send one TLS ClientHello and parse the first server TLS record\n");
+        uart.put_str(
+            "scope: send one TLS ClientHello and probe the first encrypted server record\n",
+        );
         return;
     }
     let Some(iface) = iface else {
@@ -11231,6 +11272,15 @@ fn print_tls_client_hello_result(uart: &mut Uart, result: TlsClientHelloResult) 
         optional_u16_hex(result.cipher_suite),
         optional_u16_hex(result.key_share_group),
         optional_u16_dec(result.key_share_len)
+    );
+    let _ = writeln!(
+        uart,
+        "  decrypt         status={} record-type={} inner-type={} handshake-type={} payload-len={}",
+        result.decrypt_status.as_str(),
+        optional_u8_hex(result.decrypted_record_type),
+        optional_u8_hex(result.decrypted_inner_type),
+        optional_u8_hex(result.decrypted_handshake_type),
+        optional_u16_dec(result.decrypted_payload_len)
     );
     uart.put_str("  shared-secret   sha256=");
     write_optional_sha256_hex(uart, &result.shared_secret_sha256);
@@ -14423,6 +14473,13 @@ fn net_tls_client_hello(
     let mut server_handshake_key_sha256 = None;
     let mut client_handshake_iv_sha256 = None;
     let mut server_handshake_iv_sha256 = None;
+    let mut decrypt = TlsDecryptSummary {
+        status: TlsDecryptStatus::NotAttempted,
+        record_type: None,
+        inner_type: None,
+        handshake_type: None,
+        payload_len: None,
+    };
     if let Some(server_key) = record.server_x25519_key_share {
         let server_public = X25519PublicKey::from(server_key);
         let shared_secret = x25519_secret.diffie_hellman(&server_public);
@@ -14446,6 +14503,14 @@ fn net_tls_client_hello(
                 server_handshake_key_sha256 = Some(traffic.server_key_sha256);
                 client_handshake_iv_sha256 = Some(traffic.client_iv_sha256);
                 server_handshake_iv_sha256 = Some(traffic.server_iv_sha256);
+                decrypt = tls13_decrypt_first_server_handshake_record(
+                    &response.sample[..response.sample_len],
+                    cipher_suite,
+                    &traffic.server_key,
+                    &traffic.server_iv,
+                );
+            } else {
+                decrypt.status = TlsDecryptStatus::UnsupportedCipher;
             }
         }
     }
@@ -14489,6 +14554,11 @@ fn net_tls_client_hello(
         server_handshake_key_sha256,
         client_handshake_iv_sha256,
         server_handshake_iv_sha256,
+        decrypt_status: decrypt.status,
+        decrypted_record_type: decrypt.record_type,
+        decrypted_inner_type: decrypt.inner_type,
+        decrypted_handshake_type: decrypt.handshake_type,
+        decrypted_payload_len: decrypt.payload_len,
         sample_len: response.sample_len,
         sample: response.sample,
     })
@@ -14517,6 +14587,17 @@ struct Tls13HandshakeKeySchedule {
     server_key_sha256: [u8; 32],
     client_iv_sha256: [u8; 32],
     server_iv_sha256: [u8; 32],
+    server_key: [u8; 32],
+    server_iv: [u8; 12],
+}
+
+#[derive(Clone, Copy)]
+struct TlsDecryptSummary {
+    status: TlsDecryptStatus,
+    record_type: Option<u8>,
+    inner_type: Option<u8>,
+    handshake_type: Option<u8>,
+    payload_len: Option<u16>,
 }
 
 fn build_tls_client_hello(sni: &str, x25519_public: &[u8; 32], out: &mut [u8]) -> Option<usize> {
@@ -14732,6 +14813,8 @@ fn tls13_handshake_key_schedule_fingerprints(
     let server_key = tls13_hkdf_expand_label_sha256_to(&server_secret, b"key", &[], key_len);
     let client_iv = tls13_hkdf_expand_label_sha256_to(&client_secret, b"iv", &[], 12);
     let server_iv = tls13_hkdf_expand_label_sha256_to(&server_secret, b"iv", &[], 12);
+    let mut server_iv12 = [0u8; 12];
+    server_iv12.copy_from_slice(&server_iv[..12]);
     Some(Tls13HandshakeKeySchedule {
         client_secret_sha256: sha256_digest(&client_secret),
         server_secret_sha256: sha256_digest(&server_secret),
@@ -14739,6 +14822,8 @@ fn tls13_handshake_key_schedule_fingerprints(
         server_key_sha256: sha256_digest(&server_key[..key_len]),
         client_iv_sha256: sha256_digest(&client_iv[..12]),
         server_iv_sha256: sha256_digest(&server_iv[..12]),
+        server_key,
+        server_iv: server_iv12,
     })
 }
 
@@ -14800,6 +14885,143 @@ fn hkdf_expand_sha256(prk: &[u8; 32], info: &[u8]) -> [u8; 32] {
     message[..info.len()].copy_from_slice(info);
     message[info.len()] = 1;
     hmac_sha256_digest(prk, &message[..info.len() + 1])
+}
+
+fn tls13_decrypt_first_server_handshake_record(
+    sample: &[u8],
+    cipher_suite: u16,
+    server_key: &[u8; 32],
+    server_iv: &[u8; 12],
+) -> TlsDecryptSummary {
+    if cipher_suite != 0x1303 {
+        return TlsDecryptSummary {
+            status: TlsDecryptStatus::UnsupportedCipher,
+            record_type: None,
+            inner_type: None,
+            handshake_type: None,
+            payload_len: None,
+        };
+    }
+
+    let mut offset = 0usize;
+    let mut encrypted_seq = 0u64;
+    while offset.saturating_add(5) <= sample.len() {
+        let record_type = sample[offset];
+        let Some(record_len) = read_be16(sample, offset + 3).map(|value| value as usize) else {
+            break;
+        };
+        let Some(record_end) = offset
+            .checked_add(5)
+            .and_then(|value| value.checked_add(record_len))
+        else {
+            return tls_decrypt_summary(TlsDecryptStatus::TooLarge);
+        };
+        if record_end > sample.len() {
+            break;
+        }
+        let record = &sample[offset..record_end];
+        if record_type == TLS_RECORD_APPLICATION_DATA {
+            return tls13_chacha20poly1305_decrypt_record(
+                record,
+                encrypted_seq,
+                server_key,
+                server_iv,
+            );
+        }
+        if record_type == TLS_RECORD_CHANGE_CIPHER_SPEC {
+            offset = record_end;
+            continue;
+        }
+        if record_type == TLS_RECORD_HANDSHAKE || record_type == TLS_RECORD_ALERT {
+            offset = record_end;
+            continue;
+        }
+        encrypted_seq = encrypted_seq.saturating_add(1);
+        offset = record_end;
+    }
+    tls_decrypt_summary(TlsDecryptStatus::NoEncryptedRecord)
+}
+
+fn tls13_chacha20poly1305_decrypt_record(
+    record: &[u8],
+    sequence: u64,
+    server_key: &[u8; 32],
+    server_iv: &[u8; 12],
+) -> TlsDecryptSummary {
+    if record.len() < 21 {
+        return tls_decrypt_summary(TlsDecryptStatus::AuthFailed);
+    }
+    let Some(encrypted_len) = read_be16(record, 3).map(|value| value as usize) else {
+        return tls_decrypt_summary(TlsDecryptStatus::AuthFailed);
+    };
+    if encrypted_len < 16 || encrypted_len + 5 > record.len() {
+        return tls_decrypt_summary(TlsDecryptStatus::AuthFailed);
+    }
+    let ciphertext_len = encrypted_len - 16;
+    if ciphertext_len > TLS_DECRYPT_MAX_BYTES {
+        return tls_decrypt_summary(TlsDecryptStatus::TooLarge);
+    }
+
+    let mut plaintext = [0u8; TLS_DECRYPT_MAX_BYTES];
+    plaintext[..ciphertext_len].copy_from_slice(&record[5..5 + ciphertext_len]);
+    let tag = Tag::from_slice(&record[5 + ciphertext_len..5 + encrypted_len]);
+    let nonce_bytes = tls13_record_nonce(server_iv, sequence);
+    let cipher = ChaCha20Poly1305::new(ChaCha20Poly1305Key::from_slice(server_key));
+    if cipher
+        .decrypt_in_place_detached(
+            Nonce::from_slice(&nonce_bytes),
+            &record[..5],
+            &mut plaintext[..ciphertext_len],
+            tag,
+        )
+        .is_err()
+    {
+        return tls_decrypt_summary(TlsDecryptStatus::AuthFailed);
+    }
+
+    let mut inner_end = ciphertext_len;
+    while inner_end > 0 && plaintext[inner_end - 1] == 0 {
+        inner_end -= 1;
+    }
+    if inner_end == 0 {
+        return tls_decrypt_summary(TlsDecryptStatus::AuthFailed);
+    }
+    let inner_type = plaintext[inner_end - 1];
+    let payload_len = inner_end - 1;
+    if payload_len > u16::MAX as usize {
+        return tls_decrypt_summary(TlsDecryptStatus::TooLarge);
+    }
+    TlsDecryptSummary {
+        status: TlsDecryptStatus::Ok,
+        record_type: Some(record[0]),
+        inner_type: Some(inner_type),
+        handshake_type: if inner_type == TLS_RECORD_HANDSHAKE && payload_len > 0 {
+            Some(plaintext[0])
+        } else {
+            None
+        },
+        payload_len: Some(payload_len as u16),
+    }
+}
+
+fn tls13_record_nonce(static_iv: &[u8; 12], sequence: u64) -> [u8; 12] {
+    let mut nonce = *static_iv;
+    let mut index = 0usize;
+    while index < 8 {
+        nonce[4 + index] ^= (sequence >> ((7 - index) * 8)) as u8;
+        index += 1;
+    }
+    nonce
+}
+
+fn tls_decrypt_summary(status: TlsDecryptStatus) -> TlsDecryptSummary {
+    TlsDecryptSummary {
+        status,
+        record_type: None,
+        inner_type: None,
+        handshake_type: None,
+        payload_len: None,
+    }
 }
 
 fn valid_tls_server_name(value: &str) -> bool {
