@@ -2317,6 +2317,8 @@ fn print_help(uart: &mut Uart) {
     uart.put_str("                       WAL-log and upsert one B+tree key/value record\n");
     uart.put_str("  db bget <key> confirm\n");
     uart.put_str("                       read one key from the experimental B+tree\n");
+    uart.put_str("  db bdel <key> confirm\n");
+    uart.put_str("                       WAL-log and delete one B+tree key/value record\n");
     uart.put_str("  db bscan <start> <limit> confirm\n");
     uart.put_str("                       scan up to 8 B+tree rows in key order\n");
     uart.put_str("  db nskey <table> <row> confirm\n");
@@ -2325,6 +2327,8 @@ fn print_help(uart: &mut Uart) {
     uart.put_str("                       upsert one logical table row through the B+tree\n");
     uart.put_str("  db tget <table> <row> confirm\n");
     uart.put_str("                       read one logical table row through the B+tree\n");
+    uart.put_str("  db tdel <table> <row> confirm\n");
+    uart.put_str("                       delete one logical table row through the B+tree\n");
     uart.put_str("  db bleaf <page> confirm\n");
     uart.put_str("                       read one B+tree leaf header for diagnosis\n");
     uart.put_str("  db event-init confirm\n");
@@ -2432,6 +2436,7 @@ fn print_caps(uart: &mut Uart) {
     uart.put_str("  sd writer yes\n");
     uart.put_str("  db page-store yes\n");
     uart.put_str("  db btree yes\n");
+    uart.put_str("  db btree-delete yes\n");
     uart.put_str("  db table-namespace yes\n");
     let _ = writeln!(uart, "  xload link-address 0x{LOAD_ADDR:016x}");
     let _ = writeln!(
@@ -2443,7 +2448,7 @@ fn print_caps(uart: &mut Uart) {
 fn write_caps_query_summary<W: Write>(out: &mut W) {
     let _ = write!(
         out,
-        "XJQ OK caps net-dev=yes dhcp=yes auto-dhcp=yes route=yes arp=yes dns=yes tcp-connect=yes http-get=yes http-post=yes http-trace=yes http-debug=yes tls-clienthello=yes tls-chacha20poly1305-decrypt=yes maint-poll=yes maint-status=yes maint-pending-summary=yes maint-command-digest=yes maint-command-verify=yes maint-command-verify-hmac=yes maint-local-hmac-key=yes maint-pull-exec=yes maint-loop=yes maint-config=yes maint-cold-boot-tick=yes maint-ack-intent=yes maint-remote-event=yes maint-local-audit=yes identity=yes rng=development-hmac-drbg query=yes reboot=yes wifi=pcie-enum wifi-pcie=facts wifi-cru=read-only wifi-apb=read-only wifi-phy=read-only wifi-power=read-only wifi-link=read-only wifi-trace=confirm wifi-pcie-init=confirm wifi-pcie-init-high=confirm wifi-pcie-init-linux=confirm wifi-pcie-init-dt=confirm wifi-enum=confirm wifi-station=planned wifi-ap=planned sd-probe=yes sd-writer=yes ab-persist=yes boot-slot=extlinux db=page-store,catalog,wal,fixed-table,btree,table-namespace,event-log,blob-backup,blob-restore"
+        "XJQ OK caps net-dev=yes dhcp=yes auto-dhcp=yes route=yes arp=yes dns=yes tcp-connect=yes http-get=yes http-post=yes http-trace=yes http-debug=yes tls-clienthello=yes tls-chacha20poly1305-decrypt=yes maint-poll=yes maint-status=yes maint-pending-summary=yes maint-command-digest=yes maint-command-verify=yes maint-command-verify-hmac=yes maint-local-hmac-key=yes maint-pull-exec=yes maint-loop=yes maint-config=yes maint-cold-boot-tick=yes maint-ack-intent=yes maint-remote-event=yes maint-local-audit=yes identity=yes rng=development-hmac-drbg query=yes reboot=yes wifi=pcie-enum wifi-pcie=facts wifi-cru=read-only wifi-apb=read-only wifi-phy=read-only wifi-power=read-only wifi-link=read-only wifi-trace=confirm wifi-pcie-init=confirm wifi-pcie-init-high=confirm wifi-pcie-init-linux=confirm wifi-pcie-init-dt=confirm wifi-enum=confirm wifi-station=planned wifi-ap=planned sd-probe=yes sd-writer=yes ab-persist=yes boot-slot=extlinux db=page-store,catalog,wal,fixed-table,btree,btree-delete,table-namespace,event-log,blob-backup,blob-restore"
     );
 }
 
@@ -5224,6 +5229,16 @@ fn command_db<'a>(uart: &mut Uart, parts: &mut core::str::SplitWhitespace<'a>) {
                 print_db_bget(uart, key);
             }
         }
+        Some("bdel") => {
+            let key = parts.next();
+            let confirm = parts.next();
+            if confirm != Some("confirm") {
+                uart.put_str("usage: db bdel <key> confirm\n");
+                uart.put_str("scope: WAL-log and delete one B+tree record\n");
+            } else {
+                print_db_bdel(uart, key);
+            }
+        }
         Some("bscan") => {
             let start = parts.next();
             let limit = parts.next();
@@ -5267,6 +5282,17 @@ fn command_db<'a>(uart: &mut Uart, parts: &mut core::str::SplitWhitespace<'a>) {
                 uart.put_str("scope: read one logical table row\n");
             } else {
                 print_db_tget(uart, table, row);
+            }
+        }
+        Some("tdel") => {
+            let table = parts.next();
+            let row = parts.next();
+            let confirm = parts.next();
+            if confirm != Some("confirm") {
+                uart.put_str("usage: db tdel <table> <row> confirm\n");
+                uart.put_str("scope: delete one logical table row\n");
+            } else {
+                print_db_tdel(uart, table, row);
             }
         }
         Some("bleaf") => {
@@ -5341,10 +5367,12 @@ fn command_db<'a>(uart: &mut Uart, parts: &mut core::str::SplitWhitespace<'a>) {
             uart.put_str("  db btree-init confirm\n");
             uart.put_str("  db bput <key> <value> confirm\n");
             uart.put_str("  db bget <key> confirm\n");
+            uart.put_str("  db bdel <key> confirm\n");
             uart.put_str("  db bscan <start> <limit> confirm\n");
             uart.put_str("  db nskey <table> <row> confirm\n");
             uart.put_str("  db tput <table> <row> <value> confirm\n");
             uart.put_str("  db tget <table> <row> confirm\n");
+            uart.put_str("  db tdel <table> <row> confirm\n");
             uart.put_str("  db bleaf <page> confirm\n");
             uart.put_str("  db event-init confirm\n");
             uart.put_str("  db event-status confirm\n");
@@ -5988,6 +6016,23 @@ fn print_db_bget<W: Write>(out: &mut W, key: Option<&str>) {
     }
 }
 
+fn print_db_bdel<W: Write>(out: &mut W, key: Option<&str>) {
+    let Some(key) = key.and_then(parse_u64) else {
+        uart_like_usage(out, "db bdel <key> confirm");
+        return;
+    };
+    match delete_db_btree_row(key as u32) {
+        Ok((_info, _catalog, root, leaf)) => {
+            let _ = writeln!(out, "db bdel ok:");
+            write_db_btree_root_details(out, "  ", root);
+            write_db_btree_leaf_details(out, "  ", leaf);
+        }
+        Err(error) => {
+            let _ = writeln!(out, "db bdel error: {}", error.as_str());
+        }
+    }
+}
+
 fn print_db_bscan<W: Write>(out: &mut W, start: Option<&str>, limit: Option<&str>) {
     let Some(start) = start.and_then(parse_u64) else {
         uart_like_usage(out, "db bscan <start> <limit> confirm");
@@ -6088,6 +6133,32 @@ fn print_db_tget<W: Write>(out: &mut W, table: Option<&str>, row: Option<&str>) 
         }
         Err(error) => {
             let _ = writeln!(out, "db tget error: {}", error.as_str());
+        }
+    }
+}
+
+fn print_db_tdel<W: Write>(out: &mut W, table: Option<&str>, row: Option<&str>) {
+    let Some(table) = table else {
+        uart_like_usage(out, "db tdel <table> <row> confirm");
+        return;
+    };
+    let Some(row) = row.and_then(parse_u64) else {
+        uart_like_usage(out, "db tdel <table> <row> confirm");
+        return;
+    };
+    let Some((bucket, key)) = db_table_namespace_key(table, row) else {
+        let _ = writeln!(out, "db tdel error: bad-table-or-row");
+        return;
+    };
+    match delete_db_btree_row(key) {
+        Ok((_info, _catalog, root, leaf)) => {
+            let _ = writeln!(out, "db tdel ok:");
+            write_db_namespace_key_details(out, "  ", table, row as u32, bucket, key);
+            write_db_btree_root_details(out, "  ", root);
+            write_db_btree_leaf_details(out, "  ", leaf);
+        }
+        Err(error) => {
+            let _ = writeln!(out, "db tdel error: {}", error.as_str());
         }
     }
 }
@@ -6406,6 +6477,29 @@ fn write_db_bget_query_summary<W: Write>(query: &str, out: &mut W) {
     }
 }
 
+fn write_db_bdel_query_summary<W: Write>(query: &str, out: &mut W) {
+    let mut parts = query.split_whitespace();
+    let _db = parts.next();
+    let _bdel = parts.next();
+    let Some(key) = parts.next().and_then(parse_u64) else {
+        let _ = write!(out, "XJQ ERR db-bdel usage");
+        return;
+    };
+    if parts.next() != Some("confirm") {
+        let _ = write!(out, "XJQ ERR db-bdel usage");
+        return;
+    }
+    match delete_db_btree_row(key as u32) {
+        Ok((_info, _catalog, root, leaf)) => {
+            let _ = write!(out, "XJQ OK ");
+            write_db_btree_root_summary_inner(out, root);
+            let _ = write!(out, " ");
+            write_db_btree_leaf_summary_inner(out, leaf);
+        }
+        Err(error) => write_db_error_summary(out, "bdel", error),
+    }
+}
+
 fn write_db_bscan_query_summary<W: Write>(query: &str, out: &mut W) {
     let mut parts = query.split_whitespace();
     let _db = parts.next();
@@ -6528,6 +6622,39 @@ fn write_db_tget_query_summary<W: Write>(query: &str, out: &mut W) {
             write_db_row_summary_inner(out, db_row);
         }
         Err(error) => write_db_error_summary(out, "tget", error),
+    }
+}
+
+fn write_db_tdel_query_summary<W: Write>(query: &str, out: &mut W) {
+    let mut parts = query.split_whitespace();
+    let _db = parts.next();
+    let _tdel = parts.next();
+    let Some(table) = parts.next() else {
+        let _ = write!(out, "XJQ ERR db-tdel usage");
+        return;
+    };
+    let Some(row) = parts.next().and_then(parse_u64) else {
+        let _ = write!(out, "XJQ ERR db-tdel usage");
+        return;
+    };
+    if parts.next() != Some("confirm") {
+        let _ = write!(out, "XJQ ERR db-tdel usage");
+        return;
+    }
+    let Some((bucket, key)) = db_table_namespace_key(table, row) else {
+        let _ = write!(out, "XJQ ERR db-tdel bad-table-or-row");
+        return;
+    };
+    match delete_db_btree_row(key) {
+        Ok((_info, _catalog, root, leaf)) => {
+            let _ = write!(out, "XJQ OK ");
+            write_db_namespace_key_summary_inner(out, table, row as u32, bucket, key);
+            let _ = write!(out, " ");
+            write_db_btree_root_summary_inner(out, root);
+            let _ = write!(out, " ");
+            write_db_btree_leaf_summary_inner(out, leaf);
+        }
+        Err(error) => write_db_error_summary(out, "tdel", error),
     }
 }
 
@@ -7671,6 +7798,60 @@ fn get_db_btree_row(
     }
     let (found_leaf, row) = find_db_btree_row_anywhere(info, root, key)?;
     Ok((info, catalog, root, found_leaf, row))
+}
+
+fn delete_db_btree_row(
+    key: u32,
+) -> Result<(DbFileInfo, DbCatalog, DbBtreeRoot, DbBtreeLeaf), DbError> {
+    let (info, catalog, root) = read_db_btree_root()?;
+    let (leaf, mut block, slot) = find_db_btree_row_block_anywhere(info, root, key)?;
+    let new_catalog = append_db_wal_event(info, catalog, DB_WAL_KIND_DELETE, key, b"bdel")?;
+
+    let record_count = leaf.record_count as usize;
+    if slot >= record_count {
+        return Err(DbError::BadBtreeLeaf);
+    }
+    for current in slot..record_count.saturating_sub(1) {
+        let Some(dst) = table_record_offset(current) else {
+            return Err(DbError::BadBtreeLeaf);
+        };
+        let Some(src) = table_record_offset(current + 1) else {
+            return Err(DbError::BadBtreeLeaf);
+        };
+        for index in 0..DB_TABLE_RECORD_BYTES {
+            block[dst + index] = block[src + index];
+        }
+    }
+    if let Some(last) = table_record_offset(record_count.saturating_sub(1)) {
+        for byte in &mut block[last..last + DB_TABLE_RECORD_BYTES] {
+            *byte = 0;
+        }
+    }
+
+    let new_leaf_count = leaf.record_count.saturating_sub(1);
+    let (min_key, max_key) = btree_leaf_key_range(&block, new_leaf_count);
+    build_db_btree_leaf_header(
+        &mut block,
+        leaf.page,
+        new_leaf_count,
+        min_key,
+        max_key,
+        new_catalog.sequence,
+        leaf.next_leaf,
+    );
+    write_file_sector(info.facts, info.entry, leaf.page, &block)?;
+
+    let mut root_page = [0u8; SD_BLOCK_BYTES];
+    build_db_btree_root_page(
+        root.record_count.saturating_sub(1),
+        new_catalog.sequence,
+        &mut root_page,
+    );
+    write_file_sector(info.facts, info.entry, DB_BTREE_ROOT_PAGE, &root_page)?;
+
+    let (_info2, _catalog2, new_root) = read_db_btree_root()?;
+    let new_leaf = read_db_btree_leaf(info, new_root, leaf.page)?;
+    Ok((info, new_catalog, new_root, new_leaf))
 }
 
 fn read_db_btree_leaf(
@@ -16706,6 +16887,8 @@ fn net_handle_query_packet(
                 write_db_bput_query_summary(query, &mut reply);
             } else if query.starts_with("db bget ") {
                 write_db_bget_query_summary(query, &mut reply);
+            } else if query.starts_with("db bdel ") {
+                write_db_bdel_query_summary(query, &mut reply);
             } else if query.starts_with("db bscan ") {
                 write_db_bscan_query_summary(query, &mut reply);
             } else if query.starts_with("db nskey ") {
@@ -16714,6 +16897,8 @@ fn net_handle_query_packet(
                 write_db_tput_query_summary(query, &mut reply);
             } else if query.starts_with("db tget ") {
                 write_db_tget_query_summary(query, &mut reply);
+            } else if query.starts_with("db tdel ") {
+                write_db_tdel_query_summary(query, &mut reply);
             } else if query.starts_with("db bleaf ") {
                 write_db_bleaf_query_summary(query, &mut reply);
             } else if query.eq_ignore_ascii_case("db event-init")
