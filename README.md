@@ -270,8 +270,10 @@ present, and reports a SHA-256 fingerprint of the derived shared secret plus the
 TLS 1.3 transcript and handshake traffic secret/key/IV fingerprints. This proves
 DNS/route/ARP/TCP plus TLS key-agreement and record-key schedule reachability,
 and, when the server selects `TLS_CHACHA20_POLY1305_SHA256`, attempts to decrypt
-the first encrypted server handshake record. It is not yet a complete TLS stack
-or HTTPS client.
+the first encrypted server handshake record. The decrypted payload is then
+parsed as a TLS handshake message stream and reports whether
+EncryptedExtensions, Certificate, CertificateVerify, and Finished are present in
+that first record. It is not yet a complete TLS stack or HTTPS client.
 
 `wifi facts`, `wifi status`, `wifi pcie`, `wifi cru`, `wifi apb`, `wifi phy`,
 `wifi enum confirm`, and `wifi roadmap` expose the R5C
