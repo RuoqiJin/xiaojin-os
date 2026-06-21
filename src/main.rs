@@ -1,6 +1,7 @@
 #![no_std]
 #![no_main]
 
+use aes_gcm::Aes128Gcm;
 use chacha20poly1305::aead::{AeadInPlace, KeyInit};
 use chacha20poly1305::{ChaCha20Poly1305, Key as ChaCha20Poly1305Key, Nonce, Tag};
 use core::arch::{asm, global_asm};
@@ -2435,6 +2436,7 @@ fn print_caps(uart: &mut Uart) {
     uart.put_str("  net arp-resolve yes\n");
     uart.put_str("  net dns-client yes\n");
     uart.put_str("  net tls-clienthello yes\n");
+    uart.put_str("  net tls-aes128gcm-decrypt yes\n");
     uart.put_str("  net tls-chacha20poly1305-decrypt yes\n");
     uart.put_str("  net tls-handshake-parse yes\n");
     uart.put_str("  net udp-dhcp-control yes\n");
@@ -2476,7 +2478,7 @@ fn print_caps(uart: &mut Uart) {
 fn write_caps_query_summary<W: Write>(out: &mut W) {
     let _ = write!(
         out,
-        "XJQ OK caps net-dev=yes dhcp=yes auto-dhcp=yes route=yes arp=yes dns=yes tcp-connect=yes http-get=yes http-post=yes http-trace=yes http-debug=yes tls-clienthello=yes tls-chacha20poly1305-decrypt=yes tls-handshake-parse=yes maint-poll=yes maint-status=yes maint-pending-summary=yes maint-command-digest=yes maint-command-verify=yes maint-command-verify-hmac=yes maint-local-hmac-key=yes maint-pull-exec=yes maint-loop=yes maint-config=yes maint-config-paths=yes maint-cold-boot-tick=yes maint-ack-intent=yes maint-remote-event=yes maint-local-audit=yes identity=yes rng=development-hmac-drbg query=yes reboot=yes wifi=pcie-enum wifi-pcie=facts wifi-cru=read-only wifi-apb=read-only wifi-phy=read-only wifi-power=read-only wifi-link=read-only wifi-trace=confirm wifi-pcie-init=confirm wifi-pcie-init-high=confirm wifi-pcie-init-linux=confirm wifi-pcie-init-dt=confirm wifi-enum=confirm wifi-station=planned wifi-ap=planned sd-probe=yes sd-writer=yes ab-persist=yes boot-slot=extlinux db=page-store,catalog,wal,fixed-table,btree,btree-delete,table-namespace,event-log,blob-backup,blob-restore"
+        "XJQ OK caps net-dev=yes dhcp=yes auto-dhcp=yes route=yes arp=yes dns=yes tcp-connect=yes http-get=yes http-post=yes http-trace=yes http-debug=yes tls-clienthello=yes tls-aes128gcm-decrypt=yes tls-chacha20poly1305-decrypt=yes tls-handshake-parse=yes maint-poll=yes maint-status=yes maint-pending-summary=yes maint-command-digest=yes maint-command-verify=yes maint-command-verify-hmac=yes maint-local-hmac-key=yes maint-pull-exec=yes maint-loop=yes maint-config=yes maint-config-paths=yes maint-cold-boot-tick=yes maint-ack-intent=yes maint-remote-event=yes maint-local-audit=yes identity=yes rng=development-hmac-drbg query=yes reboot=yes wifi=pcie-enum wifi-pcie=facts wifi-cru=read-only wifi-apb=read-only wifi-phy=read-only wifi-power=read-only wifi-link=read-only wifi-trace=confirm wifi-pcie-init=confirm wifi-pcie-init-high=confirm wifi-pcie-init-linux=confirm wifi-pcie-init-dt=confirm wifi-enum=confirm wifi-station=planned wifi-ap=planned sd-probe=yes sd-writer=yes ab-persist=yes boot-slot=extlinux db=page-store,catalog,wal,fixed-table,btree,btree-delete,table-namespace,event-log,blob-backup,blob-restore"
     );
 }
 
@@ -15443,7 +15445,7 @@ fn tls13_decrypt_first_server_handshake_record(
     server_key: &[u8; 32],
     server_iv: &[u8; 12],
 ) -> TlsDecryptSummary {
-    if cipher_suite != 0x1303 {
+    if !matches!(cipher_suite, 0x1301 | 0x1303) {
         return TlsDecryptSummary {
             status: TlsDecryptStatus::UnsupportedCipher,
             record_type: None,
@@ -15472,9 +15474,10 @@ fn tls13_decrypt_first_server_handshake_record(
         }
         let record = &sample[offset..record_end];
         if record_type == TLS_RECORD_APPLICATION_DATA {
-            return tls13_chacha20poly1305_decrypt_record(
+            return tls13_decrypt_application_record(
                 record,
                 encrypted_seq,
+                cipher_suite,
                 server_key,
                 server_iv,
             );
@@ -15493,9 +15496,10 @@ fn tls13_decrypt_first_server_handshake_record(
     tls_decrypt_summary(TlsDecryptStatus::NoEncryptedRecord)
 }
 
-fn tls13_chacha20poly1305_decrypt_record(
+fn tls13_decrypt_application_record(
     record: &[u8],
     sequence: u64,
+    cipher_suite: u16,
     server_key: &[u8; 32],
     server_iv: &[u8; 12],
 ) -> TlsDecryptSummary {
@@ -15515,18 +15519,26 @@ fn tls13_chacha20poly1305_decrypt_record(
 
     let mut plaintext = [0u8; TLS_DECRYPT_MAX_BYTES];
     plaintext[..ciphertext_len].copy_from_slice(&record[5..5 + ciphertext_len]);
-    let tag = Tag::from_slice(&record[5 + ciphertext_len..5 + encrypted_len]);
+    let tag_bytes = &record[5 + ciphertext_len..5 + encrypted_len];
     let nonce_bytes = tls13_record_nonce(server_iv, sequence);
-    let cipher = ChaCha20Poly1305::new(ChaCha20Poly1305Key::from_slice(server_key));
-    if cipher
-        .decrypt_in_place_detached(
-            Nonce::from_slice(&nonce_bytes),
+    let decrypt_ok = match cipher_suite {
+        0x1301 => tls13_aes128gcm_decrypt_in_place(
+            server_key,
+            &nonce_bytes,
             &record[..5],
             &mut plaintext[..ciphertext_len],
-            tag,
-        )
-        .is_err()
-    {
+            tag_bytes,
+        ),
+        0x1303 => tls13_chacha20poly1305_decrypt_in_place(
+            server_key,
+            &nonce_bytes,
+            &record[..5],
+            &mut plaintext[..ciphertext_len],
+            Tag::from_slice(tag_bytes),
+        ),
+        _ => return tls_decrypt_summary(TlsDecryptStatus::UnsupportedCipher),
+    };
+    if !decrypt_ok {
         return tls_decrypt_summary(TlsDecryptStatus::AuthFailed);
     }
 
@@ -15559,6 +15571,39 @@ fn tls13_chacha20poly1305_decrypt_record(
         payload_len: Some(payload_len as u16),
         handshake,
     }
+}
+
+fn tls13_aes128gcm_decrypt_in_place(
+    server_key: &[u8; 32],
+    nonce: &[u8; 12],
+    aad: &[u8],
+    plaintext: &mut [u8],
+    tag: &[u8],
+) -> bool {
+    let Ok(cipher) = Aes128Gcm::new_from_slice(&server_key[..16]) else {
+        return false;
+    };
+    cipher
+        .decrypt_in_place_detached(
+            aes_gcm::Nonce::from_slice(nonce),
+            aad,
+            plaintext,
+            aes_gcm::Tag::from_slice(tag),
+        )
+        .is_ok()
+}
+
+fn tls13_chacha20poly1305_decrypt_in_place(
+    server_key: &[u8; 32],
+    nonce: &[u8; 12],
+    aad: &[u8],
+    plaintext: &mut [u8],
+    tag: &Tag,
+) -> bool {
+    let cipher = ChaCha20Poly1305::new(ChaCha20Poly1305Key::from_slice(server_key));
+    cipher
+        .decrypt_in_place_detached(Nonce::from_slice(nonce), aad, plaintext, tag)
+        .is_ok()
 }
 
 fn tls_parse_decrypted_handshake_payload(payload: &[u8]) -> TlsHandshakeParseSummary {
