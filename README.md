@@ -239,10 +239,14 @@ maintainer host plus the deployed public poll/event path pair, which keeps the
 first cold-boot maintenance target in one XiaojinDB fixed-table row. When the
 network listener starts without a serial escape, it performs one bounded
 `maint config-run` tick if a saved config exists, then continues serving local
-LAN control. The next database
-infrastructure step for PostgreSQL backup is a XiaojinDB blob/import layer:
-the current fixed table and event log are enough for health events and small
-rows, but not for a complete GCP VM PostgreSQL backup or serving replacement.
+LAN control. The PostgreSQL backup lane now has a host-side backup-set path:
+`xjctl` can run VM-side `pg_dump`, pack multiple dumps plus restore lists into a
+tarball, upload it into the XiaojinDB blob store, download it back, restore-smoke
+it, and register restore-smoked evidence with the GCP maintainer. The serving
+lane has a host-side PostgreSQL-compatible bridge with password auth, system
+`psql` smoke, read-only health checks, and a VM-local systemd template. Native
+row-level import, logical replay, query planning, transactions, and kernel-side
+PostgreSQL serving remain follow-on stages.
 Persistent inactive-slot image staging is exposed through the UDP `XJPS` control
 packet, used by `xjctl net-dev --persist --slot b`. This writes the last
 uploaded image into the selected preallocated A/B slot and verifies it by

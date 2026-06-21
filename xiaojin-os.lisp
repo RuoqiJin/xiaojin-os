@@ -249,13 +249,15 @@
       :requires [dns tcp tls artifact-signature-verification wifi-station-optional]
       :purpose "Move cloud maintenance from a host bridge into Xiaojin OS itself.")
     (stage postgres-backup-compatibility
-      :status planned
-      :requires [xiaojindb-blob-store host-pg-dump-importer logical-replay-format backup-diff-verifier]
-      :purpose "Make XiaojinDB able to store a complete backup copy of a PostgreSQL database running on the GCP VM.")
+      :status implemented-host-backup-set
+      :implemented [xiaojindb-blob-store host-pg-dump-importer pg-restore-list-check restore-smoke backup-set-tarball maintainer-restore-smoked-registry]
+      :next [row-level-import logical-replay-format backup-diff-verifier scheduled-gcp-backup]
+      :purpose "Make XiaojinDB able to store and restore-smoke a complete backup copy of PostgreSQL databases running on the GCP VM.")
     (stage postgres-serving-compatibility
-      :status planned
-      :requires [schema-catalog variable-length-records query-executor transaction-layer postgres-wire-or-client-adapter]
-      :purpose "Replace selected GCP VM PostgreSQL serving paths with XiaojinDB after backup/replay/diff parity is proven."))
+      :status implemented-host-bridge-partial
+      :implemented [http-kv-bridge postgres-wire-simple-query postgres-wire-extended-query protected-password-auth system-psql-smoke read-only-health-smoke vm-local-systemd-template]
+      :next [schema-catalog transaction-layer query-planner driver-compatibility-matrix load-test diff-test]
+      :purpose "Replace selected GCP VM PostgreSQL serving paths with XiaojinDB after host bridge compatibility, backup/replay/diff parity, and load tests are proven."))
 
   (kernel-shell
     :prompt "xj> "
