@@ -1188,6 +1188,7 @@ struct TlsClientHelloResult {
     decrypted_certificate_entries: u8,
     decrypted_certificate_list_len: Option<u16>,
     decrypted_first_certificate_len: Option<u16>,
+    decrypted_first_certificate_sha256: Option<[u8; 32]>,
     decrypted_certificate_list_complete: bool,
     decrypted_certificate_verify: bool,
     decrypted_finished: bool,
@@ -2444,6 +2445,7 @@ fn print_caps(uart: &mut Uart) {
     uart.put_str("  net tls-chacha20poly1305-decrypt yes\n");
     uart.put_str("  net tls-handshake-parse yes\n");
     uart.put_str("  net tls-certificate-list-parse yes\n");
+    uart.put_str("  net tls-first-certificate-sha256 yes\n");
     uart.put_str("  net udp-dhcp-control yes\n");
     uart.put_str("  net udp-query-control yes\n");
     uart.put_str("  net routed-udp-loader yes\n");
@@ -2483,7 +2485,7 @@ fn print_caps(uart: &mut Uart) {
 fn write_caps_query_summary<W: Write>(out: &mut W) {
     let _ = write!(
         out,
-        "XJQ OK caps net-dev=yes dhcp=yes auto-dhcp=yes route=yes arp=yes dns=yes tcp-connect=yes http-get=yes http-post=yes http-trace=yes http-debug=yes tls-clienthello=yes tls-aes128gcm-decrypt=yes tls-chacha20poly1305-decrypt=yes tls-handshake-parse=yes tls-certificate-list-parse=yes maint-poll=yes maint-status=yes maint-pending-summary=yes maint-command-digest=yes maint-command-verify=yes maint-command-verify-hmac=yes maint-local-hmac-key=yes maint-pull-exec=yes maint-loop=yes maint-config=yes maint-config-paths=yes maint-cold-boot-tick=yes maint-ack-intent=yes maint-remote-event=yes maint-local-audit=yes identity=yes rng=development-hmac-drbg query=yes reboot=yes wifi=pcie-enum wifi-pcie=facts wifi-cru=read-only wifi-apb=read-only wifi-phy=read-only wifi-power=read-only wifi-link=read-only wifi-trace=confirm wifi-pcie-init=confirm wifi-pcie-init-high=confirm wifi-pcie-init-linux=confirm wifi-pcie-init-dt=confirm wifi-enum=confirm wifi-station=planned wifi-ap=planned sd-probe=yes sd-writer=yes ab-persist=yes boot-slot=extlinux db=page-store,catalog,wal,fixed-table,btree,btree-delete,table-namespace,event-log,blob-backup,blob-restore"
+        "XJQ OK caps net-dev=yes dhcp=yes auto-dhcp=yes route=yes arp=yes dns=yes tcp-connect=yes http-get=yes http-post=yes http-trace=yes http-debug=yes tls-clienthello=yes tls-aes128gcm-decrypt=yes tls-chacha20poly1305-decrypt=yes tls-handshake-parse=yes tls-certificate-list-parse=yes tls-first-certificate-sha256=yes maint-poll=yes maint-status=yes maint-pending-summary=yes maint-command-digest=yes maint-command-verify=yes maint-command-verify-hmac=yes maint-local-hmac-key=yes maint-pull-exec=yes maint-loop=yes maint-config=yes maint-config-paths=yes maint-cold-boot-tick=yes maint-ack-intent=yes maint-remote-event=yes maint-local-audit=yes identity=yes rng=development-hmac-drbg query=yes reboot=yes wifi=pcie-enum wifi-pcie=facts wifi-cru=read-only wifi-apb=read-only wifi-phy=read-only wifi-power=read-only wifi-link=read-only wifi-trace=confirm wifi-pcie-init=confirm wifi-pcie-init-high=confirm wifi-pcie-init-linux=confirm wifi-pcie-init-dt=confirm wifi-enum=confirm wifi-station=planned wifi-ap=planned sd-probe=yes sd-writer=yes ab-persist=yes boot-slot=extlinux db=page-store,catalog,wal,fixed-table,btree,btree-delete,table-namespace,event-log,blob-backup,blob-restore"
     );
 }
 
@@ -4215,7 +4217,7 @@ fn write_net_tls_query_summary<W: Write>(default_index: usize, query: &str, out:
         Ok(result) => {
             let _ = write!(
                 out,
-                "XJQ OK tls iface={} host={} sni={} ip={}.{}.{}.{} port={} src-port={} sent={} record-type=0x{:02x} record-version=0x{:04x} record-len={} bytes={} payload={} segments={} fin={} truncated={} alert-level={} alert-description={} handshake-type={} selected-version={} cipher-suite={} keyshare-group={} keyshare-len={} decrypt-status={} decrypted-record-type={} decrypted-inner-type={} decrypted-handshake-type={} decrypted-payload-len={} decrypted-handshake-messages={} encrypted-extensions={} certificate={} certificate-entries={} certificate-list-len={} first-certificate-len={} certificate-list-complete={} certificate-verify={} finished={} handshake-parse-complete={} shared-secret-sha256=",
+                "XJQ OK tls iface={} host={} sni={} ip={}.{}.{}.{} port={} src-port={} sent={} record-type=0x{:02x} record-version=0x{:04x} record-len={} bytes={} payload={} segments={} fin={} truncated={} alert-level={} alert-description={} handshake-type={} selected-version={} cipher-suite={} keyshare-group={} keyshare-len={} decrypt-status={} decrypted-record-type={} decrypted-inner-type={} decrypted-handshake-type={} decrypted-payload-len={} decrypted-handshake-messages={} encrypted-extensions={} certificate={} certificate-entries={} certificate-list-len={} first-certificate-len={} certificate-list-complete={} certificate-verify={} finished={} handshake-parse-complete={} first-certificate-sha256=",
                 PCIE_CONTROLLERS[index].name,
                 host,
                 sni,
@@ -4257,6 +4259,8 @@ fn write_net_tls_query_summary<W: Write>(default_index: usize, query: &str, out:
                 yes_no(result.decrypted_finished),
                 yes_no(result.decrypted_handshake_parse_complete)
             );
+            write_optional_sha256_hex(out, &result.decrypted_first_certificate_sha256);
+            let _ = write!(out, " shared-secret-sha256=");
             write_optional_sha256_hex(out, &result.shared_secret_sha256);
             let _ = write!(out, " transcript-sha256=");
             write_optional_sha256_hex(out, &result.transcript_sha256);
@@ -11819,6 +11823,9 @@ fn print_tls_client_hello_result(uart: &mut Uart, result: TlsClientHelloResult) 
     uart.put_str("  shared-secret   sha256=");
     write_optional_sha256_hex(uart, &result.shared_secret_sha256);
     uart.put_str("\n");
+    uart.put_str("  first-cert      sha256=");
+    write_optional_sha256_hex(uart, &result.decrypted_first_certificate_sha256);
+    uart.put_str("\n");
     uart.put_str("  transcript      sha256=");
     write_optional_sha256_hex(uart, &result.transcript_sha256);
     uart.put_str("\n");
@@ -15100,6 +15107,7 @@ fn net_tls_client_hello(
         decrypted_certificate_entries: decrypt.handshake.certificate_entries,
         decrypted_certificate_list_len: decrypt.handshake.certificate_list_len,
         decrypted_first_certificate_len: decrypt.handshake.first_certificate_len,
+        decrypted_first_certificate_sha256: decrypt.handshake.first_certificate_sha256,
         decrypted_certificate_list_complete: decrypt.handshake.certificate_list_complete,
         decrypted_certificate_verify: decrypt.handshake.certificate_verify,
         decrypted_finished: decrypt.handshake.finished,
@@ -15154,6 +15162,7 @@ struct TlsHandshakeParseSummary {
     certificate_entries: u8,
     certificate_list_len: Option<u16>,
     first_certificate_len: Option<u16>,
+    first_certificate_sha256: Option<[u8; 32]>,
     certificate_list_complete: bool,
     certificate_verify: bool,
     finished: bool,
@@ -15169,6 +15178,7 @@ impl TlsHandshakeParseSummary {
             certificate_entries: 0,
             certificate_list_len: None,
             first_certificate_len: None,
+            first_certificate_sha256: None,
             certificate_list_complete: false,
             certificate_verify: false,
             finished: false,
@@ -15712,8 +15722,11 @@ fn tls_parse_certificate_handshake_body(body: &[u8], summary: &mut TlsHandshakeP
         if cert_end > list_end {
             return;
         }
-        if summary.certificate_entries == 0 && cert_len <= u16::MAX as usize {
-            summary.first_certificate_len = Some(cert_len as u16);
+        if summary.certificate_entries == 0 {
+            if cert_len <= u16::MAX as usize {
+                summary.first_certificate_len = Some(cert_len as u16);
+            }
+            summary.first_certificate_sha256 = Some(sha256_digest(&body[offset..cert_end]));
         }
         summary.certificate_entries = summary.certificate_entries.saturating_add(1);
         offset = cert_end;
