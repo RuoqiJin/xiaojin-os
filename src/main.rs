@@ -325,7 +325,18 @@ const DB_TABLE_NAMESPACE_NAME_MAX: usize = 48;
 const DB_TABLE_KEY_MAINT_HMAC: u32 = 0x584a_4d48; // "XJMH"
 const DB_TABLE_KEY_MAINT_CONFIG: u32 = 0x584a_4d43; // "XJMC"
 const MAINT_CONFIG_MAGIC: &[u8; 4] = b"XJMC";
-const MAINT_CONFIG_ROW_BYTES: usize = 20;
+const MAINT_CONFIG_V1_ROW_BYTES: usize = 20;
+const MAINT_CONFIG_V2_ROW_BYTES: usize = DB_TABLE_VALUE_BYTES;
+const MAINT_CONFIG_VERSION_V1: u8 = 1;
+const MAINT_CONFIG_VERSION_V2: u8 = 2;
+const MAINT_CONFIG_PATH_MAX_BYTES: usize = 96;
+const MAINT_CONFIG_PATH_CHUNK_BYTES: usize = DB_TABLE_VALUE_BYTES;
+const MAINT_CONFIG_PATH_CHUNKS: usize =
+    (MAINT_CONFIG_PATH_MAX_BYTES + MAINT_CONFIG_PATH_CHUNK_BYTES - 1)
+        / MAINT_CONFIG_PATH_CHUNK_BYTES;
+const MAINT_CONFIG_PATH_TABLE: &str = "maint_config";
+const MAINT_CONFIG_POLL_PATH_ROW_BASE: u64 = 1;
+const MAINT_CONFIG_EVENT_PATH_ROW_BASE: u64 = 16;
 const MAINT_CONFIG_DEFAULT_POLL_PATH: &str = "/xiaojin-maintainer/device-pull/r5c-lab/poll.txt";
 const MAINT_CONFIG_DEFAULT_EVENT_PATH: &str = "/xiaojin-maintainer/device-pull/r5c-lab/events";
 const DB_WAL_KIND_TEST: u32 = 1;
@@ -1417,6 +1428,7 @@ enum MaintConfigError {
     BadCount,
     BadInterval,
     BadLength,
+    BadPath,
 }
 
 impl MaintConfigError {
@@ -1431,6 +1443,7 @@ impl MaintConfigError {
             Self::BadCount => "maint-config-bad-count",
             Self::BadInterval => "maint-config-bad-interval",
             Self::BadLength => "maint-config-bad-length",
+            Self::BadPath => "maint-config-bad-path",
         }
     }
 }
@@ -1451,6 +1464,10 @@ struct MaintConfig {
     port: u16,
     count: u64,
     interval_ms: u64,
+    poll_path: [u8; MAINT_CONFIG_PATH_MAX_BYTES],
+    poll_path_len: usize,
+    event_path: [u8; MAINT_CONFIG_PATH_MAX_BYTES],
+    event_path_len: usize,
 }
 
 #[derive(Clone, Copy)]
@@ -2448,7 +2465,7 @@ fn print_caps(uart: &mut Uart) {
 fn write_caps_query_summary<W: Write>(out: &mut W) {
     let _ = write!(
         out,
-        "XJQ OK caps net-dev=yes dhcp=yes auto-dhcp=yes route=yes arp=yes dns=yes tcp-connect=yes http-get=yes http-post=yes http-trace=yes http-debug=yes tls-clienthello=yes tls-chacha20poly1305-decrypt=yes maint-poll=yes maint-status=yes maint-pending-summary=yes maint-command-digest=yes maint-command-verify=yes maint-command-verify-hmac=yes maint-local-hmac-key=yes maint-pull-exec=yes maint-loop=yes maint-config=yes maint-cold-boot-tick=yes maint-ack-intent=yes maint-remote-event=yes maint-local-audit=yes identity=yes rng=development-hmac-drbg query=yes reboot=yes wifi=pcie-enum wifi-pcie=facts wifi-cru=read-only wifi-apb=read-only wifi-phy=read-only wifi-power=read-only wifi-link=read-only wifi-trace=confirm wifi-pcie-init=confirm wifi-pcie-init-high=confirm wifi-pcie-init-linux=confirm wifi-pcie-init-dt=confirm wifi-enum=confirm wifi-station=planned wifi-ap=planned sd-probe=yes sd-writer=yes ab-persist=yes boot-slot=extlinux db=page-store,catalog,wal,fixed-table,btree,btree-delete,table-namespace,event-log,blob-backup,blob-restore"
+        "XJQ OK caps net-dev=yes dhcp=yes auto-dhcp=yes route=yes arp=yes dns=yes tcp-connect=yes http-get=yes http-post=yes http-trace=yes http-debug=yes tls-clienthello=yes tls-chacha20poly1305-decrypt=yes maint-poll=yes maint-status=yes maint-pending-summary=yes maint-command-digest=yes maint-command-verify=yes maint-command-verify-hmac=yes maint-local-hmac-key=yes maint-pull-exec=yes maint-loop=yes maint-config=yes maint-config-paths=yes maint-cold-boot-tick=yes maint-ack-intent=yes maint-remote-event=yes maint-local-audit=yes identity=yes rng=development-hmac-drbg query=yes reboot=yes wifi=pcie-enum wifi-pcie=facts wifi-cru=read-only wifi-apb=read-only wifi-phy=read-only wifi-power=read-only wifi-link=read-only wifi-trace=confirm wifi-pcie-init=confirm wifi-pcie-init-high=confirm wifi-pcie-init-linux=confirm wifi-pcie-init-dt=confirm wifi-enum=confirm wifi-station=planned wifi-ap=planned sd-probe=yes sd-writer=yes ab-persist=yes boot-slot=extlinux db=page-store,catalog,wal,fixed-table,btree,btree-delete,table-namespace,event-log,blob-backup,blob-restore"
     );
 }
 
@@ -4779,6 +4796,10 @@ fn write_maint_config_set_query_summary<W: Write>(default_index: usize, query: &
 fn write_maint_config_status_summary<W: Write>(out: &mut W) {
     match load_maint_config() {
         Ok(config) => {
+            let poll_path =
+                str::from_utf8(&config.poll_path[..config.poll_path_len]).unwrap_or("/");
+            let event_path =
+                str::from_utf8(&config.event_path[..config.event_path_len]).unwrap_or("/");
             let _ = write!(
                 out,
                 "XJQ OK maint-config iface={} host={}.{}.{}.{} port={} poll={} event={} count={} interval-ms={}",
@@ -4788,8 +4809,8 @@ fn write_maint_config_status_summary<W: Write>(out: &mut W) {
                 config.host_ip[2],
                 config.host_ip[3],
                 config.port,
-                MAINT_CONFIG_DEFAULT_POLL_PATH,
-                MAINT_CONFIG_DEFAULT_EVENT_PATH,
+                poll_path,
+                event_path,
                 config.count,
                 config.interval_ms
             );
@@ -4810,12 +4831,16 @@ fn write_maint_config_run_summary<W: Write>(out: &mut W) {
                 config.host_ip[0], config.host_ip[1], config.host_ip[2], config.host_ip[3]
             );
             let host = str::from_utf8(host_text.as_slice()).unwrap_or("0.0.0.0");
+            let poll_path =
+                str::from_utf8(&config.poll_path[..config.poll_path_len]).unwrap_or("/");
+            let event_path =
+                str::from_utf8(&config.event_path[..config.event_path_len]).unwrap_or("/");
             write_maint_loop_execute_summary(
                 config.index,
                 host,
                 config.port,
-                MAINT_CONFIG_DEFAULT_POLL_PATH,
-                MAINT_CONFIG_DEFAULT_EVENT_PATH,
+                poll_path,
+                event_path,
                 config.count,
                 config.interval_ms,
                 out,
@@ -4837,12 +4862,16 @@ fn write_maint_config_run_once_summary<W: Write>(out: &mut W) {
                 config.host_ip[0], config.host_ip[1], config.host_ip[2], config.host_ip[3]
             );
             let host = str::from_utf8(host_text.as_slice()).unwrap_or("0.0.0.0");
+            let poll_path =
+                str::from_utf8(&config.poll_path[..config.poll_path_len]).unwrap_or("/");
+            let event_path =
+                str::from_utf8(&config.event_path[..config.event_path_len]).unwrap_or("/");
             write_maint_loop_execute_summary(
                 config.index,
                 host,
                 config.port,
-                MAINT_CONFIG_DEFAULT_POLL_PATH,
-                MAINT_CONFIG_DEFAULT_EVENT_PATH,
+                poll_path,
+                event_path,
                 1,
                 config.interval_ms,
                 out,
@@ -7560,10 +7589,8 @@ fn put_maint_config(
     if !valid_unicast_ipv4(host_ip) {
         return Err(MaintConfigError::BadHost);
     }
-    if poll_path != MAINT_CONFIG_DEFAULT_POLL_PATH || event_path != MAINT_CONFIG_DEFAULT_EVENT_PATH
-    {
-        return Err(MaintConfigError::BadLength);
-    }
+    let poll_path_len = validate_maint_config_path(poll_path)?;
+    let event_path_len = validate_maint_config_path(event_path)?;
     if !(1..=4).contains(&count) {
         return Err(MaintConfigError::BadCount);
     }
@@ -7571,33 +7598,55 @@ fn put_maint_config(
         return Err(MaintConfigError::BadInterval);
     }
 
-    let mut row = [0u8; MAINT_CONFIG_ROW_BYTES];
+    ensure_maint_config_btree()?;
+    put_maint_config_path_chunks(MAINT_CONFIG_POLL_PATH_ROW_BASE, poll_path.as_bytes())?;
+    put_maint_config_path_chunks(MAINT_CONFIG_EVENT_PATH_ROW_BASE, event_path.as_bytes())?;
+
+    let mut row = [0u8; MAINT_CONFIG_V2_ROW_BYTES];
     row[0..4].copy_from_slice(MAINT_CONFIG_MAGIC);
-    row[4] = 1;
+    row[4] = MAINT_CONFIG_VERSION_V2;
     row[5] = index as u8;
     row[6..10].copy_from_slice(&host_ip);
     row[10] = port as u8;
     row[11] = (port >> 8) as u8;
     row[12] = count as u8;
-    row[13] = 0;
+    row[13] = poll_path_len as u8;
     let interval = interval_ms as u32;
     row[14] = interval as u8;
     row[15] = (interval >> 8) as u8;
     row[16] = (interval >> 16) as u8;
     row[17] = (interval >> 24) as u8;
-    row[18] = 0;
+    row[18] = event_path_len as u8;
     row[19] = 0;
+    let crc = maint_config_paths_crc(poll_path.as_bytes(), event_path.as_bytes());
+    row[20] = crc as u8;
+    row[21] = (crc >> 8) as u8;
+    row[22] = (crc >> 16) as u8;
+    row[23] = (crc >> 24) as u8;
     put_db_row(DB_TABLE_KEY_MAINT_CONFIG, &row)?;
     Ok(())
 }
 
 fn load_maint_config() -> Result<MaintConfig, MaintConfigError> {
     let (_info, _catalog, _table, row) = get_db_row(DB_TABLE_KEY_MAINT_CONFIG)?;
-    if row.value_len != MAINT_CONFIG_ROW_BYTES {
+    if !matches!(
+        row.value_len,
+        MAINT_CONFIG_V1_ROW_BYTES | MAINT_CONFIG_V2_ROW_BYTES
+    ) {
         return Err(MaintConfigError::BadLength);
     }
-    if &row.value[0..4] != MAINT_CONFIG_MAGIC || row.value[4] != 1 {
+    if &row.value[0..4] != MAINT_CONFIG_MAGIC {
         return Err(MaintConfigError::BadMagic);
+    }
+    let version = row.value[4];
+    if !matches!(version, MAINT_CONFIG_VERSION_V1 | MAINT_CONFIG_VERSION_V2) {
+        return Err(MaintConfigError::BadMagic);
+    }
+    if version == MAINT_CONFIG_VERSION_V1 && row.value_len != MAINT_CONFIG_V1_ROW_BYTES {
+        return Err(MaintConfigError::BadLength);
+    }
+    if version == MAINT_CONFIG_VERSION_V2 && row.value_len != MAINT_CONFIG_V2_ROW_BYTES {
+        return Err(MaintConfigError::BadLength);
     }
     let index = row.value[5] as usize;
     if index >= RTL_DEVICE_COUNT {
@@ -7623,13 +7672,161 @@ fn load_maint_config() -> Result<MaintConfig, MaintConfigError> {
     if !(1_000..=600_000).contains(&interval_ms) {
         return Err(MaintConfigError::BadInterval);
     }
+    let (poll_path, poll_path_len, event_path, event_path_len) =
+        if version == MAINT_CONFIG_VERSION_V1 {
+            let (poll_path, poll_path_len) =
+                maint_config_default_path_buf(MAINT_CONFIG_DEFAULT_POLL_PATH);
+            let (event_path, event_path_len) =
+                maint_config_default_path_buf(MAINT_CONFIG_DEFAULT_EVENT_PATH);
+            (poll_path, poll_path_len, event_path, event_path_len)
+        } else {
+            let poll_path_len = row.value[13] as usize;
+            let event_path_len = row.value[18] as usize;
+            if poll_path_len == 0
+                || poll_path_len > MAINT_CONFIG_PATH_MAX_BYTES
+                || event_path_len == 0
+                || event_path_len > MAINT_CONFIG_PATH_MAX_BYTES
+            {
+                return Err(MaintConfigError::BadLength);
+            }
+            let (poll_path, poll_loaded_len) =
+                load_maint_config_path_chunks(MAINT_CONFIG_POLL_PATH_ROW_BASE, poll_path_len)?;
+            let (event_path, event_loaded_len) =
+                load_maint_config_path_chunks(MAINT_CONFIG_EVENT_PATH_ROW_BASE, event_path_len)?;
+            let expected_crc = u32::from(row.value[20])
+                | (u32::from(row.value[21]) << 8)
+                | (u32::from(row.value[22]) << 16)
+                | (u32::from(row.value[23]) << 24);
+            let actual_crc = maint_config_paths_crc(
+                &poll_path[..poll_loaded_len],
+                &event_path[..event_loaded_len],
+            );
+            if expected_crc != actual_crc {
+                return Err(MaintConfigError::BadPath);
+            }
+            (poll_path, poll_loaded_len, event_path, event_loaded_len)
+        };
     Ok(MaintConfig {
         index,
         host_ip,
         port,
         count,
         interval_ms,
+        poll_path,
+        poll_path_len,
+        event_path,
+        event_path_len,
     })
+}
+
+fn validate_maint_config_path(path: &str) -> Result<usize, MaintConfigError> {
+    let bytes = path.as_bytes();
+    if bytes.is_empty()
+        || bytes.len() > MAINT_CONFIG_PATH_MAX_BYTES
+        || bytes[0] != b'/'
+        || bytes
+            .iter()
+            .any(|byte| byte.is_ascii_whitespace() || !byte.is_ascii_graphic())
+    {
+        return Err(MaintConfigError::BadPath);
+    }
+    Ok(bytes.len())
+}
+
+fn maint_config_default_path_buf(path: &str) -> ([u8; MAINT_CONFIG_PATH_MAX_BYTES], usize) {
+    let mut out = [0u8; MAINT_CONFIG_PATH_MAX_BYTES];
+    let bytes = path.as_bytes();
+    out[..bytes.len()].copy_from_slice(bytes);
+    (out, bytes.len())
+}
+
+fn ensure_maint_config_btree() -> Result<(), MaintConfigError> {
+    match read_db_btree_root() {
+        Ok((_info, _catalog, _root)) => Ok(()),
+        Err(DbError::BtreeMissing) => {
+            init_db_btree()?;
+            Ok(())
+        }
+        Err(error) => Err(MaintConfigError::Db(error)),
+    }
+}
+
+fn maint_config_path_key(base_row: u64, chunk: usize) -> Result<u32, MaintConfigError> {
+    let row = base_row + chunk as u64;
+    let Some((_bucket, key)) = db_table_namespace_key(MAINT_CONFIG_PATH_TABLE, row) else {
+        return Err(MaintConfigError::BadPath);
+    };
+    Ok(key)
+}
+
+fn put_maint_config_path_chunks(base_row: u64, bytes: &[u8]) -> Result<(), MaintConfigError> {
+    for chunk in 0..MAINT_CONFIG_PATH_CHUNKS {
+        let key = maint_config_path_key(base_row, chunk)?;
+        let start = chunk * MAINT_CONFIG_PATH_CHUNK_BYTES;
+        if start < bytes.len() {
+            let end = if start + MAINT_CONFIG_PATH_CHUNK_BYTES < bytes.len() {
+                start + MAINT_CONFIG_PATH_CHUNK_BYTES
+            } else {
+                bytes.len()
+            };
+            put_db_btree_row(key, &bytes[start..end])?;
+        } else {
+            match delete_db_btree_row(key) {
+                Ok((_info, _catalog, _root, _leaf)) => {}
+                Err(DbError::KeyMissing | DbError::BtreeMissing) => {}
+                Err(error) => return Err(MaintConfigError::Db(error)),
+            }
+        }
+    }
+    Ok(())
+}
+
+fn load_maint_config_path_chunks(
+    base_row: u64,
+    len: usize,
+) -> Result<([u8; MAINT_CONFIG_PATH_MAX_BYTES], usize), MaintConfigError> {
+    if len == 0 || len > MAINT_CONFIG_PATH_MAX_BYTES {
+        return Err(MaintConfigError::BadLength);
+    }
+    let mut out = [0u8; MAINT_CONFIG_PATH_MAX_BYTES];
+    let chunks = (len + MAINT_CONFIG_PATH_CHUNK_BYTES - 1) / MAINT_CONFIG_PATH_CHUNK_BYTES;
+    let mut written = 0usize;
+    for chunk in 0..chunks {
+        let key = maint_config_path_key(base_row, chunk)?;
+        let (_info, _catalog, _root, _leaf, row) = match get_db_btree_row(key) {
+            Ok(value) => value,
+            Err(DbError::KeyMissing | DbError::BtreeMissing) => {
+                return Err(MaintConfigError::BadPath);
+            }
+            Err(error) => return Err(MaintConfigError::Db(error)),
+        };
+        let remaining = len - written;
+        let expected = if MAINT_CONFIG_PATH_CHUNK_BYTES < remaining {
+            MAINT_CONFIG_PATH_CHUNK_BYTES
+        } else {
+            remaining
+        };
+        if row.value_len != expected {
+            return Err(MaintConfigError::BadLength);
+        }
+        out[written..written + expected].copy_from_slice(&row.value[..expected]);
+        written += expected;
+    }
+    let path = str::from_utf8(&out[..written]).map_err(|_| MaintConfigError::BadPath)?;
+    validate_maint_config_path(path)?;
+    Ok((out, written))
+}
+
+fn maint_config_paths_crc(poll_path: &[u8], event_path: &[u8]) -> u32 {
+    let mut crc = 0xffff_ffffu32;
+    for &byte in poll_path {
+        crc = crc32_update(crc, byte);
+    }
+    crc = crc32_update(crc, 0);
+    for &byte in event_path {
+        crc = crc32_update(crc, byte);
+    }
+    !crc
 }
 
 fn read_db_btree_root() -> Result<(DbFileInfo, DbCatalog, DbBtreeRoot), DbError> {
