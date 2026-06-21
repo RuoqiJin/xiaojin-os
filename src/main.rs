@@ -2309,6 +2309,7 @@ fn print_help(uart: &mut Uart) {
     uart.put_str("  wifi phy             show read-only combphy2 status\n");
     uart.put_str("  wifi power           show PCIe 3.3V regulator GPIO state\n");
     uart.put_str("  wifi link            show PCIe2 link/DBI/config safety status\n");
+    uart.put_str("  wifi firmware        show Realtek WiFi driver/firmware candidates\n");
     uart.put_str("  wifi trace confirm   retrain PCIe2 and show LTSSM debug FIFO evidence\n");
     uart.put_str("  wifi sideband <in|low|high> confirm\n");
     uart.put_str("  wifi pcie-init confirm\n");
@@ -2467,6 +2468,7 @@ fn print_caps(uart: &mut Uart) {
     uart.put_str("  wifi pcie-facts yes\n");
     uart.put_str("  wifi link-readonly yes\n");
     uart.put_str("  wifi enum-confirm yes\n");
+    uart.put_str("  wifi firmware-facts yes\n");
     uart.put_str("  wifi station planned\n");
     uart.put_str("  wifi ap planned\n");
     uart.put_str("  sd probe-readonly yes\n");
@@ -2485,7 +2487,7 @@ fn print_caps(uart: &mut Uart) {
 fn write_caps_query_summary<W: Write>(out: &mut W) {
     let _ = write!(
         out,
-        "XJQ OK caps net-dev=yes dhcp=yes auto-dhcp=yes route=yes arp=yes dns=yes tcp-connect=yes http-get=yes http-post=yes http-trace=yes http-debug=yes tls-clienthello=yes tls-aes128gcm-decrypt=yes tls-chacha20poly1305-decrypt=yes tls-handshake-parse=yes tls-certificate-list-parse=yes tls-first-certificate-sha256=yes maint-poll=yes maint-status=yes maint-pending-summary=yes maint-command-digest=yes maint-command-verify=yes maint-command-verify-hmac=yes maint-local-hmac-key=yes maint-pull-exec=yes maint-loop=yes maint-config=yes maint-config-paths=yes maint-cold-boot-tick=yes maint-ack-intent=yes maint-remote-event=yes maint-local-audit=yes identity=yes rng=development-hmac-drbg query=yes reboot=yes wifi=pcie-enum wifi-pcie=facts wifi-cru=read-only wifi-apb=read-only wifi-phy=read-only wifi-power=read-only wifi-link=read-only wifi-trace=confirm wifi-pcie-init=confirm wifi-pcie-init-high=confirm wifi-pcie-init-linux=confirm wifi-pcie-init-dt=confirm wifi-enum=confirm wifi-station=planned wifi-ap=planned sd-probe=yes sd-writer=yes ab-persist=yes boot-slot=extlinux db=page-store,catalog,wal,fixed-table,btree,btree-delete,table-namespace,event-log,blob-backup,blob-restore"
+        "XJQ OK caps net-dev=yes dhcp=yes auto-dhcp=yes route=yes arp=yes dns=yes tcp-connect=yes http-get=yes http-post=yes http-trace=yes http-debug=yes tls-clienthello=yes tls-aes128gcm-decrypt=yes tls-chacha20poly1305-decrypt=yes tls-handshake-parse=yes tls-certificate-list-parse=yes tls-first-certificate-sha256=yes maint-poll=yes maint-status=yes maint-pending-summary=yes maint-command-digest=yes maint-command-verify=yes maint-command-verify-hmac=yes maint-local-hmac-key=yes maint-pull-exec=yes maint-loop=yes maint-config=yes maint-config-paths=yes maint-cold-boot-tick=yes maint-ack-intent=yes maint-remote-event=yes maint-local-audit=yes identity=yes rng=development-hmac-drbg query=yes reboot=yes wifi=pcie-enum wifi-pcie=facts wifi-cru=read-only wifi-apb=read-only wifi-phy=read-only wifi-power=read-only wifi-link=read-only wifi-firmware=facts wifi-trace=confirm wifi-pcie-init=confirm wifi-pcie-init-high=confirm wifi-pcie-init-linux=confirm wifi-pcie-init-dt=confirm wifi-enum=confirm wifi-station=planned wifi-ap=planned sd-probe=yes sd-writer=yes ab-persist=yes boot-slot=extlinux db=page-store,catalog,wal,fixed-table,btree,btree-delete,table-namespace,event-log,blob-backup,blob-restore"
     );
 }
 
@@ -2677,6 +2679,7 @@ fn command_wifi<'a>(uart: &mut Uart, parts: &mut core::str::SplitWhitespace<'a>)
         Some("phy") => print_wifi_phy_status(uart),
         Some("power") => print_wifi_power_status(uart),
         Some("link") => print_wifi_link_status(uart),
+        Some("firmware") => print_wifi_firmware_facts(uart),
         Some("trace") => command_wifi_trace(uart, parts.next()),
         Some("sideband") => command_wifi_sideband(uart, parts.next(), parts.next()),
         Some("pcie-init") => command_wifi_pcie_init(uart, parts.next()),
@@ -2698,6 +2701,7 @@ fn command_wifi<'a>(uart: &mut Uart, parts: &mut core::str::SplitWhitespace<'a>)
             uart.put_str("  wifi phy\n");
             uart.put_str("  wifi power\n");
             uart.put_str("  wifi link\n");
+            uart.put_str("  wifi firmware\n");
             uart.put_str("  wifi trace confirm\n");
             uart.put_str("  wifi sideband <in|low|high> confirm\n");
             uart.put_str("  wifi pcie-init confirm\n");
@@ -2733,6 +2737,17 @@ fn print_wifi_status(uart: &mut Uart) {
     uart.put_str("  join            unavailable\n");
     uart.put_str("  ap              unavailable\n");
     uart.put_str("  reason          RTL8822CE firmware/802.11/WPA driver not implemented\n");
+}
+
+fn print_wifi_firmware_facts(uart: &mut Uart) {
+    uart.put_str("wifi firmware facts:\n");
+    uart.put_str("  scope           driver/firmware candidates only; no firmware loading yet\n");
+    uart.put_str("  rtl8822ce       driver=rtw88_8822ce firmware=rtw88/rtw8822c_fw.bin\n");
+    uart.put_str("  rtl8822be       driver=rtw88_8822be firmware=rtw88/rtw8822b_fw.bin\n");
+    uart.put_str("  rtl8852be       driver=rtw89_8852be firmware=rtw89/rtw8852b_fw.bin\n");
+    uart.put_str("  rtl8852ce       driver=rtw89_8852ce firmware=rtw89/rtw8852c_fw.bin\n");
+    uart.put_str("  next stage      firmware blob format, PCIe BAR MMIO, IRQ, DMA rings\n");
+    uart.put_str("  rescue rule     wired RTL8125 OTA remains primary while WiFi is immature\n");
 }
 
 fn print_wifi_roadmap(uart: &mut Uart) {
@@ -3144,6 +3159,7 @@ fn print_wifi_pcie_init_result(uart: &mut Uart, result: WifiPcieInitResult) {
 fn print_wifi_endpoint_config(uart: &mut Uart, config: WifiPcieEndpointConfig) {
     let vendor = (config.cfg0 & 0xffff) as u16;
     let device = (config.cfg0 >> 16) as u16;
+    let driver = wifi_driver_info(vendor, device);
     let revision = (config.class_revision & 0xff) as u8;
     let prog_if = ((config.class_revision >> 8) & 0xff) as u8;
     let subclass = ((config.class_revision >> 16) & 0xff) as u8;
@@ -3157,6 +3173,9 @@ fn print_wifi_endpoint_config(uart: &mut Uart, config: WifiPcieEndpointConfig) {
         wifi_endpoint_name(vendor, device)
     );
     let _ = writeln!(uart, "  vendor-device   0x{vendor:04x}:0x{device:04x}");
+    let _ = writeln!(uart, "  linux-driver    {}", driver.linux_driver);
+    let _ = writeln!(uart, "  firmware        {}", driver.firmware);
+    let _ = writeln!(uart, "  next-stage      {}", driver.next_stage);
     let _ = writeln!(
         uart,
         "  class           0x{class:02x} subclass=0x{subclass:02x} prog-if=0x{prog_if:02x} rev=0x{revision:02x}"
@@ -3553,6 +3572,7 @@ fn write_wifi_pcie_init_result_summary<W: Write>(out: &mut W, result: WifiPcieIn
 fn write_wifi_endpoint_config_summary<W: Write>(out: &mut W, config: WifiPcieEndpointConfig) {
     let vendor = (config.cfg0 & 0xffff) as u16;
     let device = (config.cfg0 >> 16) as u16;
+    let driver = wifi_driver_info(vendor, device);
     let revision = (config.class_revision & 0xff) as u8;
     let prog_if = ((config.class_revision >> 8) & 0xff) as u8;
     let subclass = ((config.class_revision >> 16) & 0xff) as u8;
@@ -3561,8 +3581,11 @@ fn write_wifi_endpoint_config_summary<W: Write>(out: &mut W, config: WifiPcieEnd
     let subsystem_device = (config.subsystem >> 16) as u16;
     let _ = write!(
         out,
-        " endpoint={} vendor=0x{vendor:04x} device=0x{device:04x} class=0x{class:02x} subclass=0x{subclass:02x} prog-if=0x{prog_if:02x} rev=0x{revision:02x} command-status=0x{:08x} subsystem-vendor=0x{subsystem_vendor:04x} subsystem-device=0x{subsystem_device:04x} bar0=0x{:08x} bar1=0x{:08x} bar2=0x{:08x} bar3=0x{:08x} bar4=0x{:08x} bar5=0x{:08x}",
+        " endpoint={} vendor=0x{vendor:04x} device=0x{device:04x} driver={} firmware={} next-stage={} class=0x{class:02x} subclass=0x{subclass:02x} prog-if=0x{prog_if:02x} rev=0x{revision:02x} command-status=0x{:08x} subsystem-vendor=0x{subsystem_vendor:04x} subsystem-device=0x{subsystem_device:04x} bar0=0x{:08x} bar1=0x{:08x} bar2=0x{:08x} bar3=0x{:08x} bar4=0x{:08x} bar5=0x{:08x}",
         wifi_endpoint_name(vendor, device),
+        driver.linux_driver,
+        driver.firmware,
+        driver.next_stage,
         config.command_status,
         config.bar0,
         config.bar1,
@@ -3570,6 +3593,13 @@ fn write_wifi_endpoint_config_summary<W: Write>(out: &mut W, config: WifiPcieEnd
         config.bar3,
         config.bar4,
         config.bar5
+    );
+}
+
+fn write_wifi_firmware_summary<W: Write>(out: &mut W) {
+    let _ = write!(
+        out,
+        "wifi-firmware rtl8822ce=rtw88/rtw8822c_fw.bin rtl8822be=rtw88/rtw8822b_fw.bin rtl8852be=rtw89/rtw8852b_fw.bin rtl8852ce=rtw89/rtw8852c_fw.bin next=firmware-loader-mmio-irq-dma"
     );
 }
 
@@ -17228,6 +17258,9 @@ fn net_handle_query_packet(
             } else if query.eq_ignore_ascii_case("wifi link") {
                 let _ = write!(reply, "XJQ OK ");
                 write_wifi_link_summary(&mut reply);
+            } else if query.eq_ignore_ascii_case("wifi firmware") {
+                let _ = write!(reply, "XJQ OK ");
+                write_wifi_firmware_summary(&mut reply);
             } else if query.eq_ignore_ascii_case("wifi trace confirm") {
                 let _ = write!(reply, "XJQ OK ");
                 write_wifi_trace_summary(&mut reply);
@@ -18976,6 +19009,48 @@ fn wifi_endpoint_name(vendor: u16, device: u16) -> &'static str {
         (0x10ec, 0xc852) => "rtl8852ce",
         (0x10ec, _) => "realtek-wifi-family",
         _ => "unknown",
+    }
+}
+
+#[derive(Clone, Copy)]
+struct WifiDriverInfo {
+    linux_driver: &'static str,
+    firmware: &'static str,
+    next_stage: &'static str,
+}
+
+fn wifi_driver_info(vendor: u16, device: u16) -> WifiDriverInfo {
+    match (vendor, device) {
+        (0x10ec, 0xc822) => WifiDriverInfo {
+            linux_driver: "rtw88_8822ce",
+            firmware: "rtw88/rtw8822c_fw.bin",
+            next_stage: "rtw88-pci-mmio-firmware-loader",
+        },
+        (0x10ec, 0xb822) => WifiDriverInfo {
+            linux_driver: "rtw88_8822be",
+            firmware: "rtw88/rtw8822b_fw.bin",
+            next_stage: "rtw88-pci-mmio-firmware-loader",
+        },
+        (0x10ec, 0xb852) => WifiDriverInfo {
+            linux_driver: "rtw89_8852be",
+            firmware: "rtw89/rtw8852b_fw.bin",
+            next_stage: "rtw89-pci-mmio-firmware-loader",
+        },
+        (0x10ec, 0xc852) => WifiDriverInfo {
+            linux_driver: "rtw89_8852ce",
+            firmware: "rtw89/rtw8852c_fw.bin",
+            next_stage: "rtw89-pci-mmio-firmware-loader",
+        },
+        (0x10ec, _) => WifiDriverInfo {
+            linux_driver: "realtek-wifi-family",
+            firmware: "unknown",
+            next_stage: "identify-realtek-chip-and-firmware",
+        },
+        _ => WifiDriverInfo {
+            linux_driver: "unknown",
+            firmware: "unknown",
+            next_stage: "identify-pcie-endpoint",
+        },
     }
 }
 

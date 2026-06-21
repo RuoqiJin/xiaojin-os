@@ -281,7 +281,7 @@ first certificate DER bytes. It is not yet a complete TLS stack,
 certificate-chain validator, or HTTPS client.
 
 `wifi facts`, `wifi status`, `wifi pcie`, `wifi cru`, `wifi apb`, `wifi phy`,
-`wifi enum confirm`, and `wifi roadmap` expose the R5C
+`wifi firmware`, `wifi enum confirm`, and `wifi roadmap` expose the R5C
 wireless bring-up path before the full WiFi driver exists. The current hardware assumption
 is an RTL8822CE-family M.2 E-Key WiFi/BT module. The OpenWrt R5C device tree
 places the candidate WiFi PCIe controller at `/pcie@fe260000`, with
@@ -293,7 +293,10 @@ access. `wifi phy` reads RK3568 combphy2 and pipe-phy-grf status without writes.
 `wifi power` reads the `vcc3v3_pcie` regulator GPIO state. These facts are also
 available over Ethernet through `xjctl wifi-facts`, `xjctl wifi-status`, and
 `xjctl wifi-pcie`/`xjctl wifi-cru`/`xjctl wifi-apb`/`xjctl wifi-phy`/
-`xjctl wifi-power`. Station mode and AP mode are not implemented yet. `wifi
+`xjctl wifi-power`. `wifi firmware` reports conservative Realtek Linux driver
+and firmware-blob candidates for RTL8822/RTL8852 PCIe modules, and `wifi enum
+confirm` includes the detected endpoint's driver/firmware candidate beside
+vendor/device/class/BAR data. Station mode and AP mode are not implemented yet. `wifi
 pcie-init confirm` / `xjctl wifi-init` is the first write-stage probe: it
 initializes only the PCIe2/combphy2 WiFi path, waits for LTSSM, and reads config
 word 0 when the link comes up. `wifi pcie-init-dt confirm` / `xjctl
