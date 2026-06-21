@@ -165,8 +165,8 @@
     :rescue-channel "wired RTL8125 UDP loader"
     (stage facts
       :status implemented
-      :commands [wifi facts wifi status wifi roadmap wifi pcie wifi cru wifi apb wifi phy wifi power]
-      :queries [xjq-wifi-facts xjq-wifi-status xjq-wifi-pcie xjq-wifi-cru xjq-wifi-apb xjq-wifi-phy xjq-wifi-power]
+      :commands [wifi facts wifi status wifi roadmap wifi pcie wifi cru wifi apb wifi phy wifi power wifi firmware]
+      :queries [xjq-wifi-facts xjq-wifi-status xjq-wifi-pcie xjq-wifi-cru xjq-wifi-apb xjq-wifi-phy xjq-wifi-power xjq-wifi-firmware]
       :purpose "Expose WiFi hardware assumptions and current driver state over serial and Ethernet before touching WiFi registers.")
     (stage pcie2x1-cru-status
       :status implemented
@@ -195,9 +195,16 @@
       :requires [safe-reset-gpio-pc1 pcie2-clock-map pcie2-combphy-map pcie2-config-window rtl8822ce-vendor-id]
       :safety "Requires explicit confirm; writes only PCIe2/combphy2 WiFi path while wired RTL8125 OTA remains active."
       :purpose "Enumerate the RTL8822CE path without changing the proven wired PCIe3 controllers.")
+    (stage firmware-sd-probe
+      :status implemented-readonly
+      :commands [wifi firmware-sd]
+      :queries [xjq-wifi-firmware-sd]
+      :requires [fat32-root-reader realtek-firmware-catalog]
+      :safety "Reads SD FAT32 metadata only; does not load firmware or write WiFi MMIO."
+      :purpose "Verify that Realtek firmware blobs are staged on the Xiaojin OS boot SD before implementing the firmware loader.")
     (stage rtl8822ce-driver
       :status planned
-      :requires [firmware-loader mmio-map dma-rings interrupts-or-polling regulatory-domain]
+      :requires [firmware-sd-probe firmware-loader mmio-map dma-rings interrupts-or-polling regulatory-domain]
       :purpose "Bring up the WiFi MAC/PHY and enough packet IO to support 802.11 station and AP work.")
     (stage station-mode
       :status planned

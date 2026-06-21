@@ -296,7 +296,12 @@ available over Ethernet through `xjctl wifi-facts`, `xjctl wifi-status`, and
 `xjctl wifi-power`. `wifi firmware` reports conservative Realtek Linux driver
 and firmware-blob candidates for RTL8822/RTL8852 PCIe modules, and `wifi enum
 confirm` includes the detected endpoint's driver/firmware candidate beside
-vendor/device/class/BAR data. Station mode and AP mode are not implemented yet. `wifi
+vendor/device/class/BAR data. `wifi firmware-sd confirm` checks the SD FAT32
+boot volume for firmware blobs at standard Linux firmware paths:
+`rtw88/rtw8822c_fw.bin`, `rtw88/rtw8822b_fw.bin`, `rtw89/rtw8852b_fw.bin`,
+and `rtw89/rtw8852c_fw.bin`; for early lab use it also accepts the same file
+names directly in the FAT32 root. This is a metadata presence probe only and
+does not load firmware or touch WiFi MMIO. Station mode and AP mode are not implemented yet. `wifi
 pcie-init confirm` / `xjctl wifi-init` is the first write-stage probe: it
 initializes only the PCIe2/combphy2 WiFi path, waits for LTSSM, and reads config
 word 0 when the link comes up. `wifi pcie-init-dt confirm` / `xjctl
