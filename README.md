@@ -235,11 +235,14 @@ XiaojinDB with
 `xjctl net-command "maint config-set <if> <host|ip> <port> <poll-path> <event-path> <count> <interval-ms> confirm"`,
 inspect it with `maint config-status`, and execute the saved bounded loop with
 `maint config-run`. The current compact persistent format stores an IPv4
-maintainer host plus the deployed public poll/event path pair, which keeps the
-first cold-boot maintenance target in one XiaojinDB fixed-table row. When the
-network listener starts without a serial escape, it performs one bounded
-`maint config-run` tick if a saved config exists, then continues serving local
-LAN control. The PostgreSQL backup lane now has a host-side backup-set path:
+maintainer host plus the default deployed public poll/event path pair
+(`/xiaojin-maintainer/device-pull/r5c-lab/poll.txt` and
+`/xiaojin-maintainer/device-pull/r5c-lab/events`). Custom poll/event paths work
+for direct `maint poll/status/pull-exec` commands but are not yet persistable in
+the cold-boot config row. When the network listener starts without a serial
+escape, it performs one bounded `maint config-run` tick if a saved config
+exists, then continues serving local LAN control. The PostgreSQL backup lane now
+has a host-side backup-set path:
 `xjctl` can run VM-side `pg_dump`, pack multiple dumps plus restore lists into a
 tarball, upload it into the XiaojinDB blob store, download it back, restore-smoke
 it, and register restore-smoked evidence with the GCP maintainer. The serving
