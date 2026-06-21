@@ -1185,6 +1185,10 @@ struct TlsClientHelloResult {
     decrypted_handshake_messages: u8,
     decrypted_encrypted_extensions: bool,
     decrypted_certificate: bool,
+    decrypted_certificate_entries: u8,
+    decrypted_certificate_list_len: Option<u16>,
+    decrypted_first_certificate_len: Option<u16>,
+    decrypted_certificate_list_complete: bool,
     decrypted_certificate_verify: bool,
     decrypted_finished: bool,
     decrypted_handshake_parse_complete: bool,
@@ -2439,6 +2443,7 @@ fn print_caps(uart: &mut Uart) {
     uart.put_str("  net tls-aes128gcm-decrypt yes\n");
     uart.put_str("  net tls-chacha20poly1305-decrypt yes\n");
     uart.put_str("  net tls-handshake-parse yes\n");
+    uart.put_str("  net tls-certificate-list-parse yes\n");
     uart.put_str("  net udp-dhcp-control yes\n");
     uart.put_str("  net udp-query-control yes\n");
     uart.put_str("  net routed-udp-loader yes\n");
@@ -2478,7 +2483,7 @@ fn print_caps(uart: &mut Uart) {
 fn write_caps_query_summary<W: Write>(out: &mut W) {
     let _ = write!(
         out,
-        "XJQ OK caps net-dev=yes dhcp=yes auto-dhcp=yes route=yes arp=yes dns=yes tcp-connect=yes http-get=yes http-post=yes http-trace=yes http-debug=yes tls-clienthello=yes tls-aes128gcm-decrypt=yes tls-chacha20poly1305-decrypt=yes tls-handshake-parse=yes maint-poll=yes maint-status=yes maint-pending-summary=yes maint-command-digest=yes maint-command-verify=yes maint-command-verify-hmac=yes maint-local-hmac-key=yes maint-pull-exec=yes maint-loop=yes maint-config=yes maint-config-paths=yes maint-cold-boot-tick=yes maint-ack-intent=yes maint-remote-event=yes maint-local-audit=yes identity=yes rng=development-hmac-drbg query=yes reboot=yes wifi=pcie-enum wifi-pcie=facts wifi-cru=read-only wifi-apb=read-only wifi-phy=read-only wifi-power=read-only wifi-link=read-only wifi-trace=confirm wifi-pcie-init=confirm wifi-pcie-init-high=confirm wifi-pcie-init-linux=confirm wifi-pcie-init-dt=confirm wifi-enum=confirm wifi-station=planned wifi-ap=planned sd-probe=yes sd-writer=yes ab-persist=yes boot-slot=extlinux db=page-store,catalog,wal,fixed-table,btree,btree-delete,table-namespace,event-log,blob-backup,blob-restore"
+        "XJQ OK caps net-dev=yes dhcp=yes auto-dhcp=yes route=yes arp=yes dns=yes tcp-connect=yes http-get=yes http-post=yes http-trace=yes http-debug=yes tls-clienthello=yes tls-aes128gcm-decrypt=yes tls-chacha20poly1305-decrypt=yes tls-handshake-parse=yes tls-certificate-list-parse=yes maint-poll=yes maint-status=yes maint-pending-summary=yes maint-command-digest=yes maint-command-verify=yes maint-command-verify-hmac=yes maint-local-hmac-key=yes maint-pull-exec=yes maint-loop=yes maint-config=yes maint-config-paths=yes maint-cold-boot-tick=yes maint-ack-intent=yes maint-remote-event=yes maint-local-audit=yes identity=yes rng=development-hmac-drbg query=yes reboot=yes wifi=pcie-enum wifi-pcie=facts wifi-cru=read-only wifi-apb=read-only wifi-phy=read-only wifi-power=read-only wifi-link=read-only wifi-trace=confirm wifi-pcie-init=confirm wifi-pcie-init-high=confirm wifi-pcie-init-linux=confirm wifi-pcie-init-dt=confirm wifi-enum=confirm wifi-station=planned wifi-ap=planned sd-probe=yes sd-writer=yes ab-persist=yes boot-slot=extlinux db=page-store,catalog,wal,fixed-table,btree,btree-delete,table-namespace,event-log,blob-backup,blob-restore"
     );
 }
 
@@ -4210,7 +4215,7 @@ fn write_net_tls_query_summary<W: Write>(default_index: usize, query: &str, out:
         Ok(result) => {
             let _ = write!(
                 out,
-                "XJQ OK tls iface={} host={} sni={} ip={}.{}.{}.{} port={} src-port={} sent={} record-type=0x{:02x} record-version=0x{:04x} record-len={} bytes={} payload={} segments={} fin={} truncated={} alert-level={} alert-description={} handshake-type={} selected-version={} cipher-suite={} keyshare-group={} keyshare-len={} decrypt-status={} decrypted-record-type={} decrypted-inner-type={} decrypted-handshake-type={} decrypted-payload-len={} decrypted-handshake-messages={} encrypted-extensions={} certificate={} certificate-verify={} finished={} handshake-parse-complete={} shared-secret-sha256=",
+                "XJQ OK tls iface={} host={} sni={} ip={}.{}.{}.{} port={} src-port={} sent={} record-type=0x{:02x} record-version=0x{:04x} record-len={} bytes={} payload={} segments={} fin={} truncated={} alert-level={} alert-description={} handshake-type={} selected-version={} cipher-suite={} keyshare-group={} keyshare-len={} decrypt-status={} decrypted-record-type={} decrypted-inner-type={} decrypted-handshake-type={} decrypted-payload-len={} decrypted-handshake-messages={} encrypted-extensions={} certificate={} certificate-entries={} certificate-list-len={} first-certificate-len={} certificate-list-complete={} certificate-verify={} finished={} handshake-parse-complete={} shared-secret-sha256=",
                 PCIE_CONTROLLERS[index].name,
                 host,
                 sni,
@@ -4244,6 +4249,10 @@ fn write_net_tls_query_summary<W: Write>(default_index: usize, query: &str, out:
                 result.decrypted_handshake_messages,
                 yes_no(result.decrypted_encrypted_extensions),
                 yes_no(result.decrypted_certificate),
+                result.decrypted_certificate_entries,
+                optional_u16_dec(result.decrypted_certificate_list_len),
+                optional_u16_dec(result.decrypted_first_certificate_len),
+                yes_no(result.decrypted_certificate_list_complete),
                 yes_no(result.decrypted_certificate_verify),
                 yes_no(result.decrypted_finished),
                 yes_no(result.decrypted_handshake_parse_complete)
@@ -11790,7 +11799,7 @@ fn print_tls_client_hello_result(uart: &mut Uart, result: TlsClientHelloResult) 
     );
     let _ = writeln!(
         uart,
-        "  decrypt         status={} record-type={} inner-type={} handshake-type={} payload-len={} messages={} encrypted-extensions={} certificate={} certificate-verify={} finished={} parse-complete={}",
+        "  decrypt         status={} record-type={} inner-type={} handshake-type={} payload-len={} messages={} encrypted-extensions={} certificate={} cert-entries={} cert-list-len={} first-cert-len={} cert-list-complete={} certificate-verify={} finished={} parse-complete={}",
         result.decrypt_status.as_str(),
         optional_u8_hex(result.decrypted_record_type),
         optional_u8_hex(result.decrypted_inner_type),
@@ -11799,6 +11808,10 @@ fn print_tls_client_hello_result(uart: &mut Uart, result: TlsClientHelloResult) 
         result.decrypted_handshake_messages,
         yes_no(result.decrypted_encrypted_extensions),
         yes_no(result.decrypted_certificate),
+        result.decrypted_certificate_entries,
+        optional_u16_dec(result.decrypted_certificate_list_len),
+        optional_u16_dec(result.decrypted_first_certificate_len),
+        yes_no(result.decrypted_certificate_list_complete),
         yes_no(result.decrypted_certificate_verify),
         yes_no(result.decrypted_finished),
         yes_no(result.decrypted_handshake_parse_complete)
@@ -15084,6 +15097,10 @@ fn net_tls_client_hello(
         decrypted_handshake_messages: decrypt.handshake.messages,
         decrypted_encrypted_extensions: decrypt.handshake.encrypted_extensions,
         decrypted_certificate: decrypt.handshake.certificate,
+        decrypted_certificate_entries: decrypt.handshake.certificate_entries,
+        decrypted_certificate_list_len: decrypt.handshake.certificate_list_len,
+        decrypted_first_certificate_len: decrypt.handshake.first_certificate_len,
+        decrypted_certificate_list_complete: decrypt.handshake.certificate_list_complete,
         decrypted_certificate_verify: decrypt.handshake.certificate_verify,
         decrypted_finished: decrypt.handshake.finished,
         decrypted_handshake_parse_complete: decrypt.handshake.complete,
@@ -15134,6 +15151,10 @@ struct TlsHandshakeParseSummary {
     messages: u8,
     encrypted_extensions: bool,
     certificate: bool,
+    certificate_entries: u8,
+    certificate_list_len: Option<u16>,
+    first_certificate_len: Option<u16>,
+    certificate_list_complete: bool,
     certificate_verify: bool,
     finished: bool,
     complete: bool,
@@ -15145,6 +15166,10 @@ impl TlsHandshakeParseSummary {
             messages: 0,
             encrypted_extensions: false,
             certificate: false,
+            certificate_entries: 0,
+            certificate_list_len: None,
+            first_certificate_len: None,
+            certificate_list_complete: false,
             certificate_verify: false,
             finished: false,
             complete: false,
@@ -15636,7 +15661,10 @@ fn tls_parse_decrypted_handshake_payload(payload: &[u8]) -> TlsHandshakeParseSum
         summary.messages = summary.messages.saturating_add(1);
         match handshake_type {
             TLS_HANDSHAKE_ENCRYPTED_EXTENSIONS => summary.encrypted_extensions = true,
-            TLS_HANDSHAKE_CERTIFICATE => summary.certificate = true,
+            TLS_HANDSHAKE_CERTIFICATE => {
+                summary.certificate = true;
+                tls_parse_certificate_handshake_body(&payload[offset + 4..next], &mut summary);
+            }
             TLS_HANDSHAKE_CERTIFICATE_VERIFY => summary.certificate_verify = true,
             TLS_HANDSHAKE_FINISHED => summary.finished = true,
             _ => {}
@@ -15644,6 +15672,69 @@ fn tls_parse_decrypted_handshake_payload(payload: &[u8]) -> TlsHandshakeParseSum
         offset = next;
     }
     summary
+}
+
+fn tls_parse_certificate_handshake_body(body: &[u8], summary: &mut TlsHandshakeParseSummary) {
+    let Some(context_len) = body.first().copied().map(|value| value as usize) else {
+        return;
+    };
+    let Some(mut offset) = 1usize.checked_add(context_len) else {
+        return;
+    };
+    if offset > body.len() || body.len().saturating_sub(offset) < 3 {
+        return;
+    }
+    let Some(list_len) = read_be24(body, offset).map(|value| value as usize) else {
+        return;
+    };
+    offset += 3;
+    let Some(list_end) = offset.checked_add(list_len) else {
+        return;
+    };
+    if list_end > body.len() {
+        return;
+    }
+    if list_len <= u16::MAX as usize {
+        summary.certificate_list_len = Some(list_len as u16);
+    }
+
+    while offset < list_end {
+        if list_end.saturating_sub(offset) < 3 {
+            return;
+        }
+        let Some(cert_len) = read_be24(body, offset).map(|value| value as usize) else {
+            return;
+        };
+        offset += 3;
+        let Some(cert_end) = offset.checked_add(cert_len) else {
+            return;
+        };
+        if cert_end > list_end {
+            return;
+        }
+        if summary.certificate_entries == 0 && cert_len <= u16::MAX as usize {
+            summary.first_certificate_len = Some(cert_len as u16);
+        }
+        summary.certificate_entries = summary.certificate_entries.saturating_add(1);
+        offset = cert_end;
+
+        if list_end.saturating_sub(offset) < 2 {
+            return;
+        }
+        let Some(ext_len) = read_be16(body, offset).map(|value| value as usize) else {
+            return;
+        };
+        offset += 2;
+        let Some(ext_end) = offset.checked_add(ext_len) else {
+            return;
+        };
+        if ext_end > list_end {
+            return;
+        }
+        offset = ext_end;
+    }
+
+    summary.certificate_list_complete = offset == list_end;
 }
 
 fn tls13_record_nonce(static_iv: &[u8; 12], sequence: u64) -> [u8; 12] {

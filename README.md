@@ -273,8 +273,11 @@ and, when the server selects `TLS_AES_128_GCM_SHA256` or
 `TLS_CHACHA20_POLY1305_SHA256`, attempts to decrypt the first encrypted server
 handshake record. The decrypted payload is then parsed as a TLS handshake
 message stream and reports whether EncryptedExtensions, Certificate,
-CertificateVerify, and Finished are present in that first record. It is not yet
-a complete TLS stack or HTTPS client.
+CertificateVerify, and Finished are present in that first record. When a
+Certificate message is present, the probe also parses the TLS 1.3 certificate
+list framing and reports the certificate-entry count, certificate-list length,
+first-certificate length, and list completeness. It is not yet a complete TLS
+stack, certificate-chain validator, or HTTPS client.
 
 `wifi facts`, `wifi status`, `wifi pcie`, `wifi cru`, `wifi apb`, `wifi phy`,
 `wifi enum confirm`, and `wifi roadmap` expose the R5C
@@ -335,8 +338,10 @@ UART `xload` as the recovery path until the network path is stable.
     runtime DNS/gateway state, and `net tcp ... confirm` proves an outbound
     SYN/SYN-ACK/ACK TCP path. `net http ... confirm` performs one HTTP/1.0 GET
     and parses the response status while ACKing sequential response payload
-    segments up to the built-in sample cap. Full TCP stream reassembly, TLS,
-    and kernel-native cloud polling remain follow-on stages.
+    segments up to the built-in sample cap. `net tls ... confirm` performs TLS
+    first-flight key schedule, first encrypted record decrypt, and certificate
+    list framing probes. Full TCP stream reassembly, certificate validation,
+    complete TLS/HTTPS, and kernel-native cloud polling remain follow-on stages.
 11. OTA storage: `sd facts`, `sd regs confirm`, `sd read0 confirm`, `sd bpb
     confirm`, `sd root confirm`, and `sd slots confirm` verify the SD
     controller, FAT32 BPB, root directory, and A/B slot FAT chains.
