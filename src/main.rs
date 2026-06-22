@@ -222,7 +222,7 @@ const HTTP_RESPONSE_SAMPLE_BYTES: usize = 2048;
 const TLS_CLIENT_HELLO_BYTES: usize = 512;
 const TLS_TRANSCRIPT_MAX_BYTES: usize = 2048;
 const TLS_DECRYPT_MAX_BYTES: usize = 2048;
-const TLS_ENCRYPT_MAX_BYTES: usize = 256;
+const TLS_ENCRYPT_MAX_BYTES: usize = 1024;
 const TLS_RECORD_HANDSHAKE: u8 = 0x16;
 const TLS_RECORD_ALERT: u8 = 0x15;
 const TLS_RECORD_CHANGE_CIPHER_SPEC: u8 = 0x14;
@@ -1300,6 +1300,52 @@ struct TlsClientFinishResult {
 }
 
 #[derive(Clone, Copy)]
+struct HttpsGetResult {
+    tls: TlsClientHelloResult,
+    status_code: Option<u16>,
+    client_app_traffic_sha256: [u8; 32],
+    server_app_traffic_sha256: [u8; 32],
+    client_finished_record_len: u16,
+    request_record_len: u16,
+    encrypted_sent: u32,
+    encrypted_response_bytes: usize,
+    encrypted_response_payload: usize,
+    encrypted_response_segments: u32,
+    encrypted_response_fin: bool,
+    encrypted_response_truncated: bool,
+    decrypted_records: u32,
+    decrypted_application_records: u32,
+    decrypted_handshake_records: u32,
+    decrypted_alert_level: Option<u8>,
+    decrypted_alert_description: Option<u8>,
+    decrypted_payload_bytes: usize,
+    decrypted_sample_len: usize,
+    decrypted_sample: [u8; HTTP_RESPONSE_SAMPLE_BYTES],
+}
+
+#[derive(Clone, Copy)]
+struct Tls13ApplicationKeySchedule {
+    client_secret_sha256: [u8; 32],
+    server_secret_sha256: [u8; 32],
+    client_key: [u8; 32],
+    client_iv: [u8; 12],
+    server_key: [u8; 32],
+    server_iv: [u8; 12],
+}
+
+#[derive(Clone, Copy)]
+struct TlsApplicationDataSummary {
+    records: u32,
+    application_records: u32,
+    handshake_records: u32,
+    alert_level: Option<u8>,
+    alert_description: Option<u8>,
+    payload_bytes: usize,
+    sample_len: usize,
+    sample: [u8; HTTP_RESPONSE_SAMPLE_BYTES],
+}
+
+#[derive(Clone, Copy)]
 enum TlsDecryptStatus {
     NotAttempted,
     UnsupportedCipher,
@@ -1368,9 +1414,14 @@ enum TlsError {
     ClientFinishedTooLong,
     ClientFinishedEncrypt,
     ClientFinishedTx,
+    HttpsBadPath,
+    HttpsRequestTooLong,
+    HttpsRequestEncrypt,
+    HttpsRequestTx,
     ResponseTimeout,
     Response(HttpError),
     MalformedRecord,
+    MalformedResponse,
 }
 
 impl TlsError {
@@ -1384,9 +1435,14 @@ impl TlsError {
             Self::ClientFinishedTooLong => "client-finished-too-long",
             Self::ClientFinishedEncrypt => "client-finished-encrypt",
             Self::ClientFinishedTx => "client-finished-tx",
+            Self::HttpsBadPath => "https-bad-path",
+            Self::HttpsRequestTooLong => "https-request-too-long",
+            Self::HttpsRequestEncrypt => "https-request-encrypt",
+            Self::HttpsRequestTx => "https-request-tx",
             Self::ResponseTimeout => "response-timeout",
             Self::Response(error) => error.as_str(),
             Self::MalformedRecord => "malformed-record",
+            Self::MalformedResponse => "malformed-response",
         }
     }
 }
@@ -2507,6 +2563,8 @@ fn print_help(uart: &mut Uart) {
     uart.put_str("                       perform minimal HTTP/1.0 GET over outbound TCP\n");
     uart.put_str("  net http-post <if> <host|ip> <port> <path> <body> confirm\n");
     uart.put_str("                       perform minimal HTTP/1.0 POST over outbound TCP\n");
+    uart.put_str("  net https <if> <host|ip> <port> <path> [sni] confirm\n");
+    uart.put_str("                       perform minimal HTTPS GET over TLS 1.3\n");
     uart.put_str("  net tls <if> <host|ip> <port> [sni] confirm\n");
     uart.put_str("                       send TLS ClientHello and probe first encrypted record\n");
     uart.put_str("  net tls-finish <if> <host|ip> <port> [sni] confirm\n");
@@ -2706,6 +2764,8 @@ fn print_caps(uart: &mut Uart) {
     uart.put_str("  net udp-query-control yes\n");
     uart.put_str("  net routed-udp-loader yes\n");
     uart.put_str("  net http-post yes\n");
+    uart.put_str("  net https-get yes\n");
+    uart.put_str("  net tls-application-data yes\n");
     uart.put_str("  maint http-poll yes\n");
     uart.put_str("  maint pending-summary yes\n");
     uart.put_str("  maint command-digest yes\n");
@@ -2752,14 +2812,14 @@ fn print_caps(uart: &mut Uart) {
 fn write_caps_query_summary<W: Write>(out: &mut W) {
     let _ = write!(
         out,
-        "XJQ OK caps net-dev=yes dhcp=yes auto-dhcp=yes route=yes arp=yes dns=yes tcp-connect=yes http-get=yes http-post=yes tls-clienthello=yes tls-aes128gcm-decrypt=yes tls-chacha20poly1305-decrypt=yes tls-handshake-parse=yes tls-certificate-list-parse=yes tls-first-certificate-sha256=yes tls-first-certificate-pin=yes tls-server-finished-verify=yes tls-client-finished-send=yes maint-poll=yes maint-status=yes maint-command-verify=yes maint-command-verify-hmac=yes maint-local-hmac-key=yes maint-pull-exec=yes maint-loop=yes maint-config=yes maint-config-paths=yes maint-config-host-name=yes maint-config-https=yes maint-config-tls-pin=yes maint-cold-boot-tick=yes maint-ack-intent=yes maint-remote-event=yes identity=yes query=yes reboot=yes wifi-firmware-sd=confirm wifi-firmware-crc=confirm wifi-firmware-load=confirm wifi-enum=confirm wifi-mmio-snapshot=confirm wifi-mmio-fingerprint=confirm sd-writer=yes ab-persist=yes boot-slot=extlinux db=page-store,catalog,wal,fixed-table,btree,event-log"
+        "XJQ OK caps net-dev=yes dhcp=yes auto-dhcp=yes route=yes arp=yes dns=yes tcp-connect=yes http-get=yes http-post=yes https-get=yes tls-clienthello=yes tls-aes128gcm-decrypt=yes tls-chacha20poly1305-decrypt=yes tls-handshake-parse=yes tls-certificate-list-parse=yes tls-first-certificate-sha256=yes tls-first-certificate-pin=yes tls-server-finished-verify=yes tls-client-finished-send=yes tls-application-data=yes maint-poll=yes maint-status=yes maint-command-verify=yes maint-command-verify-hmac=yes maint-local-hmac-key=yes maint-pull-exec=yes maint-loop=yes maint-config=yes maint-config-paths=yes maint-config-host-name=yes maint-config-https=yes maint-config-tls-pin=yes maint-cold-boot-tick=yes maint-ack-intent=yes maint-remote-event=yes identity=yes query=yes reboot=yes wifi-firmware-sd=confirm wifi-firmware-crc=confirm wifi-firmware-load=confirm wifi-enum=confirm wifi-mmio-snapshot=confirm wifi-mmio-fingerprint=confirm sd-writer=yes ab-persist=yes boot-slot=extlinux db=page-store,catalog,wal,fixed-table,btree,event-log"
     );
 }
 
 fn write_caps_full_query_summary<W: Write>(out: &mut W) {
     let _ = write!(
         out,
-        "XJQ OK caps-full net=dev,dhcp,auto-dhcp,route,arp,dns,tcp,http-get,http-post,http-trace,http-debug tls=clienthello,aes128gcm,chacha20poly1305,handshake,cert-list,first-cert-sha256,first-cert-pin,server-finished,client-finished-material,client-finished-send maint=poll,status,pending,digest,verify,verify-hmac,local-key,pull-exec,loop,config,paths,host-name,https,tls-pin,cold-boot,ack-intent,remote-event,local-audit wifi=pcie,firmware,firmware-crc,firmware-load,mmio-snapshot,mmio-fingerprint,driver-gate,rtw88-profile,trace,pcie-init,pcie-init-high,pcie-init-linux,pcie-init-dt,enum,station-planned,ap-planned sd=probe,writer,ab-persist,extlinux db=page-store,catalog,wal,fixed-table,btree,btree-delete,table-namespace,event-log,blob-backup,blob-restore"
+        "XJQ OK caps-full net=dev,dhcp,auto-dhcp,route,arp,dns,tcp,http-get,http-post,https-get,http-trace,http-debug tls=clienthello,aes128gcm,chacha20poly1305,handshake,cert-list,first-cert-sha256,first-cert-pin,server-finished,client-finished-material,client-finished-send,application-data maint=poll,status,pending,digest,verify,verify-hmac,local-key,pull-exec,loop,config,paths,host-name,https,tls-pin,cold-boot,ack-intent,remote-event,local-audit wifi=pcie,firmware,firmware-crc,firmware-load,mmio-snapshot,mmio-fingerprint,driver-gate,rtw88-profile,trace,pcie-init,pcie-init-high,pcie-init-linux,pcie-init-dt,enum,station-planned,ap-planned sd=probe,writer,ab-persist,extlinux db=page-store,catalog,wal,fixed-table,btree,btree-delete,table-namespace,event-log,blob-backup,blob-restore"
     );
 }
 
@@ -4707,6 +4767,15 @@ fn command_net<'a>(uart: &mut Uart, parts: &mut core::str::SplitWhitespace<'a>) 
             parts.next(),
             parts.next(),
         ),
+        Some("https") | Some("https-get") => command_net_https(
+            uart,
+            parts.next(),
+            parts.next(),
+            parts.next(),
+            parts.next(),
+            parts.next(),
+            parts.next(),
+        ),
         Some("tls") => command_net_tls(
             uart,
             parts.next(),
@@ -4746,6 +4815,9 @@ fn command_net<'a>(uart: &mut Uart, parts: &mut core::str::SplitWhitespace<'a>) 
             uart.put_str("  net http <pcie3x1|pcie3x2|0|1> <host|ip> <port> <path> confirm\n");
             uart.put_str(
                 "  net http-post <pcie3x1|pcie3x2|0|1> <host|ip> <port> <path> <body> confirm\n",
+            );
+            uart.put_str(
+                "  net https <pcie3x1|pcie3x2|0|1> <host|ip> <port> <path> [sni] confirm\n",
             );
             uart.put_str("  net tls <pcie3x1|pcie3x2|0|1> <host|ip> <port> [sni] confirm\n");
             uart.put_str("  net tls-finish <pcie3x1|pcie3x2|0|1> <host|ip> <port> [sni] confirm\n");
@@ -5500,6 +5572,98 @@ fn write_net_tls_finish_query_summary<W: Write>(default_index: usize, query: &st
         }
         Err(error) => {
             let _ = write!(out, "XJQ ERR tls-finish {}", error.as_str());
+        }
+    }
+}
+
+fn write_net_https_query_summary<W: Write>(default_index: usize, query: &str, out: &mut W) {
+    let mut parts = query.split_whitespace();
+    let _net = parts.next();
+    let _https = parts.next();
+    let Some(first) = parts.next() else {
+        let _ = write!(out, "XJQ ERR https-usage");
+        return;
+    };
+    let (index, host) = if let Some(index) = parse_net_interface(first) {
+        let Some(host) = parts.next() else {
+            let _ = write!(out, "XJQ ERR https-usage");
+            return;
+        };
+        (index, host)
+    } else {
+        (default_index, first)
+    };
+    let Some(port) = parts.next().and_then(parse_u16) else {
+        let _ = write!(out, "XJQ ERR https-usage");
+        return;
+    };
+    let Some(path) = parts.next() else {
+        let _ = write!(out, "XJQ ERR https-usage");
+        return;
+    };
+    let Some(next) = parts.next() else {
+        let _ = write!(out, "XJQ ERR https-usage");
+        return;
+    };
+    let (sni, confirm) = if next.eq_ignore_ascii_case("confirm") {
+        (host, next)
+    } else {
+        (
+            if next == "-" { host } else { next },
+            parts.next().unwrap_or(""),
+        )
+    };
+    if !confirm.eq_ignore_ascii_case("confirm") || parts.next().is_some() {
+        let _ = write!(out, "XJQ ERR https-usage");
+        return;
+    }
+
+    match net_https_get(index, host, port, path, sni, HTTP_TIMEOUT_MS) {
+        Ok(result) => {
+            let _ = write!(
+                out,
+                "XJQ OK https iface={} host={} sni={} ip={}.{}.{}.{} port={} src-port={} status={} client-hello-sent={} server-finished-verified={} client-finished-sent=yes client-finished-record-len={} request-record-len={} encrypted-sent={} encrypted-bytes={} encrypted-payload={} encrypted-segments={} encrypted-fin={} encrypted-truncated={} decrypted-records={} decrypted-application-records={} decrypted-handshake-records={} decrypted-payload={} decrypted-alert-level={} decrypted-alert-description={} app-client-secret-sha256=",
+                PCIE_CONTROLLERS[index].name,
+                host,
+                sni,
+                result.tls.tcp.dst_ip[0],
+                result.tls.tcp.dst_ip[1],
+                result.tls.tcp.dst_ip[2],
+                result.tls.tcp.dst_ip[3],
+                result.tls.tcp.dst_port,
+                result.tls.tcp.src_port,
+                optional_u16_dec(result.status_code),
+                result.tls.sent_payload_len,
+                yes_no(result.tls.server_finished_verified),
+                result.client_finished_record_len,
+                result.request_record_len,
+                result.encrypted_sent,
+                result.encrypted_response_bytes,
+                result.encrypted_response_payload,
+                result.encrypted_response_segments,
+                yes_no(result.encrypted_response_fin),
+                yes_no(result.encrypted_response_truncated),
+                result.decrypted_records,
+                result.decrypted_application_records,
+                result.decrypted_handshake_records,
+                result.decrypted_payload_bytes,
+                optional_u8_hex(result.decrypted_alert_level),
+                optional_u8_hex(result.decrypted_alert_description)
+            );
+            write_sha256_hex(out, &result.client_app_traffic_sha256);
+            let _ = write!(out, " app-server-secret-sha256=");
+            write_sha256_hex(out, &result.server_app_traffic_sha256);
+            let _ = write!(out, " first-line=\"");
+            write_http_sample_line(out, &result.decrypted_sample[..result.decrypted_sample_len]);
+            let _ = write!(out, "\" raw=\"");
+            write_http_raw_sample_line(
+                out,
+                &result.decrypted_sample[..result.decrypted_sample_len],
+            );
+            let _ = write!(out, "\"");
+        }
+        Err(error) => {
+            let _ = write!(out, "XJQ ERR https {}", error.as_str());
         }
     }
 }
@@ -13343,6 +13507,63 @@ fn command_net_tls(
     }
 }
 
+fn command_net_https(
+    uart: &mut Uart,
+    iface: Option<&str>,
+    host: Option<&str>,
+    port: Option<&str>,
+    path: Option<&str>,
+    sni_or_confirm: Option<&str>,
+    confirm: Option<&str>,
+) {
+    let (sni, confirmed) = match (host, sni_or_confirm, confirm) {
+        (Some(host), Some(value), _) if value.eq_ignore_ascii_case("confirm") => (host, true),
+        (_, Some(sni), Some(value)) if value.eq_ignore_ascii_case("confirm") => {
+            (if sni == "-" { host.unwrap_or("") } else { sni }, true)
+        }
+        _ => ("", false),
+    };
+    if !confirmed {
+        uart.put_str(
+            "usage: net https <pcie3x1|pcie3x2|0|1> <host|ip> <port> <path> [sni] confirm\n",
+        );
+        uart.put_str("scope: send HTTPS GET through a TLS 1.3 application-data record\n");
+        return;
+    }
+    let Some(iface) = iface else {
+        uart.put_str("missing interface\n");
+        return;
+    };
+    let Some(index) = parse_net_interface(iface) else {
+        uart.put_str("unknown interface; use pcie3x1, pcie3x2, 0, or 1\n");
+        return;
+    };
+    let Some(host) = host else {
+        uart.put_str("missing host\n");
+        return;
+    };
+    let Some(port) = port.and_then(parse_u16) else {
+        uart.put_str("missing or invalid TCP port\n");
+        return;
+    };
+    let Some(path) = path else {
+        uart.put_str("missing path\n");
+        return;
+    };
+
+    let _ = writeln!(
+        uart,
+        "net https {} https://{host}:{port}{path} sni={sni}:",
+        PCIE_CONTROLLERS[index].name
+    );
+    match net_https_get(index, host, port, path, sni, HTTP_TIMEOUT_MS) {
+        Ok(result) => print_https_get_result(uart, result),
+        Err(error) => {
+            let _ = writeln!(uart, "  error           {}", error.as_str());
+        }
+    }
+}
+
 fn command_net_tls_finish(
     uart: &mut Uart,
     iface: Option<&str>,
@@ -14285,6 +14506,55 @@ fn print_tls_client_finish_result(uart: &mut Uart, result: TlsClientFinishResult
     );
     uart.put_str("  post-raw        ");
     write_http_raw_sample_line(uart, &result.sample[..result.sample_len]);
+    uart.put_str("\n");
+}
+
+fn print_https_get_result(uart: &mut Uart, result: HttpsGetResult) {
+    print_tls_client_hello_result(uart, result.tls);
+    let _ = writeln!(
+        uart,
+        "  https          status={} encrypted-sent={} client-finished-record={} request-record={}",
+        optional_u16_dec(result.status_code),
+        result.encrypted_sent,
+        result.client_finished_record_len,
+        result.request_record_len
+    );
+    let _ = writeln!(
+        uart,
+        "  encrypted      bytes={} payload={} segments={} fin={} truncated={}",
+        result.encrypted_response_bytes,
+        result.encrypted_response_payload,
+        result.encrypted_response_segments,
+        yes_no(result.encrypted_response_fin),
+        yes_no(result.encrypted_response_truncated)
+    );
+    let _ = writeln!(
+        uart,
+        "  decrypted      records={} app-records={} handshake-records={} payload={} alert-level={} alert-description={}",
+        result.decrypted_records,
+        result.decrypted_application_records,
+        result.decrypted_handshake_records,
+        result.decrypted_payload_bytes,
+        optional_u8_hex(result.decrypted_alert_level),
+        optional_u8_hex(result.decrypted_alert_description)
+    );
+    uart.put_str("  client-app      traffic-sha256=");
+    write_sha256_hex(uart, &result.client_app_traffic_sha256);
+    uart.put_str("\n");
+    uart.put_str("  server-app      traffic-sha256=");
+    write_sha256_hex(uart, &result.server_app_traffic_sha256);
+    uart.put_str("\n");
+    uart.put_str("  first-line      ");
+    write_http_sample_line(
+        uart,
+        &result.decrypted_sample[..result.decrypted_sample_len],
+    );
+    uart.put_str("\n");
+    uart.put_str("  decrypted-raw   ");
+    write_http_raw_sample_line(
+        uart,
+        &result.decrypted_sample[..result.decrypted_sample_len],
+    );
     uart.put_str("\n");
 }
 
@@ -17852,6 +18122,366 @@ fn net_tls_client_finish(
     })
 }
 
+fn net_https_get(
+    index: usize,
+    host: &str,
+    dst_port: u16,
+    path: &str,
+    sni: &str,
+    timeout_ms: u64,
+) -> Result<HttpsGetResult, TlsError> {
+    if !valid_tls_server_name(sni) {
+        return Err(TlsError::BadServerName);
+    }
+    if !path.starts_with('/')
+        || path
+            .as_bytes()
+            .iter()
+            .any(|b| *b == b' ' || *b == b'\r' || *b == b'\n')
+    {
+        return Err(TlsError::HttpsBadPath);
+    }
+
+    let x25519_secret = tls_x25519_secret();
+    let x25519_public = X25519PublicKey::from(&x25519_secret).to_bytes();
+    let mut client_hello = [0u8; TLS_CLIENT_HELLO_BYTES];
+    let Some(client_hello_len) = build_tls_client_hello(sni, &x25519_public, &mut client_hello)
+    else {
+        return Err(TlsError::ClientHelloTooLong);
+    };
+
+    let session = net_tcp_open(index, host, dst_port, timeout_ms).map_err(TlsError::Tcp)?;
+    if !net_send_tcp_packet(
+        index,
+        session.next_hop_mac,
+        net_device_ip(index),
+        session.dst_ip,
+        session.src_port,
+        session.dst_port,
+        session.local_seq,
+        session.remote_seq_next,
+        TCP_FLAG_ACK | TCP_FLAG_PSH,
+        &client_hello[..client_hello_len],
+    ) {
+        let _ = net_tcp_reset(index, session);
+        return Err(TlsError::ClientHelloTx);
+    }
+
+    let client_hello_payload_len = client_hello_len as u32;
+    let Some(response) =
+        net_wait_http_response(index, session, client_hello_payload_len, timeout_ms)
+    else {
+        let _ = net_tcp_reset(index, session);
+        return Err(TlsError::ResponseTimeout);
+    };
+    let response = match response {
+        Ok(response) => response,
+        Err(error) => {
+            let _ = net_tcp_reset(index, session);
+            return Err(TlsError::Response(error));
+        }
+    };
+    let record = parse_tls_first_record(&response.sample[..response.sample_len])
+        .ok_or(TlsError::MalformedRecord)?;
+
+    let mut shared_secret_sha256 = None;
+    let mut shared_secret_bytes: Option<[u8; 32]> = None;
+    let mut transcript_sha256 = None;
+    let mut client_handshake_traffic_sha256 = None;
+    let mut server_handshake_traffic_sha256 = None;
+    let mut client_handshake_key_sha256 = None;
+    let mut server_handshake_key_sha256 = None;
+    let mut client_handshake_iv_sha256 = None;
+    let mut server_handshake_iv_sha256 = None;
+    let mut traffic: Option<Tls13HandshakeKeySchedule> = None;
+    let mut decrypt = TlsDecryptSummary {
+        status: TlsDecryptStatus::NotAttempted,
+        record_type: None,
+        inner_type: None,
+        handshake_type: None,
+        payload_len: None,
+        handshake: TlsHandshakeParseSummary::empty(),
+    };
+    if let Some(server_key) = record.server_x25519_key_share {
+        let server_public = X25519PublicKey::from(server_key);
+        let shared_secret = x25519_secret.diffie_hellman(&server_public);
+        shared_secret_sha256 = Some(sha256_digest(shared_secret.as_bytes()));
+        shared_secret_bytes = Some(*shared_secret.as_bytes());
+        let mut transcript_prefix = [0u8; TLS_TRANSCRIPT_MAX_BYTES];
+        if let (Some(cipher_suite), Some(transcript_len)) = (
+            record.cipher_suite,
+            tls_handshake_transcript_prefix(
+                &client_hello[..client_hello_len],
+                &response.sample[..response.sample_len],
+                &mut transcript_prefix,
+            ),
+        ) {
+            let transcript_hash = sha256_digest(&transcript_prefix[..transcript_len]);
+            transcript_sha256 = Some(transcript_hash);
+            if let Some(schedule) = tls13_handshake_key_schedule_fingerprints(
+                shared_secret.as_bytes(),
+                &transcript_hash,
+                cipher_suite,
+            ) {
+                client_handshake_traffic_sha256 = Some(schedule.client_secret_sha256);
+                server_handshake_traffic_sha256 = Some(schedule.server_secret_sha256);
+                client_handshake_key_sha256 = Some(schedule.client_key_sha256);
+                server_handshake_key_sha256 = Some(schedule.server_key_sha256);
+                client_handshake_iv_sha256 = Some(schedule.client_iv_sha256);
+                server_handshake_iv_sha256 = Some(schedule.server_iv_sha256);
+                decrypt = tls13_decrypt_first_server_handshake_record(
+                    &response.sample[..response.sample_len],
+                    cipher_suite,
+                    &schedule.server_key,
+                    &schedule.server_iv,
+                    &schedule.server_secret,
+                    &schedule.client_secret,
+                    &transcript_prefix[..transcript_len],
+                );
+                traffic = Some(schedule);
+            } else {
+                decrypt.status = TlsDecryptStatus::UnsupportedCipher;
+            }
+        }
+    }
+
+    let client_finished_ready = decrypt.handshake.server_finished_verified
+        && decrypt.handshake.client_finished_verify_data.is_some();
+    let hello = TlsClientHelloResult {
+        tcp: session,
+        sent_payload_len: client_hello_payload_len,
+        record_type: record.record_type,
+        record_version: record.version,
+        record_len: record.len,
+        response_bytes: response.response_bytes,
+        payload_bytes: response.payload_bytes,
+        segments: response.segments,
+        fin: response.fin,
+        truncated: response.truncated,
+        alert_level: record.alert_level,
+        alert_description: record.alert_description,
+        handshake_type: record.handshake_type,
+        selected_version: record.selected_version,
+        cipher_suite: record.cipher_suite,
+        key_share_group: record.key_share_group,
+        key_share_len: record.key_share_len,
+        shared_secret_sha256,
+        transcript_sha256,
+        client_handshake_traffic_sha256,
+        server_handshake_traffic_sha256,
+        client_handshake_key_sha256,
+        server_handshake_key_sha256,
+        client_handshake_iv_sha256,
+        server_handshake_iv_sha256,
+        decrypt_status: decrypt.status,
+        decrypted_record_type: decrypt.record_type,
+        decrypted_inner_type: decrypt.inner_type,
+        decrypted_handshake_type: decrypt.handshake_type,
+        decrypted_payload_len: decrypt.payload_len,
+        decrypted_handshake_messages: decrypt.handshake.messages,
+        decrypted_encrypted_extensions: decrypt.handshake.encrypted_extensions,
+        decrypted_certificate: decrypt.handshake.certificate,
+        decrypted_certificate_entries: decrypt.handshake.certificate_entries,
+        decrypted_certificate_list_len: decrypt.handshake.certificate_list_len,
+        decrypted_first_certificate_len: decrypt.handshake.first_certificate_len,
+        decrypted_first_certificate_sha256: decrypt.handshake.first_certificate_sha256,
+        decrypted_certificate_list_complete: decrypt.handshake.certificate_list_complete,
+        decrypted_certificate_verify: decrypt.handshake.certificate_verify,
+        decrypted_finished: decrypt.handshake.finished,
+        server_finished_len: decrypt.handshake.finished_len,
+        server_finished_transcript_sha256: decrypt.handshake.server_finished_transcript_sha256,
+        server_finished_verify_data_sha256: decrypt.handshake.server_finished_verify_data_sha256,
+        server_finished_expected_sha256: decrypt.handshake.server_finished_expected_sha256,
+        server_finished_verified: decrypt.handshake.server_finished_verified,
+        client_finished_ready,
+        client_finished_transcript_sha256: decrypt.handshake.client_finished_transcript_sha256,
+        client_finished_verify_data_sha256: decrypt.handshake.client_finished_verify_data_sha256,
+        decrypted_handshake_parse_complete: decrypt.handshake.complete,
+        sample_len: response.sample_len,
+        sample: response.sample,
+    };
+
+    let (
+        Some(cipher_suite),
+        Some(schedule),
+        Some(client_verify_data),
+        Some(shared_secret),
+        Some(application_transcript_hash),
+    ) = (
+        record.cipher_suite,
+        traffic,
+        decrypt.handshake.client_finished_verify_data,
+        shared_secret_bytes,
+        decrypt.handshake.client_finished_transcript_sha256,
+    )
+    else {
+        let _ = net_tcp_reset(index, session);
+        return Err(TlsError::ClientFinishedNotReady);
+    };
+    if !hello.server_finished_verified {
+        let _ = net_tcp_reset(index, session);
+        return Err(TlsError::ClientFinishedNotReady);
+    }
+    let Some(application_schedule) =
+        tls13_application_key_schedule(&shared_secret, &application_transcript_hash, cipher_suite)
+    else {
+        let _ = net_tcp_reset(index, session);
+        return Err(TlsError::ClientFinishedNotReady);
+    };
+
+    let mut finished_record = [0u8; TLS_ENCRYPT_MAX_BYTES];
+    let Some(finished_record_len) = tls13_encrypt_client_finished_record(
+        cipher_suite,
+        &schedule.client_key,
+        &schedule.client_iv,
+        &client_verify_data,
+        &mut finished_record,
+    ) else {
+        let _ = net_tcp_reset(index, session);
+        return Err(TlsError::ClientFinishedEncrypt);
+    };
+    let finished_record_len_u32 =
+        u32::try_from(finished_record_len).map_err(|_| TlsError::ClientFinishedTooLong)?;
+    let client_finished_seq = session.local_seq.wrapping_add(client_hello_payload_len);
+    if !net_send_tcp_packet(
+        index,
+        session.next_hop_mac,
+        net_device_ip(index),
+        session.dst_ip,
+        session.src_port,
+        session.dst_port,
+        client_finished_seq,
+        response.next_remote_seq,
+        TCP_FLAG_ACK | TCP_FLAG_PSH,
+        &finished_record[..finished_record_len],
+    ) {
+        let _ = net_tcp_reset(index, session);
+        return Err(TlsError::ClientFinishedTx);
+    }
+
+    let mut request = HttpRequestBuf::new();
+    if write!(
+        request,
+        "GET {path} HTTP/1.0\r\nHost: {sni}\r\nUser-Agent: xiaojin-os/0.1\r\nConnection: close\r\n\r\n"
+    )
+    .is_err()
+    {
+        let _ = net_tcp_reset(index, session);
+        return Err(TlsError::HttpsRequestTooLong);
+    }
+
+    let mut request_record = [0u8; TLS_ENCRYPT_MAX_BYTES];
+    let Some(request_record_len) = tls13_encrypt_inner_record(
+        cipher_suite,
+        &application_schedule.client_key,
+        &application_schedule.client_iv,
+        0,
+        TLS_RECORD_APPLICATION_DATA,
+        request.as_slice(),
+        &mut request_record,
+    ) else {
+        let _ = net_tcp_reset(index, session);
+        return Err(TlsError::HttpsRequestEncrypt);
+    };
+    let request_record_len_u32 =
+        u32::try_from(request_record_len).map_err(|_| TlsError::HttpsRequestTooLong)?;
+    let request_seq = client_finished_seq.wrapping_add(finished_record_len_u32);
+    if !net_send_tcp_packet(
+        index,
+        session.next_hop_mac,
+        net_device_ip(index),
+        session.dst_ip,
+        session.src_port,
+        session.dst_port,
+        request_seq,
+        response.next_remote_seq,
+        TCP_FLAG_ACK | TCP_FLAG_PSH,
+        &request_record[..request_record_len],
+    ) {
+        let _ = net_tcp_reset(index, session);
+        return Err(TlsError::HttpsRequestTx);
+    }
+
+    let total_sent = client_hello_payload_len
+        .wrapping_add(finished_record_len_u32)
+        .wrapping_add(request_record_len_u32);
+    let Some(encrypted_response) = net_wait_tcp_response_from(
+        index,
+        session,
+        total_sent,
+        response.next_remote_seq,
+        timeout_ms,
+    ) else {
+        let _ = net_tcp_reset(index, session);
+        return Err(TlsError::ResponseTimeout);
+    };
+    let encrypted_response = match encrypted_response {
+        Ok(response) => response,
+        Err(error) => {
+            let _ = net_tcp_reset(index, session);
+            return Err(TlsError::Response(error));
+        }
+    };
+
+    let Some(decrypted) = tls13_decrypt_application_data_sample(
+        cipher_suite,
+        &application_schedule.server_key,
+        &application_schedule.server_iv,
+        &encrypted_response.sample[..encrypted_response.sample_len],
+    ) else {
+        let _ = net_send_tcp_packet(
+            index,
+            session.next_hop_mac,
+            net_device_ip(index),
+            session.dst_ip,
+            session.src_port,
+            session.dst_port,
+            session.local_seq.wrapping_add(total_sent),
+            encrypted_response.next_remote_seq,
+            TCP_FLAG_ACK | TCP_FLAG_RST,
+            &[],
+        );
+        return Err(TlsError::MalformedResponse);
+    };
+    let status_code = parse_http_status_code(&decrypted.sample[..decrypted.sample_len]);
+
+    let _ = net_send_tcp_packet(
+        index,
+        session.next_hop_mac,
+        net_device_ip(index),
+        session.dst_ip,
+        session.src_port,
+        session.dst_port,
+        session.local_seq.wrapping_add(total_sent),
+        encrypted_response.next_remote_seq,
+        TCP_FLAG_ACK | TCP_FLAG_RST,
+        &[],
+    );
+
+    Ok(HttpsGetResult {
+        tls: hello,
+        status_code,
+        client_app_traffic_sha256: application_schedule.client_secret_sha256,
+        server_app_traffic_sha256: application_schedule.server_secret_sha256,
+        client_finished_record_len: finished_record_len as u16,
+        request_record_len: request_record_len as u16,
+        encrypted_sent: total_sent,
+        encrypted_response_bytes: encrypted_response.response_bytes,
+        encrypted_response_payload: encrypted_response.payload_bytes,
+        encrypted_response_segments: encrypted_response.segments,
+        encrypted_response_fin: encrypted_response.fin,
+        encrypted_response_truncated: encrypted_response.truncated,
+        decrypted_records: decrypted.records,
+        decrypted_application_records: decrypted.application_records,
+        decrypted_handshake_records: decrypted.handshake_records,
+        decrypted_alert_level: decrypted.alert_level,
+        decrypted_alert_description: decrypted.alert_description,
+        decrypted_payload_bytes: decrypted.payload_bytes,
+        decrypted_sample_len: decrypted.sample_len,
+        decrypted_sample: decrypted.sample,
+    })
+}
+
 #[derive(Clone, Copy)]
 struct TlsRecordSummary {
     record_type: u8,
@@ -18178,6 +18808,39 @@ fn tls13_handshake_key_schedule_fingerprints(
     })
 }
 
+fn tls13_application_key_schedule(
+    shared_secret: &[u8; 32],
+    transcript_hash: &[u8; 32],
+    cipher_suite: u16,
+) -> Option<Tls13ApplicationKeySchedule> {
+    let zero = [0u8; 32];
+    let empty_hash = sha256_digest(&[]);
+    let early_secret = hkdf_extract_sha256(&zero, &[]);
+    let derived_secret = tls13_derive_secret(&early_secret, b"derived", &empty_hash);
+    let handshake_secret = hkdf_extract_sha256(&derived_secret, shared_secret);
+    let derived_master_secret = tls13_derive_secret(&handshake_secret, b"derived", &empty_hash);
+    let master_secret = hkdf_extract_sha256(&derived_master_secret, &[]);
+    let client_secret = tls13_derive_secret(&master_secret, b"c ap traffic", transcript_hash);
+    let server_secret = tls13_derive_secret(&master_secret, b"s ap traffic", transcript_hash);
+    let key_len = tls13_cipher_suite_key_len(cipher_suite)?;
+    let client_key = tls13_hkdf_expand_label_sha256_to(&client_secret, b"key", &[], key_len);
+    let server_key = tls13_hkdf_expand_label_sha256_to(&server_secret, b"key", &[], key_len);
+    let client_iv = tls13_hkdf_expand_label_sha256_to(&client_secret, b"iv", &[], 12);
+    let server_iv = tls13_hkdf_expand_label_sha256_to(&server_secret, b"iv", &[], 12);
+    let mut client_iv12 = [0u8; 12];
+    client_iv12.copy_from_slice(&client_iv[..12]);
+    let mut server_iv12 = [0u8; 12];
+    server_iv12.copy_from_slice(&server_iv[..12]);
+    Some(Tls13ApplicationKeySchedule {
+        client_secret_sha256: sha256_digest(&client_secret),
+        server_secret_sha256: sha256_digest(&server_secret),
+        client_key,
+        client_iv: client_iv12,
+        server_key,
+        server_iv: server_iv12,
+    })
+}
+
 fn tls13_derive_secret(secret: &[u8; 32], label: &[u8], transcript_hash: &[u8; 32]) -> [u8; 32] {
     tls13_hkdf_expand_label_sha256(secret, label, transcript_hash)
 }
@@ -18386,6 +19049,140 @@ fn tls13_decrypt_application_record(
     }
 }
 
+fn tls13_decrypt_inner_record(
+    record: &[u8],
+    sequence: u64,
+    cipher_suite: u16,
+    key: &[u8; 32],
+    iv: &[u8; 12],
+    plaintext: &mut [u8; TLS_DECRYPT_MAX_BYTES],
+) -> Option<(u8, usize)> {
+    if record.len() < 21 || record[0] != TLS_RECORD_APPLICATION_DATA {
+        return None;
+    }
+    let encrypted_len = read_be16(record, 3)? as usize;
+    if encrypted_len < 16 || encrypted_len + 5 > record.len() {
+        return None;
+    }
+    let ciphertext_len = encrypted_len - 16;
+    if ciphertext_len > plaintext.len() {
+        return None;
+    }
+    plaintext[..ciphertext_len].copy_from_slice(&record[5..5 + ciphertext_len]);
+    let tag_bytes = &record[5 + ciphertext_len..5 + encrypted_len];
+    let nonce_bytes = tls13_record_nonce(iv, sequence);
+    let decrypt_ok = match cipher_suite {
+        0x1301 => tls13_aes128gcm_decrypt_in_place(
+            key,
+            &nonce_bytes,
+            &record[..5],
+            &mut plaintext[..ciphertext_len],
+            tag_bytes,
+        ),
+        0x1303 => tls13_chacha20poly1305_decrypt_in_place(
+            key,
+            &nonce_bytes,
+            &record[..5],
+            &mut plaintext[..ciphertext_len],
+            Tag::from_slice(tag_bytes),
+        ),
+        _ => false,
+    };
+    if !decrypt_ok {
+        return None;
+    }
+
+    let mut inner_end = ciphertext_len;
+    while inner_end > 0 && plaintext[inner_end - 1] == 0 {
+        inner_end -= 1;
+    }
+    if inner_end == 0 {
+        return None;
+    }
+    Some((plaintext[inner_end - 1], inner_end - 1))
+}
+
+fn tls13_decrypt_application_data_sample(
+    cipher_suite: u16,
+    server_key: &[u8; 32],
+    server_iv: &[u8; 12],
+    sample: &[u8],
+) -> Option<TlsApplicationDataSummary> {
+    if !matches!(cipher_suite, 0x1301 | 0x1303) {
+        return None;
+    }
+    let mut summary = TlsApplicationDataSummary {
+        records: 0,
+        application_records: 0,
+        handshake_records: 0,
+        alert_level: None,
+        alert_description: None,
+        payload_bytes: 0,
+        sample_len: 0,
+        sample: [0; HTTP_RESPONSE_SAMPLE_BYTES],
+    };
+    let mut offset = 0usize;
+    let mut sequence = 0u64;
+    let mut plaintext = [0u8; TLS_DECRYPT_MAX_BYTES];
+    while offset.saturating_add(5) <= sample.len() {
+        let record_type = sample[offset];
+        let record_len = read_be16(sample, offset + 3)? as usize;
+        let record_end = offset.checked_add(5)?.checked_add(record_len)?;
+        if record_end > sample.len() {
+            break;
+        }
+        let record = &sample[offset..record_end];
+        match record_type {
+            TLS_RECORD_APPLICATION_DATA => {
+                let (inner_type, payload_len) = tls13_decrypt_inner_record(
+                    record,
+                    sequence,
+                    cipher_suite,
+                    server_key,
+                    server_iv,
+                    &mut plaintext,
+                )?;
+                sequence = sequence.saturating_add(1);
+                summary.records = summary.records.saturating_add(1);
+                summary.payload_bytes = summary.payload_bytes.saturating_add(payload_len);
+                match inner_type {
+                    TLS_RECORD_APPLICATION_DATA => {
+                        summary.application_records = summary.application_records.saturating_add(1);
+                        let remaining = summary.sample.len().saturating_sub(summary.sample_len);
+                        if remaining > 0 && payload_len > 0 {
+                            let copy_len = core::cmp::min(remaining, payload_len);
+                            let start = summary.sample_len;
+                            summary.sample[start..start + copy_len]
+                                .copy_from_slice(&plaintext[..copy_len]);
+                            summary.sample_len += copy_len;
+                        }
+                    }
+                    TLS_RECORD_HANDSHAKE => {
+                        summary.handshake_records = summary.handshake_records.saturating_add(1);
+                    }
+                    TLS_RECORD_ALERT => {
+                        if payload_len >= 2 {
+                            summary.alert_level = Some(plaintext[0]);
+                            summary.alert_description = Some(plaintext[1]);
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            TLS_RECORD_ALERT => {
+                if record_len >= 2 {
+                    summary.alert_level = Some(record[5]);
+                    summary.alert_description = Some(record[6]);
+                }
+            }
+            TLS_RECORD_CHANGE_CIPHER_SPEC | TLS_RECORD_HANDSHAKE => {}
+            _ => {}
+        }
+        offset = record_end;
+    }
+    Some(summary)
+}
+
 fn tls13_aes128gcm_decrypt_in_place(
     server_key: &[u8; 32],
     nonce: &[u8; 12],
@@ -18426,10 +19223,34 @@ fn tls13_encrypt_client_finished_record(
     verify_data: &[u8; 32],
     out: &mut [u8; TLS_ENCRYPT_MAX_BYTES],
 ) -> Option<usize> {
-    let plaintext_len = 4usize.checked_add(verify_data.len())?.checked_add(1)?;
+    let mut handshake = [0u8; 36];
+    handshake[0] = TLS_HANDSHAKE_FINISHED;
+    tls_write_u24(&mut handshake, 1, verify_data.len() as u32);
+    handshake[4..].copy_from_slice(verify_data);
+    tls13_encrypt_inner_record(
+        cipher_suite,
+        client_key,
+        client_iv,
+        0,
+        TLS_RECORD_HANDSHAKE,
+        &handshake,
+        out,
+    )
+}
+
+fn tls13_encrypt_inner_record(
+    cipher_suite: u16,
+    key: &[u8; 32],
+    iv: &[u8; 12],
+    sequence: u64,
+    inner_type: u8,
+    plaintext: &[u8],
+    out: &mut [u8; TLS_ENCRYPT_MAX_BYTES],
+) -> Option<usize> {
+    let plaintext_len = plaintext.len().checked_add(1)?;
     let ciphertext_len = plaintext_len.checked_add(16)?;
     let record_len = 5usize.checked_add(ciphertext_len)?;
-    if record_len > out.len() {
+    if record_len > out.len() || ciphertext_len > u16::MAX as usize {
         return None;
     }
 
@@ -18437,21 +19258,17 @@ fn tls13_encrypt_client_finished_record(
     out[1] = 0x03;
     out[2] = 0x03;
     write_be16(out, 3, ciphertext_len as u16);
-    out[5] = TLS_HANDSHAKE_FINISHED;
-    tls_write_u24(out, 6, verify_data.len() as u32);
-    out[9..9 + verify_data.len()].copy_from_slice(verify_data);
-    out[9 + verify_data.len()] = TLS_RECORD_HANDSHAKE;
+    out[5..5 + plaintext.len()].copy_from_slice(plaintext);
+    out[5 + plaintext.len()] = inner_type;
 
-    let nonce = tls13_record_nonce(client_iv, 0);
+    let nonce = tls13_record_nonce(iv, sequence);
     let aad = [out[0], out[1], out[2], out[3], out[4]];
     let payload_start = 5;
     let (payload_and_tag, _) = out[payload_start..record_len].split_at_mut(ciphertext_len);
     let (payload, tag_out) = payload_and_tag.split_at_mut(plaintext_len);
     let encrypted = match cipher_suite {
-        0x1301 => tls13_aes128gcm_encrypt_in_place(client_key, &nonce, &aad, payload, tag_out),
-        0x1303 => {
-            tls13_chacha20poly1305_encrypt_in_place(client_key, &nonce, &aad, payload, tag_out)
-        }
+        0x1301 => tls13_aes128gcm_encrypt_in_place(key, &nonce, &aad, payload, tag_out),
+        0x1303 => tls13_chacha20poly1305_encrypt_in_place(key, &nonce, &aad, payload, tag_out),
         _ => false,
     };
     if !encrypted {
@@ -20124,6 +20941,8 @@ fn net_handle_query_packet(
                 write_net_http_trace_query_summary(index, query, &mut reply);
             } else if query.starts_with("net http-post ") {
                 write_net_http_post_query_summary(index, query, &mut reply);
+            } else if query.starts_with("net https ") || query.starts_with("net https-get ") {
+                write_net_https_query_summary(index, query, &mut reply);
             } else if query.starts_with("net tls-finish ") {
                 write_net_tls_finish_query_summary(index, query, &mut reply);
             } else if query.starts_with("net tls-pin ") {
