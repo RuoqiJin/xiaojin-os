@@ -301,11 +301,14 @@ boot volume for firmware blobs at standard Linux firmware paths:
 `rtw88/rtw8822c_fw.bin`, `rtw88/rtw8822b_fw.bin`, `rtw89/rtw8852b_fw.bin`,
 and `rtw89/rtw8852c_fw.bin`; for early lab use it also accepts the same file
 names directly in the FAT32 root. This is a metadata presence probe only and
-does not load firmware or touch WiFi MMIO. `wifi firmware-crc confirm` then
-walks the FAT chain for each staged blob and reports size/cluster/CRC32, proving
-the OS can read firmware bytes from SD before the loader exists. Station mode
-and AP mode are not implemented yet. `wifi
-pcie-init confirm` / `xjctl wifi-init` is the first write-stage probe: it
+does not touch WiFi MMIO. `wifi firmware-crc confirm` then walks the FAT chain
+for each staged blob and reports size/cluster/CRC32, proving the OS can read
+firmware bytes from SD before the loader exists. `wifi firmware-load
+<chip|auto> confirm` copies one staged blob into the reserved RAM staging range
+`0x06080000..0x06480000` and verifies RAM CRC32. It still does not write WiFi
+MMIO or start the chip; it prepares the blob for the next register-level loader
+step. Station mode and AP mode are not implemented yet. `wifi pcie-init
+confirm` / `xjctl wifi-init` is the first write-stage probe: it
 initializes only the PCIe2/combphy2 WiFi path, waits for LTSSM, and reads config
 word 0 when the link comes up. `wifi pcie-init-dt confirm` / `xjctl
 wifi-init-dt` is the narrower device-tree-aligned probe: it only drives the

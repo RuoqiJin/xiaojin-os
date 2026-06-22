@@ -434,6 +434,8 @@ const XLOAD_SLOT1_ADDR: u64 = 0x0508_0000;
 const XLOAD_SLOT_SIZE: u64 = 0x0080_0000;
 const XLOAD_MAX_IMAGE_SIZE: u64 = XLOAD_SLOT_SIZE / 2;
 const XLOAD_TRAMPOLINE_ADDR: u64 = XLOAD_SLOT1_ADDR + XLOAD_SLOT_SIZE - 0x1000;
+const WIFI_FIRMWARE_LOAD_ADDR: u64 = 0x0608_0000;
+const WIFI_FIRMWARE_LOAD_CAPACITY: u32 = 0x0040_0000;
 const XLOAD_BYTE_TIMEOUT_MS: u64 = 5_000;
 const PSCI_SYSTEM_RESET: u64 = 0x8400_0009;
 const ESR_EC_SHIFT: u64 = 26;
@@ -615,6 +617,29 @@ impl WifiFirmwareSdEntry {
             cluster: 0,
             size: 0,
             path_kind: "missing",
+        }
+    }
+}
+
+#[derive(Clone, Copy)]
+enum WifiFirmwareLoadError {
+    Sd(SdReadError),
+    UnknownChip,
+    Missing,
+    TooLarge,
+    BadRange,
+    CrcMismatch(u32, u32),
+}
+
+impl WifiFirmwareLoadError {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Sd(error) => error.as_str(),
+            Self::UnknownChip => "unknown-chip",
+            Self::Missing => "firmware-missing",
+            Self::TooLarge => "firmware-too-large",
+            Self::BadRange => "bad-load-range",
+            Self::CrcMismatch(_, _) => "crc-mismatch",
         }
     }
 }
@@ -2343,6 +2368,8 @@ fn print_help(uart: &mut Uart) {
     uart.put_str("                       scan SD FAT32 for Realtek WiFi firmware blobs\n");
     uart.put_str("  wifi firmware-crc confirm\n");
     uart.put_str("                       read staged WiFi firmware blobs and report CRC32\n");
+    uart.put_str("  wifi firmware-load <chip|auto> confirm\n");
+    uart.put_str("                       load one staged WiFi firmware blob into RAM staging\n");
     uart.put_str("  wifi trace confirm   retrain PCIe2 and show LTSSM debug FIFO evidence\n");
     uart.put_str("  wifi sideband <in|low|high> confirm\n");
     uart.put_str("  wifi pcie-init confirm\n");
@@ -2504,6 +2531,7 @@ fn print_caps(uart: &mut Uart) {
     uart.put_str("  wifi firmware-facts yes\n");
     uart.put_str("  wifi firmware-sd-confirm yes\n");
     uart.put_str("  wifi firmware-crc-confirm yes\n");
+    uart.put_str("  wifi firmware-load-confirm yes\n");
     uart.put_str("  wifi station planned\n");
     uart.put_str("  wifi ap planned\n");
     uart.put_str("  sd probe-readonly yes\n");
@@ -2522,7 +2550,7 @@ fn print_caps(uart: &mut Uart) {
 fn write_caps_query_summary<W: Write>(out: &mut W) {
     let _ = write!(
         out,
-        "XJQ OK caps net-dev=yes dhcp=yes auto-dhcp=yes route=yes arp=yes dns=yes tcp-connect=yes http-get=yes http-post=yes http-trace=yes http-debug=yes tls-clienthello=yes tls-aes128gcm-decrypt=yes tls-chacha20poly1305-decrypt=yes tls-handshake-parse=yes tls-certificate-list-parse=yes tls-first-certificate-sha256=yes maint-poll=yes maint-status=yes maint-pending-summary=yes maint-command-digest=yes maint-command-verify=yes maint-command-verify-hmac=yes maint-local-hmac-key=yes maint-pull-exec=yes maint-loop=yes maint-config=yes maint-config-paths=yes maint-cold-boot-tick=yes maint-ack-intent=yes maint-remote-event=yes maint-local-audit=yes identity=yes rng=development-hmac-drbg query=yes reboot=yes wifi=pcie-enum wifi-pcie=facts wifi-cru=read-only wifi-apb=read-only wifi-phy=read-only wifi-power=read-only wifi-link=read-only wifi-firmware=facts wifi-firmware-sd=confirm wifi-firmware-crc=confirm wifi-trace=confirm wifi-pcie-init=confirm wifi-pcie-init-high=confirm wifi-pcie-init-linux=confirm wifi-pcie-init-dt=confirm wifi-enum=confirm wifi-station=planned wifi-ap=planned sd-probe=yes sd-writer=yes ab-persist=yes boot-slot=extlinux db=page-store,catalog,wal,fixed-table,btree,btree-delete,table-namespace,event-log,blob-backup,blob-restore"
+        "XJQ OK caps net-dev=yes dhcp=yes auto-dhcp=yes route=yes arp=yes dns=yes tcp-connect=yes http-get=yes http-post=yes http-trace=yes http-debug=yes tls-clienthello=yes tls-aes128gcm-decrypt=yes tls-chacha20poly1305-decrypt=yes tls-handshake-parse=yes tls-certificate-list-parse=yes tls-first-certificate-sha256=yes maint-poll=yes maint-status=yes maint-pending-summary=yes maint-command-digest=yes maint-command-verify=yes maint-command-verify-hmac=yes maint-local-hmac-key=yes maint-pull-exec=yes maint-loop=yes maint-config=yes maint-config-paths=yes maint-cold-boot-tick=yes maint-ack-intent=yes maint-remote-event=yes maint-local-audit=yes identity=yes rng=development-hmac-drbg query=yes reboot=yes wifi=pcie-enum wifi-pcie=facts wifi-cru=read-only wifi-apb=read-only wifi-phy=read-only wifi-power=read-only wifi-link=read-only wifi-firmware=facts wifi-firmware-sd=confirm wifi-firmware-crc=confirm wifi-firmware-load=confirm wifi-trace=confirm wifi-pcie-init=confirm wifi-pcie-init-high=confirm wifi-pcie-init-linux=confirm wifi-pcie-init-dt=confirm wifi-enum=confirm wifi-station=planned wifi-ap=planned sd-probe=yes sd-writer=yes ab-persist=yes boot-slot=extlinux db=page-store,catalog,wal,fixed-table,btree,btree-delete,table-namespace,event-log,blob-backup,blob-restore"
     );
 }
 
@@ -2717,6 +2745,7 @@ fn command_wifi<'a>(uart: &mut Uart, parts: &mut core::str::SplitWhitespace<'a>)
         Some("firmware") => print_wifi_firmware_facts(uart),
         Some("firmware-sd") => command_wifi_firmware_sd(uart, parts.next()),
         Some("firmware-crc") => command_wifi_firmware_crc(uart, parts.next()),
+        Some("firmware-load") => command_wifi_firmware_load(uart, parts.next(), parts.next()),
         Some("trace") => command_wifi_trace(uart, parts.next()),
         Some("sideband") => command_wifi_sideband(uart, parts.next(), parts.next()),
         Some("pcie-init") => command_wifi_pcie_init(uart, parts.next()),
@@ -2741,6 +2770,7 @@ fn command_wifi<'a>(uart: &mut Uart, parts: &mut core::str::SplitWhitespace<'a>)
             uart.put_str("  wifi firmware\n");
             uart.put_str("  wifi firmware-sd confirm\n");
             uart.put_str("  wifi firmware-crc confirm\n");
+            uart.put_str("  wifi firmware-load <chip|auto> confirm\n");
             uart.put_str("  wifi trace confirm\n");
             uart.put_str("  wifi sideband <in|low|high> confirm\n");
             uart.put_str("  wifi pcie-init confirm\n");
@@ -2811,6 +2841,16 @@ fn command_wifi_firmware_crc(uart: &mut Uart, confirm: Option<&str>) {
     print_wifi_firmware_crc(uart);
 }
 
+fn command_wifi_firmware_load(uart: &mut Uart, chip: Option<&str>, confirm: Option<&str>) {
+    if !matches!(confirm, Some(value) if value.eq_ignore_ascii_case("confirm")) {
+        uart.put_str("usage: wifi firmware-load <chip|auto> confirm\n");
+        uart.put_str("scope: load one staged firmware blob into RAM; no WiFi MMIO writes\n");
+        return;
+    }
+    let chip = chip.unwrap_or("auto");
+    print_wifi_firmware_load(uart, chip);
+}
+
 fn print_wifi_firmware_sd<W: Write>(out: &mut W) {
     match scan_wifi_firmware_sd() {
         Ok((facts, entries)) => {
@@ -2844,6 +2884,35 @@ fn print_wifi_firmware_crc<W: Write>(out: &mut W) {
             let _ = writeln!(out, "wifi firmware CRC error: {}", error.as_str());
             if let SdReadError::StatusError(bits) | SdReadError::IdmacError(bits) = error {
                 let _ = writeln!(out, "  bits=0x{bits:08x}");
+            }
+        }
+    }
+}
+
+fn print_wifi_firmware_load<W: Write>(out: &mut W, chip: &str) {
+    match load_wifi_firmware_to_ram(chip) {
+        Ok((entry, read_crc, ram_crc)) => {
+            let candidate = entry.candidate;
+            let _ = writeln!(out, "wifi firmware load ok:");
+            let _ = writeln!(out, "  chip            {}", candidate.chip);
+            let _ = writeln!(out, "  driver          {}", candidate.driver);
+            let _ = writeln!(out, "  path-kind       {}", entry.path_kind);
+            let _ = writeln!(out, "  source-cluster  {}", entry.cluster);
+            let _ = writeln!(out, "  size            {}", entry.size);
+            let _ = writeln!(out, "  load-addr       0x{WIFI_FIRMWARE_LOAD_ADDR:016x}");
+            let _ = writeln!(out, "  capacity        {}", WIFI_FIRMWARE_LOAD_CAPACITY);
+            let _ = writeln!(out, "  crc32           0x{read_crc:08x}");
+            let _ = writeln!(out, "  ram-crc32       0x{ram_crc:08x}");
+        }
+        Err(error) => {
+            let _ = writeln!(out, "wifi firmware load error: {}", error.as_str());
+            if let WifiFirmwareLoadError::Sd(SdReadError::StatusError(bits))
+            | WifiFirmwareLoadError::Sd(SdReadError::IdmacError(bits)) = error
+            {
+                let _ = writeln!(out, "  bits=0x{bits:08x}");
+            }
+            if let WifiFirmwareLoadError::CrcMismatch(read_crc, ram_crc) = error {
+                let _ = writeln!(out, "  crc32=0x{read_crc:08x} ram-crc32=0x{ram_crc:08x}");
             }
         }
     }
@@ -3807,6 +3876,35 @@ fn write_wifi_firmware_crc_details<W: Write>(
     }
     let _ = writeln!(out);
     Ok(())
+}
+
+fn write_wifi_firmware_load_summary<W: Write>(out: &mut W, chip: &str) {
+    match load_wifi_firmware_to_ram(chip) {
+        Ok((entry, read_crc, ram_crc)) => {
+            let candidate = entry.candidate;
+            let _ = write!(
+                out,
+                "OK wifi-firmware-load chip={} driver={} path-kind={} source-cluster={} size={} load-addr=0x{WIFI_FIRMWARE_LOAD_ADDR:016x} capacity={} crc32=0x{read_crc:08x} ram-crc32=0x{ram_crc:08x}",
+                candidate.chip,
+                candidate.driver,
+                entry.path_kind,
+                entry.cluster,
+                entry.size,
+                WIFI_FIRMWARE_LOAD_CAPACITY
+            );
+        }
+        Err(error) => {
+            let _ = write!(out, "ERR wifi-firmware-load {}", error.as_str());
+            if let WifiFirmwareLoadError::Sd(SdReadError::StatusError(bits))
+            | WifiFirmwareLoadError::Sd(SdReadError::IdmacError(bits)) = error
+            {
+                let _ = write!(out, " bits=0x{bits:08x}");
+            }
+            if let WifiFirmwareLoadError::CrcMismatch(read_crc, ram_crc) = error {
+                let _ = write!(out, " crc32=0x{read_crc:08x} ram-crc32=0x{ram_crc:08x}");
+            }
+        }
+    }
 }
 
 fn command_net<'a>(uart: &mut Uart, parts: &mut core::str::SplitWhitespace<'a>) {
@@ -10807,6 +10905,126 @@ fn crc32_fat_file(facts: Fat32Facts, first_cluster: u32, size: u32) -> Result<u3
     Ok(!crc)
 }
 
+fn load_wifi_firmware_to_ram(
+    chip: &str,
+) -> Result<(WifiFirmwareSdEntry, u32, u32), WifiFirmwareLoadError> {
+    let (facts, entries) = scan_wifi_firmware_sd().map_err(WifiFirmwareLoadError::Sd)?;
+    let Some(entry) = select_wifi_firmware_entry(chip, &entries) else {
+        return Err(WifiFirmwareLoadError::UnknownChip);
+    };
+    if !entry.found {
+        return Err(WifiFirmwareLoadError::Missing);
+    }
+    if entry.size == 0 || entry.size > WIFI_FIRMWARE_LOAD_CAPACITY {
+        return Err(WifiFirmwareLoadError::TooLarge);
+    }
+    if !wifi_firmware_load_range_is_safe(entry.size) {
+        return Err(WifiFirmwareLoadError::BadRange);
+    }
+
+    let read_crc =
+        read_fat_file_to_memory(facts, entry.cluster, entry.size, WIFI_FIRMWARE_LOAD_ADDR)
+            .map_err(WifiFirmwareLoadError::Sd)?;
+    let ram_crc = crc32_memory(WIFI_FIRMWARE_LOAD_ADDR, entry.size as u64);
+    if read_crc != ram_crc {
+        return Err(WifiFirmwareLoadError::CrcMismatch(read_crc, ram_crc));
+    }
+    Ok((entry, read_crc, ram_crc))
+}
+
+fn select_wifi_firmware_entry(
+    chip: &str,
+    entries: &[WifiFirmwareSdEntry; 4],
+) -> Option<WifiFirmwareSdEntry> {
+    if chip.eq_ignore_ascii_case("auto") {
+        return entries.iter().copied().find(|entry| entry.found);
+    }
+    entries
+        .iter()
+        .copied()
+        .find(|entry| entry.candidate.chip.eq_ignore_ascii_case(chip))
+}
+
+fn wifi_firmware_load_range_is_safe(size: u32) -> bool {
+    let len = size as u64;
+    if len == 0 || len > WIFI_FIRMWARE_LOAD_CAPACITY as u64 {
+        return false;
+    }
+    if !is_dram_range(WIFI_FIRMWARE_LOAD_ADDR, len) {
+        return false;
+    }
+    let (resident_start, resident_end) = resident_memory_range();
+    if ranges_overlap(WIFI_FIRMWARE_LOAD_ADDR, len, resident_start, resident_end) {
+        return false;
+    }
+    if ranges_overlap(
+        WIFI_FIRMWARE_LOAD_ADDR,
+        len,
+        XLOAD_SLOT0_ADDR,
+        XLOAD_SLOT0_ADDR + XLOAD_SLOT_SIZE,
+    ) {
+        return false;
+    }
+    if ranges_overlap(
+        WIFI_FIRMWARE_LOAD_ADDR,
+        len,
+        XLOAD_SLOT1_ADDR,
+        XLOAD_SLOT1_ADDR + XLOAD_SLOT_SIZE,
+    ) {
+        return false;
+    }
+    true
+}
+
+fn read_fat_file_to_memory(
+    facts: Fat32Facts,
+    first_cluster: u32,
+    size: u32,
+    dst_addr: u64,
+) -> Result<u32, SdReadError> {
+    if first_cluster < 2 || size == 0 || facts.bytes_per_sector != SD_BLOCK_BYTES as u16 {
+        return Err(SdReadError::InvalidLayout);
+    }
+    if !is_dram_range(dst_addr, size as u64) {
+        return Err(SdReadError::InvalidLayout);
+    }
+    let mut remaining = size;
+    let mut written = 0u32;
+    let mut current = first_cluster;
+    let mut crc = 0xffff_ffffu32;
+    let mut cached_fat_lba = u32::MAX;
+    let mut cached_fat = [0u8; SD_BLOCK_BYTES];
+
+    while remaining > 0 {
+        if current < 2 || current >= 0x0fff_fff7 {
+            return Err(SdReadError::InvalidLayout);
+        }
+        let cluster_lba = cluster_to_lba(facts, current);
+        for sector in 0..facts.sectors_per_cluster as u32 {
+            if remaining == 0 {
+                break;
+            }
+            sd_read_lba(cluster_lba.saturating_add(sector))?;
+            let take = remaining.min(SD_BLOCK_BYTES as u32) as usize;
+            unsafe {
+                let dst = (dst_addr + written as u64) as usize as *mut u8;
+                core::ptr::copy_nonoverlapping(addr_of!(SD_BLOCK_BUFFER.0).cast::<u8>(), dst, take);
+                for offset in 0..take {
+                    let byte = core::ptr::read_volatile(dst.add(offset));
+                    crc = crc32_update(crc, byte);
+                }
+            }
+            remaining = remaining.saturating_sub(take as u32);
+            written = written.saturating_add(take as u32);
+        }
+        if remaining > 0 {
+            current = read_fat_entry(facts, current, &mut cached_fat_lba, &mut cached_fat)?;
+        }
+    }
+
+    Ok(!crc)
+}
+
 fn ascii_eq_ignore_case(left: &[u8], right: &[u8]) -> bool {
     if left.len() != right.len() {
         return false;
@@ -17586,6 +17804,18 @@ fn net_handle_query_packet(
             } else if query.eq_ignore_ascii_case("wifi firmware-crc confirm") {
                 let _ = write!(reply, "XJQ ");
                 write_wifi_firmware_crc_summary(&mut reply);
+            } else if query.starts_with("wifi firmware-load ") {
+                let mut parts = query.split_whitespace();
+                let _ = parts.next();
+                let _ = parts.next();
+                let chip = parts.next().unwrap_or("auto");
+                let confirm = parts.next().unwrap_or("");
+                if confirm.eq_ignore_ascii_case("confirm") && parts.next().is_none() {
+                    let _ = write!(reply, "XJQ ");
+                    write_wifi_firmware_load_summary(&mut reply, chip);
+                } else {
+                    let _ = write!(reply, "XJQ ERR wifi-firmware-load-usage");
+                }
             } else if query.eq_ignore_ascii_case("wifi trace confirm") {
                 let _ = write!(reply, "XJQ OK ");
                 write_wifi_trace_summary(&mut reply);

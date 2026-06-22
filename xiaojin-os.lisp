@@ -39,6 +39,7 @@
     (region xload-slot0 :start 0x02080000 :end 0x02880000)
     (region xload-slot1 :start 0x05080000 :end 0x05880000)
     (region xload-trampoline :start 0x0587f000 :end 0x05880000)
+    (region wifi-firmware-staging :start 0x06080000 :end 0x06480000)
     (mmio-region uart2
       :start 0xfe660000
       :end 0xfe660100
@@ -203,9 +204,17 @@
       :implemented [fat32-metadata-presence fat-chain-byte-read crc32-verification]
       :safety "Reads SD FAT32 metadata and staged firmware bytes only; does not load firmware or write WiFi MMIO."
       :purpose "Verify that Realtek firmware blobs are staged and readable from the Xiaojin OS boot SD before implementing the firmware loader.")
+    (stage firmware-ram-staging
+      :status implemented-no-mmio
+      :commands [wifi firmware-load]
+      :queries [xjq-wifi-firmware-load]
+      :requires [firmware-sd-probe wifi-firmware-staging]
+      :implemented [fat-chain-copy-to-dram ram-crc32-verify safe-range-check]
+      :safety "Copies one staged firmware blob into reserved DRAM only; no WiFi BAR/MMIO/register writes."
+      :purpose "Make the Realtek firmware bytes available in RAM for the next RTL8822CE loader step.")
     (stage rtl8822ce-driver
       :status planned
-      :requires [firmware-sd-probe firmware-loader mmio-map dma-rings interrupts-or-polling regulatory-domain]
+      :requires [firmware-ram-staging firmware-loader mmio-map dma-rings interrupts-or-polling regulatory-domain]
       :purpose "Bring up the WiFi MAC/PHY and enough packet IO to support 802.11 station and AP work.")
     (stage station-mode
       :status planned
