@@ -2381,6 +2381,8 @@ fn print_help(uart: &mut Uart) {
     uart.put_str("                       map WiFi BAR2 and read a small MMIO snapshot\n");
     uart.put_str("  wifi mmio-fingerprint confirm\n");
     uart.put_str("                       map WiFi BAR2 and fingerprint first 4KiB safely\n");
+    uart.put_str("  wifi driver-gate [chip|auto] confirm\n");
+    uart.put_str("                       report readiness for the first RTL WiFi driver writes\n");
     uart.put_str("  wifi trace confirm   retrain PCIe2 and show LTSSM debug FIFO evidence\n");
     uart.put_str("  wifi sideband <in|low|high> confirm\n");
     uart.put_str("  wifi pcie-init confirm\n");
@@ -2545,6 +2547,7 @@ fn print_caps(uart: &mut Uart) {
     uart.put_str("  wifi firmware-load-confirm yes\n");
     uart.put_str("  wifi mmio-snapshot-confirm yes\n");
     uart.put_str("  wifi mmio-fingerprint-confirm yes\n");
+    uart.put_str("  wifi driver-gate-confirm yes\n");
     uart.put_str("  wifi station planned\n");
     uart.put_str("  wifi ap planned\n");
     uart.put_str("  sd probe-readonly yes\n");
@@ -2563,7 +2566,7 @@ fn print_caps(uart: &mut Uart) {
 fn write_caps_query_summary<W: Write>(out: &mut W) {
     let _ = write!(
         out,
-        "XJQ OK caps net-dev=yes dhcp=yes auto-dhcp=yes route=yes arp=yes dns=yes tcp-connect=yes http-get=yes http-post=yes http-trace=yes http-debug=yes tls-clienthello=yes tls-aes128gcm-decrypt=yes tls-chacha20poly1305-decrypt=yes tls-handshake-parse=yes tls-certificate-list-parse=yes tls-first-certificate-sha256=yes maint-poll=yes maint-status=yes maint-pending-summary=yes maint-command-digest=yes maint-command-verify=yes maint-command-verify-hmac=yes maint-local-hmac-key=yes maint-pull-exec=yes maint-loop=yes maint-config=yes maint-config-paths=yes maint-cold-boot-tick=yes maint-ack-intent=yes maint-remote-event=yes maint-local-audit=yes identity=yes rng=development-hmac-drbg query=yes reboot=yes wifi=pcie-enum wifi-pcie=facts wifi-cru=read-only wifi-apb=read-only wifi-phy=read-only wifi-power=read-only wifi-link=read-only wifi-firmware=facts wifi-firmware-sd=confirm wifi-firmware-crc=confirm wifi-firmware-load=confirm wifi-mmio-snapshot=confirm wifi-mmio-fingerprint=confirm wifi-trace=confirm wifi-pcie-init=confirm wifi-pcie-init-high=confirm wifi-pcie-init-linux=confirm wifi-pcie-init-dt=confirm wifi-enum=confirm wifi-station=planned wifi-ap=planned sd-probe=yes sd-writer=yes ab-persist=yes boot-slot=extlinux db=page-store,catalog,wal,fixed-table,btree,btree-delete,table-namespace,event-log,blob-backup,blob-restore"
+        "XJQ OK caps net-dev=yes dhcp=yes auto-dhcp=yes route=yes arp=yes dns=yes tcp-connect=yes http-get=yes http-post=yes http-trace=yes http-debug=yes tls-clienthello=yes tls-aes128gcm-decrypt=yes tls-chacha20poly1305-decrypt=yes tls-handshake-parse=yes tls-certificate-list-parse=yes tls-first-certificate-sha256=yes maint-poll=yes maint-status=yes maint-pending-summary=yes maint-command-digest=yes maint-command-verify=yes maint-command-verify-hmac=yes maint-local-hmac-key=yes maint-pull-exec=yes maint-loop=yes maint-config=yes maint-config-paths=yes maint-cold-boot-tick=yes maint-ack-intent=yes maint-remote-event=yes maint-local-audit=yes identity=yes rng=development-hmac-drbg query=yes reboot=yes wifi=pcie-enum wifi-pcie=facts wifi-cru=read-only wifi-apb=read-only wifi-phy=read-only wifi-power=read-only wifi-link=read-only wifi-firmware=facts wifi-firmware-sd=confirm wifi-firmware-crc=confirm wifi-firmware-load=confirm wifi-mmio-snapshot=confirm wifi-mmio-fingerprint=confirm wifi-driver-gate=confirm wifi-trace=confirm wifi-pcie-init=confirm wifi-pcie-init-high=confirm wifi-pcie-init-linux=confirm wifi-pcie-init-dt=confirm wifi-enum=confirm wifi-station=planned wifi-ap=planned sd-probe=yes sd-writer=yes ab-persist=yes boot-slot=extlinux db=page-store,catalog,wal,fixed-table,btree,btree-delete,table-namespace,event-log,blob-backup,blob-restore"
     );
 }
 
@@ -2761,6 +2764,7 @@ fn command_wifi<'a>(uart: &mut Uart, parts: &mut core::str::SplitWhitespace<'a>)
         Some("firmware-load") => command_wifi_firmware_load(uart, parts.next(), parts.next()),
         Some("mmio-snapshot") => command_wifi_mmio_snapshot(uart, parts.next()),
         Some("mmio-fingerprint") => command_wifi_mmio_fingerprint(uart, parts.next()),
+        Some("driver-gate") => command_wifi_driver_gate(uart, parts.next(), parts.next()),
         Some("trace") => command_wifi_trace(uart, parts.next()),
         Some("sideband") => command_wifi_sideband(uart, parts.next(), parts.next()),
         Some("pcie-init") => command_wifi_pcie_init(uart, parts.next()),
@@ -2788,6 +2792,7 @@ fn command_wifi<'a>(uart: &mut Uart, parts: &mut core::str::SplitWhitespace<'a>)
             uart.put_str("  wifi firmware-load <chip|auto> confirm\n");
             uart.put_str("  wifi mmio-snapshot confirm\n");
             uart.put_str("  wifi mmio-fingerprint confirm\n");
+            uart.put_str("  wifi driver-gate [chip|auto] confirm\n");
             uart.put_str("  wifi trace confirm\n");
             uart.put_str("  wifi sideband <in|low|high> confirm\n");
             uart.put_str("  wifi pcie-init confirm\n");
@@ -2888,6 +2893,24 @@ fn command_wifi_mmio_fingerprint(uart: &mut Uart, confirm: Option<&str>) {
         return;
     }
     print_wifi_mmio_fingerprint(uart);
+}
+
+fn command_wifi_driver_gate(uart: &mut Uart, first: Option<&str>, second: Option<&str>) {
+    let (chip, confirm) = match (first, second) {
+        (Some(value), None) if value.eq_ignore_ascii_case("confirm") => ("rtl8822ce", value),
+        (Some(chip), Some(confirm)) => (chip, confirm),
+        _ => {
+            uart.put_str("usage: wifi driver-gate [chip|auto] confirm\n");
+            uart.put_str("scope: verify firmware staging, PCIe2 endpoint, BAR2 map, and MMIO fingerprint before WiFi register writes\n");
+            return;
+        }
+    };
+    if !confirm.eq_ignore_ascii_case("confirm") {
+        uart.put_str("usage: wifi driver-gate [chip|auto] confirm\n");
+        uart.put_str("scope: verify firmware staging, PCIe2 endpoint, BAR2 map, and MMIO fingerprint before WiFi register writes\n");
+        return;
+    }
+    print_wifi_driver_gate(uart, chip);
 }
 
 fn print_wifi_firmware_sd<W: Write>(out: &mut W) {
@@ -3027,6 +3050,11 @@ fn print_wifi_mmio_fingerprint<W: Write>(out: &mut W) {
     write_wifi_mmio_fingerprint_sample(out, "  last-readable  ", fp.last_readable);
     write_wifi_mmio_fingerprint_sample(out, "  first-nonzero  ", fp.first_nonzero);
     write_wifi_mmio_fingerprint_sample(out, "  first-not-ones ", fp.first_not_ones);
+}
+
+fn print_wifi_driver_gate<W: Write>(out: &mut W, chip: &str) {
+    let _ = writeln!(out, "wifi driver gate:");
+    write_wifi_driver_gate_summary_inner(out, chip, true);
 }
 
 fn write_wifi_mmio_fingerprint_sample<W: Write>(
@@ -4030,6 +4058,159 @@ fn write_wifi_firmware_load_summary<W: Write>(out: &mut W, chip: &str) {
                 let _ = write!(out, " crc32=0x{read_crc:08x} ram-crc32=0x{ram_crc:08x}");
             }
         }
+    }
+}
+
+fn write_wifi_driver_gate_summary<W: Write>(out: &mut W, chip: &str) {
+    write_wifi_driver_gate_summary_inner(out, chip, false);
+}
+
+fn write_wifi_driver_gate_summary_inner<W: Write>(out: &mut W, chip: &str, newline: bool) {
+    let chip = if chip.eq_ignore_ascii_case("confirm") || chip.trim().is_empty() {
+        "rtl8822ce"
+    } else {
+        chip.trim()
+    };
+    let mut ready = true;
+    let mut reason = "ready";
+    let mut loaded: Option<WifiFirmwareCandidate> = None;
+
+    let _ = write!(out, "OK wifi-driver-gate requested-chip={chip}");
+    match load_wifi_firmware_to_ram(chip) {
+        Ok((entry, read_crc, ram_crc)) => {
+            loaded = Some(entry.candidate);
+            let _ = write!(
+                out,
+                " firmware=yes chip={} driver={} size={} load-addr=0x{WIFI_FIRMWARE_LOAD_ADDR:016x} crc32=0x{read_crc:08x} ram-crc32=0x{ram_crc:08x}",
+                entry.candidate.chip, entry.candidate.driver, entry.size
+            );
+        }
+        Err(error) => {
+            wifi_driver_gate_not_ready(&mut ready, &mut reason, "firmware-not-loaded");
+            let _ = write!(out, " firmware=no firmware-error={}", error.as_str());
+            if let WifiFirmwareLoadError::Sd(SdReadError::StatusError(bits))
+            | WifiFirmwareLoadError::Sd(SdReadError::IdmacError(bits)) = error
+            {
+                let _ = write!(out, " firmware-error-bits=0x{bits:08x}");
+            }
+            if let WifiFirmwareLoadError::CrcMismatch(read_crc, ram_crc) = error {
+                let _ = write!(
+                    out,
+                    " firmware-crc32=0x{read_crc:08x} firmware-ram-crc32=0x{ram_crc:08x}"
+                );
+            }
+        }
+    }
+
+    let result = wifi_pcie2_init_sequence_dt_order();
+    let _ = write!(
+        out,
+        " pcie-link={} ltssm=0x{:08x}",
+        if result.link_up { "up" } else { "down" },
+        result.ltssm
+    );
+    if !result.link_up {
+        wifi_driver_gate_not_ready(&mut ready, &mut reason, "pcie-link-down");
+        let _ = write!(out, " endpoint=skipped");
+        write_wifi_driver_gate_tail(out, ready, reason, newline);
+        return;
+    }
+
+    let Some(config) = wifi_pcie2_endpoint_config() else {
+        wifi_driver_gate_not_ready(&mut ready, &mut reason, "endpoint-unreadable");
+        let _ = write!(out, " endpoint=absent-or-unreadable");
+        write_wifi_driver_gate_tail(out, ready, reason, newline);
+        return;
+    };
+    let vendor = (config.cfg0 & 0xffff) as u16;
+    let device = (config.cfg0 >> 16) as u16;
+    let driver = wifi_driver_info(vendor, device);
+    let endpoint = wifi_endpoint_name(vendor, device);
+    let _ = write!(
+        out,
+        " endpoint={endpoint} vendor=0x{vendor:04x} device=0x{device:04x} driver={} firmware-candidate={} command-status=0x{:08x}",
+        driver.linux_driver, driver.firmware, config.command_status
+    );
+    if vendor != 0x10ec {
+        wifi_driver_gate_not_ready(&mut ready, &mut reason, "non-realtek-endpoint");
+    }
+    if let Some(candidate) = loaded {
+        if candidate.driver != driver.linux_driver {
+            wifi_driver_gate_not_ready(&mut ready, &mut reason, "firmware-endpoint-mismatch");
+            let _ = write!(
+                out,
+                " firmware-match=no loaded-driver={} endpoint-driver={}",
+                candidate.driver, driver.linux_driver
+            );
+        } else {
+            let _ = write!(out, " firmware-match=yes");
+        }
+    }
+
+    let (bar2, command) = wifi_pcie2_map_bar2(config);
+    let pci_command = (command & 0xffff) as u16;
+    let pci_mem_master = pci_command & ((PCI_COMMAND_MEMORY | PCI_COMMAND_MASTER) as u16)
+        == (PCI_COMMAND_MEMORY | PCI_COMMAND_MASTER) as u16;
+    if !pci_mem_master {
+        wifi_driver_gate_not_ready(&mut ready, &mut reason, "pci-command-not-enabled");
+    }
+    let _ = write!(
+        out,
+        " bar2=0x{bar2:016x} bar2-size=0x{RTL_WIFI_BAR2_SIZE:05x} command=0x{command:08x} pci-mem-master={}",
+        yes_no(pci_mem_master)
+    );
+
+    let fp = wifi_mmio_fingerprint(bar2);
+    let mmio_full_read = fp.readable == fp.words && fp.faults == 0;
+    let mmio_signal =
+        fp.first_not_ones.is_some() && fp.zero_words != fp.words && fp.ones_words != fp.words;
+    if !mmio_full_read {
+        wifi_driver_gate_not_ready(&mut ready, &mut reason, "mmio-read-faults");
+    } else if !mmio_signal {
+        wifi_driver_gate_not_ready(&mut ready, &mut reason, "mmio-no-signal");
+    }
+    let _ = write!(
+        out,
+        " mmio-window={} mmio-step={} mmio-readable={} mmio-words={} mmio-faults={} mmio-zero={} mmio-ones={} mmio-transitions={} mmio-crc32=0x{:08x} mmio-full-read={} mmio-signal={}",
+        fp.window_bytes,
+        fp.step,
+        fp.readable,
+        fp.words,
+        fp.faults,
+        fp.zero_words,
+        fp.ones_words,
+        fp.transitions,
+        fp.crc32,
+        yes_no(mmio_full_read),
+        yes_no(mmio_signal)
+    );
+    write_wifi_mmio_fingerprint_summary_sample(out, "mmio-first-readable", fp.first_readable);
+    write_wifi_mmio_fingerprint_summary_sample(out, "mmio-first-nonzero", fp.first_nonzero);
+    write_wifi_mmio_fingerprint_summary_sample(out, "mmio-first-not-ones", fp.first_not_ones);
+    write_wifi_driver_gate_tail(out, ready, reason, newline);
+}
+
+fn wifi_driver_gate_not_ready(ready: &mut bool, reason: &mut &'static str, value: &'static str) {
+    if *ready {
+        *reason = value;
+    }
+    *ready = false;
+}
+
+fn write_wifi_driver_gate_tail<W: Write>(
+    out: &mut W,
+    ready: bool,
+    reason: &'static str,
+    newline: bool,
+) {
+    let next = if ready {
+        "rtl8822ce-register-loader"
+    } else {
+        "fix-driver-gate-reason"
+    };
+    let _ = write!(out, " ready={} reason={reason} next={next}", yes_no(ready));
+    if newline {
+        let _ = writeln!(out);
     }
 }
 
@@ -18112,6 +18293,27 @@ fn net_handle_query_packet(
             } else if query.eq_ignore_ascii_case("wifi mmio-fingerprint confirm") {
                 let _ = write!(reply, "XJQ ");
                 write_wifi_mmio_fingerprint_summary(&mut reply);
+            } else if query.starts_with("wifi driver-gate ") {
+                let mut parts = query.split_whitespace();
+                let _ = parts.next();
+                let _ = parts.next();
+                let first = parts.next().unwrap_or("");
+                let second = parts.next();
+                let (chip, valid) = if first.eq_ignore_ascii_case("confirm") && second.is_none() {
+                    ("rtl8822ce", true)
+                } else if second.is_some_and(|value| value.eq_ignore_ascii_case("confirm"))
+                    && parts.next().is_none()
+                {
+                    (first, true)
+                } else {
+                    ("", false)
+                };
+                if valid {
+                    let _ = write!(reply, "XJQ ");
+                    write_wifi_driver_gate_summary(&mut reply, chip);
+                } else {
+                    let _ = write!(reply, "XJQ ERR wifi-driver-gate-usage");
+                }
             } else if query.eq_ignore_ascii_case("wifi trace confirm") {
                 let _ = write!(reply, "XJQ OK ");
                 write_wifi_trace_summary(&mut reply);

@@ -313,8 +313,12 @@ a small fixed MMIO snapshot without writing WiFi registers. `wifi
 mmio-fingerprint confirm` keeps the same safety boundary and probe-reads the
 first 4KiB of BAR2 as 32-bit words, returning readable/fault/zero/all-ones
 counts, transitions, first sample offsets, and a CRC32. This is the next
-evidence gate before Realtek firmware/register writes. Station mode and AP mode
-are not implemented yet. `wifi pcie-init confirm` / `xjctl wifi-init` is the first write-stage probe: it
+evidence gate before Realtek firmware/register writes. `wifi driver-gate
+<chip|auto> confirm` combines firmware RAM staging, PCIe2 endpoint identity,
+BAR2 mapping, PCI Memory/BusMaster state, and the MMIO fingerprint into a
+machine-readable `ready=yes|no` gate for the first RTL register-loader
+experiment; it still does not write WiFi MMIO registers. Station mode and AP
+mode are not implemented yet. `wifi pcie-init confirm` / `xjctl wifi-init` is the first write-stage probe: it
 initializes only the PCIe2/combphy2 WiFi path, waits for LTSSM, and reads config
 word 0 when the link comes up. `wifi pcie-init-dt confirm` / `xjctl
 wifi-init-dt` is the narrower device-tree-aligned probe: it only drives the
