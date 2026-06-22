@@ -2341,6 +2341,8 @@ fn print_help(uart: &mut Uart) {
     uart.put_str("  wifi firmware        show Realtek WiFi driver/firmware candidates\n");
     uart.put_str("  wifi firmware-sd confirm\n");
     uart.put_str("                       scan SD FAT32 for Realtek WiFi firmware blobs\n");
+    uart.put_str("  wifi firmware-crc confirm\n");
+    uart.put_str("                       read staged WiFi firmware blobs and report CRC32\n");
     uart.put_str("  wifi trace confirm   retrain PCIe2 and show LTSSM debug FIFO evidence\n");
     uart.put_str("  wifi sideband <in|low|high> confirm\n");
     uart.put_str("  wifi pcie-init confirm\n");
@@ -2501,6 +2503,7 @@ fn print_caps(uart: &mut Uart) {
     uart.put_str("  wifi enum-confirm yes\n");
     uart.put_str("  wifi firmware-facts yes\n");
     uart.put_str("  wifi firmware-sd-confirm yes\n");
+    uart.put_str("  wifi firmware-crc-confirm yes\n");
     uart.put_str("  wifi station planned\n");
     uart.put_str("  wifi ap planned\n");
     uart.put_str("  sd probe-readonly yes\n");
@@ -2519,7 +2522,7 @@ fn print_caps(uart: &mut Uart) {
 fn write_caps_query_summary<W: Write>(out: &mut W) {
     let _ = write!(
         out,
-        "XJQ OK caps net-dev=yes dhcp=yes auto-dhcp=yes route=yes arp=yes dns=yes tcp-connect=yes http-get=yes http-post=yes http-trace=yes http-debug=yes tls-clienthello=yes tls-aes128gcm-decrypt=yes tls-chacha20poly1305-decrypt=yes tls-handshake-parse=yes tls-certificate-list-parse=yes tls-first-certificate-sha256=yes maint-poll=yes maint-status=yes maint-pending-summary=yes maint-command-digest=yes maint-command-verify=yes maint-command-verify-hmac=yes maint-local-hmac-key=yes maint-pull-exec=yes maint-loop=yes maint-config=yes maint-config-paths=yes maint-cold-boot-tick=yes maint-ack-intent=yes maint-remote-event=yes maint-local-audit=yes identity=yes rng=development-hmac-drbg query=yes reboot=yes wifi=pcie-enum wifi-pcie=facts wifi-cru=read-only wifi-apb=read-only wifi-phy=read-only wifi-power=read-only wifi-link=read-only wifi-firmware=facts wifi-firmware-sd=confirm wifi-trace=confirm wifi-pcie-init=confirm wifi-pcie-init-high=confirm wifi-pcie-init-linux=confirm wifi-pcie-init-dt=confirm wifi-enum=confirm wifi-station=planned wifi-ap=planned sd-probe=yes sd-writer=yes ab-persist=yes boot-slot=extlinux db=page-store,catalog,wal,fixed-table,btree,btree-delete,table-namespace,event-log,blob-backup,blob-restore"
+        "XJQ OK caps net-dev=yes dhcp=yes auto-dhcp=yes route=yes arp=yes dns=yes tcp-connect=yes http-get=yes http-post=yes http-trace=yes http-debug=yes tls-clienthello=yes tls-aes128gcm-decrypt=yes tls-chacha20poly1305-decrypt=yes tls-handshake-parse=yes tls-certificate-list-parse=yes tls-first-certificate-sha256=yes maint-poll=yes maint-status=yes maint-pending-summary=yes maint-command-digest=yes maint-command-verify=yes maint-command-verify-hmac=yes maint-local-hmac-key=yes maint-pull-exec=yes maint-loop=yes maint-config=yes maint-config-paths=yes maint-cold-boot-tick=yes maint-ack-intent=yes maint-remote-event=yes maint-local-audit=yes identity=yes rng=development-hmac-drbg query=yes reboot=yes wifi=pcie-enum wifi-pcie=facts wifi-cru=read-only wifi-apb=read-only wifi-phy=read-only wifi-power=read-only wifi-link=read-only wifi-firmware=facts wifi-firmware-sd=confirm wifi-firmware-crc=confirm wifi-trace=confirm wifi-pcie-init=confirm wifi-pcie-init-high=confirm wifi-pcie-init-linux=confirm wifi-pcie-init-dt=confirm wifi-enum=confirm wifi-station=planned wifi-ap=planned sd-probe=yes sd-writer=yes ab-persist=yes boot-slot=extlinux db=page-store,catalog,wal,fixed-table,btree,btree-delete,table-namespace,event-log,blob-backup,blob-restore"
     );
 }
 
@@ -2713,6 +2716,7 @@ fn command_wifi<'a>(uart: &mut Uart, parts: &mut core::str::SplitWhitespace<'a>)
         Some("link") => print_wifi_link_status(uart),
         Some("firmware") => print_wifi_firmware_facts(uart),
         Some("firmware-sd") => command_wifi_firmware_sd(uart, parts.next()),
+        Some("firmware-crc") => command_wifi_firmware_crc(uart, parts.next()),
         Some("trace") => command_wifi_trace(uart, parts.next()),
         Some("sideband") => command_wifi_sideband(uart, parts.next(), parts.next()),
         Some("pcie-init") => command_wifi_pcie_init(uart, parts.next()),
@@ -2736,6 +2740,7 @@ fn command_wifi<'a>(uart: &mut Uart, parts: &mut core::str::SplitWhitespace<'a>)
             uart.put_str("  wifi link\n");
             uart.put_str("  wifi firmware\n");
             uart.put_str("  wifi firmware-sd confirm\n");
+            uart.put_str("  wifi firmware-crc confirm\n");
             uart.put_str("  wifi trace confirm\n");
             uart.put_str("  wifi sideband <in|low|high> confirm\n");
             uart.put_str("  wifi pcie-init confirm\n");
@@ -2795,6 +2800,17 @@ fn command_wifi_firmware_sd(uart: &mut Uart, confirm: Option<&str>) {
     print_wifi_firmware_sd(uart);
 }
 
+fn command_wifi_firmware_crc(uart: &mut Uart, confirm: Option<&str>) {
+    if !matches!(confirm, Some(value) if value.eq_ignore_ascii_case("confirm")) {
+        uart.put_str("usage: wifi firmware-crc confirm\n");
+        uart.put_str(
+            "scope: read staged firmware bytes from SD and report CRC32; no WiFi MMIO writes\n",
+        );
+        return;
+    }
+    print_wifi_firmware_crc(uart);
+}
+
 fn print_wifi_firmware_sd<W: Write>(out: &mut W) {
     match scan_wifi_firmware_sd() {
         Ok((facts, entries)) => {
@@ -2803,6 +2819,29 @@ fn print_wifi_firmware_sd<W: Write>(out: &mut W) {
         }
         Err(error) => {
             let _ = writeln!(out, "wifi firmware SD error: {}", error.as_str());
+            if let SdReadError::StatusError(bits) | SdReadError::IdmacError(bits) = error {
+                let _ = writeln!(out, "  bits=0x{bits:08x}");
+            }
+        }
+    }
+}
+
+fn print_wifi_firmware_crc<W: Write>(out: &mut W) {
+    match scan_wifi_firmware_sd() {
+        Ok((facts, entries)) => {
+            let _ = writeln!(out, "wifi firmware CRC ok:");
+            match write_wifi_firmware_crc_details(out, "  ", facts, &entries) {
+                Ok(()) => {}
+                Err(error) => {
+                    let _ = writeln!(out, "  read-error={}", error.as_str());
+                    if let SdReadError::StatusError(bits) | SdReadError::IdmacError(bits) = error {
+                        let _ = writeln!(out, "  bits=0x{bits:08x}");
+                    }
+                }
+            }
+        }
+        Err(error) => {
+            let _ = writeln!(out, "wifi firmware CRC error: {}", error.as_str());
             if let SdReadError::StatusError(bits) | SdReadError::IdmacError(bits) = error {
                 let _ = writeln!(out, "  bits=0x{bits:08x}");
             }
@@ -3716,6 +3755,58 @@ fn write_wifi_firmware_sd_details<W: Write>(
         }
     }
     let _ = writeln!(out);
+}
+
+fn write_wifi_firmware_crc_summary<W: Write>(out: &mut W) {
+    match scan_wifi_firmware_sd() {
+        Ok((facts, entries)) => {
+            let _ = write!(out, "OK ");
+            if let Err(error) = write_wifi_firmware_crc_details(out, "", facts, &entries) {
+                let _ = write!(out, "read-error={}", error.as_str());
+                if let SdReadError::StatusError(bits) | SdReadError::IdmacError(bits) = error {
+                    let _ = write!(out, " bits=0x{bits:08x}");
+                }
+            }
+        }
+        Err(error) => {
+            let _ = write!(out, "ERR wifi-firmware-crc {}", error.as_str());
+            if let SdReadError::StatusError(bits) | SdReadError::IdmacError(bits) = error {
+                let _ = write!(out, " bits=0x{bits:08x}");
+            }
+        }
+    }
+}
+
+fn write_wifi_firmware_crc_details<W: Write>(
+    out: &mut W,
+    prefix: &str,
+    facts: Fat32Facts,
+    entries: &[WifiFirmwareSdEntry; 4],
+) -> Result<(), SdReadError> {
+    let _ = write!(
+        out,
+        "{prefix}part_lba={} root_cluster={} root_lba={} bps={} spc={} ",
+        facts.part_lba,
+        facts.root_cluster,
+        facts.root_lba,
+        facts.bytes_per_sector,
+        facts.sectors_per_cluster
+    );
+    for entry in entries {
+        let candidate = entry.candidate;
+        if !entry.found {
+            let _ = write!(out, "{} found=no ", candidate.chip);
+            continue;
+        }
+        let crc32 = crc32_fat_file(facts, entry.cluster, entry.size)?;
+        let _ = write!(
+            out,
+            "{} found=yes path-kind={} cluster={} size={} crc32=0x{crc32:08x} ",
+            candidate.chip, entry.path_kind, entry.cluster, entry.size
+        );
+    }
+    let _ = writeln!(out);
+    Ok(())
 }
 
 fn command_net<'a>(uart: &mut Uart, parts: &mut core::str::SplitWhitespace<'a>) {
@@ -10674,6 +10765,48 @@ fn scan_wifi_firmware_sd() -> Result<(Fat32Facts, [WifiFirmwareSdEntry; 4]), SdR
     Ok((facts, entries))
 }
 
+fn crc32_fat_file(facts: Fat32Facts, first_cluster: u32, size: u32) -> Result<u32, SdReadError> {
+    if first_cluster < 2 || size == 0 || facts.bytes_per_sector != SD_BLOCK_BYTES as u16 {
+        return Err(SdReadError::InvalidLayout);
+    }
+    let mut remaining = size;
+    let mut current = first_cluster;
+    let mut crc = 0xffff_ffffu32;
+    let mut cached_fat_lba = u32::MAX;
+    let mut cached_fat = [0u8; SD_BLOCK_BYTES];
+
+    while remaining > 0 {
+        if current < 2 || current >= 0x0fff_fff7 {
+            return Err(SdReadError::InvalidLayout);
+        }
+        let cluster_lba = cluster_to_lba(facts, current);
+        for sector in 0..facts.sectors_per_cluster as u32 {
+            if remaining == 0 {
+                break;
+            }
+            sd_read_lba(cluster_lba.saturating_add(sector))?;
+            let take = remaining.min(SD_BLOCK_BYTES as u32) as usize;
+            let mut block = [0u8; SD_BLOCK_BYTES];
+            unsafe {
+                core::ptr::copy_nonoverlapping(
+                    addr_of!(SD_BLOCK_BUFFER.0).cast::<u8>(),
+                    block.as_mut_ptr(),
+                    SD_BLOCK_BYTES,
+                );
+            }
+            for byte in &block[..take] {
+                crc = crc32_update(crc, *byte);
+            }
+            remaining = remaining.saturating_sub(take as u32);
+        }
+        if remaining > 0 {
+            current = read_fat_entry(facts, current, &mut cached_fat_lba, &mut cached_fat)?;
+        }
+    }
+
+    Ok(!crc)
+}
+
 fn ascii_eq_ignore_case(left: &[u8], right: &[u8]) -> bool {
     if left.len() != right.len() {
         return false;
@@ -17450,6 +17583,9 @@ fn net_handle_query_packet(
             } else if query.eq_ignore_ascii_case("wifi firmware-sd confirm") {
                 let _ = write!(reply, "XJQ ");
                 write_wifi_firmware_sd_summary(&mut reply);
+            } else if query.eq_ignore_ascii_case("wifi firmware-crc confirm") {
+                let _ = write!(reply, "XJQ ");
+                write_wifi_firmware_crc_summary(&mut reply);
             } else if query.eq_ignore_ascii_case("wifi trace confirm") {
                 let _ = write!(reply, "XJQ OK ");
                 write_wifi_trace_summary(&mut reply);

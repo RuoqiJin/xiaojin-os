@@ -197,11 +197,12 @@
       :purpose "Enumerate the RTL8822CE path without changing the proven wired PCIe3 controllers.")
     (stage firmware-sd-probe
       :status implemented-readonly
-      :commands [wifi firmware-sd]
-      :queries [xjq-wifi-firmware-sd]
+      :commands [wifi firmware-sd wifi firmware-crc]
+      :queries [xjq-wifi-firmware-sd xjq-wifi-firmware-crc]
       :requires [fat32-root-reader realtek-firmware-catalog]
-      :safety "Reads SD FAT32 metadata only; does not load firmware or write WiFi MMIO."
-      :purpose "Verify that Realtek firmware blobs are staged on the Xiaojin OS boot SD before implementing the firmware loader.")
+      :implemented [fat32-metadata-presence fat-chain-byte-read crc32-verification]
+      :safety "Reads SD FAT32 metadata and staged firmware bytes only; does not load firmware or write WiFi MMIO."
+      :purpose "Verify that Realtek firmware blobs are staged and readable from the Xiaojin OS boot SD before implementing the firmware loader.")
     (stage rtl8822ce-driver
       :status planned
       :requires [firmware-sd-probe firmware-loader mmio-map dma-rings interrupts-or-polling regulatory-domain]
