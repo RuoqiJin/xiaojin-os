@@ -2633,6 +2633,7 @@ fn print_caps(uart: &mut Uart) {
     uart.put_str("  net tls-handshake-parse yes\n");
     uart.put_str("  net tls-certificate-list-parse yes\n");
     uart.put_str("  net tls-first-certificate-sha256 yes\n");
+    uart.put_str("  net tls-first-certificate-pin yes\n");
     uart.put_str("  net udp-dhcp-control yes\n");
     uart.put_str("  net udp-query-control yes\n");
     uart.put_str("  net routed-udp-loader yes\n");
@@ -2680,7 +2681,7 @@ fn print_caps(uart: &mut Uart) {
 fn write_caps_query_summary<W: Write>(out: &mut W) {
     let _ = write!(
         out,
-        "XJQ OK caps net-dev=yes dhcp=yes auto-dhcp=yes route=yes arp=yes dns=yes tcp-connect=yes http-get=yes http-post=yes http-trace=yes http-debug=yes tls-clienthello=yes tls-aes128gcm-decrypt=yes tls-chacha20poly1305-decrypt=yes tls-handshake-parse=yes tls-certificate-list-parse=yes tls-first-certificate-sha256=yes maint-poll=yes maint-status=yes maint-pending-summary=yes maint-command-digest=yes maint-command-verify=yes maint-command-verify-hmac=yes maint-local-hmac-key=yes maint-pull-exec=yes maint-loop=yes maint-config=yes maint-config-paths=yes maint-cold-boot-tick=yes maint-ack-intent=yes maint-remote-event=yes maint-local-audit=yes identity=yes rng=development-hmac-drbg query=yes reboot=yes wifi=pcie-enum wifi-pcie=facts wifi-cru=read-only wifi-apb=read-only wifi-phy=read-only wifi-power=read-only wifi-link=read-only wifi-firmware=facts wifi-firmware-sd=confirm wifi-firmware-crc=confirm wifi-firmware-load=confirm wifi-mmio-snapshot=confirm wifi-mmio-fingerprint=confirm wifi-driver-gate=confirm wifi-rtw88-profile=read-only wifi-trace=confirm wifi-pcie-init=confirm wifi-pcie-init-high=confirm wifi-pcie-init-linux=confirm wifi-pcie-init-dt=confirm wifi-enum=confirm wifi-station=planned wifi-ap=planned sd-probe=yes sd-writer=yes ab-persist=yes boot-slot=extlinux db=page-store,catalog,wal,fixed-table,btree,btree-delete,table-namespace,event-log,blob-backup,blob-restore"
+        "XJQ OK caps net-dev=yes dhcp=yes auto-dhcp=yes route=yes arp=yes dns=yes tcp-connect=yes http-get=yes http-post=yes http-trace=yes http-debug=yes tls-clienthello=yes tls-aes128gcm-decrypt=yes tls-chacha20poly1305-decrypt=yes tls-handshake-parse=yes tls-certificate-list-parse=yes tls-first-certificate-sha256=yes tls-first-certificate-pin=yes maint-poll=yes maint-status=yes maint-pending-summary=yes maint-command-digest=yes maint-command-verify=yes maint-command-verify-hmac=yes maint-local-hmac-key=yes maint-pull-exec=yes maint-loop=yes maint-config=yes maint-config-paths=yes maint-cold-boot-tick=yes maint-ack-intent=yes maint-remote-event=yes maint-local-audit=yes identity=yes rng=development-hmac-drbg query=yes reboot=yes wifi=pcie-enum wifi-pcie=facts wifi-cru=read-only wifi-apb=read-only wifi-phy=read-only wifi-power=read-only wifi-link=read-only wifi-firmware=facts wifi-firmware-sd=confirm wifi-firmware-crc=confirm wifi-firmware-load=confirm wifi-mmio-snapshot=confirm wifi-mmio-fingerprint=confirm wifi-driver-gate=confirm wifi-rtw88-profile=read-only wifi-trace=confirm wifi-pcie-init=confirm wifi-pcie-init-high=confirm wifi-pcie-init-linux=confirm wifi-pcie-init-dt=confirm wifi-enum=confirm wifi-station=planned wifi-ap=planned sd-probe=yes sd-writer=yes ab-persist=yes boot-slot=extlinux db=page-store,catalog,wal,fixed-table,btree,btree-delete,table-namespace,event-log,blob-backup,blob-restore"
     );
 }
 
@@ -4636,6 +4637,15 @@ fn command_net<'a>(uart: &mut Uart, parts: &mut core::str::SplitWhitespace<'a>) 
             parts.next(),
             parts.next(),
         ),
+        Some("tls-pin") => command_net_tls_pin(
+            uart,
+            parts.next(),
+            parts.next(),
+            parts.next(),
+            parts.next(),
+            parts.next(),
+            parts.next(),
+        ),
         Some("loop") => command_net_loop(uart, parts.next()),
         Some("listen") => command_net_listen(uart, parts.next()),
         Some("sniff") => command_net_sniff(uart, parts.next()),
@@ -4652,6 +4662,9 @@ fn command_net<'a>(uart: &mut Uart, parts: &mut core::str::SplitWhitespace<'a>) 
                 "  net http-post <pcie3x1|pcie3x2|0|1> <host|ip> <port> <path> <body> confirm\n",
             );
             uart.put_str("  net tls <pcie3x1|pcie3x2|0|1> <host|ip> <port> [sni] confirm\n");
+            uart.put_str(
+                "  net tls-pin <pcie3x1|pcie3x2|0|1> <host|ip> <port> [sni|-] <sha256> confirm\n",
+            );
             uart.put_str("  net loop confirm\n");
             uart.put_str("  net listen confirm\n");
             uart.put_str("  net sniff confirm\n");
@@ -5309,6 +5322,87 @@ fn write_net_tls_query_summary<W: Write>(default_index: usize, query: &str, out:
         }
         Err(error) => {
             let _ = write!(out, "XJQ ERR tls {}", error.as_str());
+        }
+    }
+}
+
+fn write_net_tls_pin_query_summary<W: Write>(default_index: usize, query: &str, out: &mut W) {
+    let mut parts = query.split_whitespace();
+    let _net = parts.next();
+    let _tls_pin = parts.next();
+    let Some(first) = parts.next() else {
+        let _ = write!(out, "XJQ ERR tls-pin-usage");
+        return;
+    };
+    let (index, host) = if let Some(index) = parse_net_interface(first) {
+        let Some(host) = parts.next() else {
+            let _ = write!(out, "XJQ ERR tls-pin-usage");
+            return;
+        };
+        (index, host)
+    } else {
+        (default_index, first)
+    };
+    let Some(port) = parts.next().and_then(parse_u16) else {
+        let _ = write!(out, "XJQ ERR tls-pin-usage");
+        return;
+    };
+    let Some(next) = parts.next() else {
+        let _ = write!(out, "XJQ ERR tls-pin-usage");
+        return;
+    };
+    let Some(after) = parts.next() else {
+        let _ = write!(out, "XJQ ERR tls-pin-usage");
+        return;
+    };
+    let (sni, expected_sha, confirm) = if after.eq_ignore_ascii_case("confirm") {
+        (host, next, after)
+    } else {
+        let Some(confirm) = parts.next() else {
+            let _ = write!(out, "XJQ ERR tls-pin-usage");
+            return;
+        };
+        (if next == "-" { host } else { next }, after, confirm)
+    };
+    if !confirm.eq_ignore_ascii_case("confirm") || parts.next().is_some() {
+        let _ = write!(out, "XJQ ERR tls-pin-usage");
+        return;
+    }
+    if !is_sha256_hex(expected_sha.as_bytes()) {
+        let _ = write!(out, "XJQ ERR tls-pin-bad-sha256");
+        return;
+    }
+
+    match net_tls_client_hello(index, host, port, sni, HTTP_TIMEOUT_MS) {
+        Ok(result) => {
+            let pin_match = tls_first_certificate_pin_matches(&result, expected_sha.as_bytes());
+            let _ = write!(
+                out,
+                "XJQ OK tls-pin iface={} host={} sni={} ip={}.{}.{}.{} port={} src-port={} decrypt-status={} certificate={} certificate-list-complete={} first-certificate-sha256=",
+                PCIE_CONTROLLERS[index].name,
+                host,
+                sni,
+                result.tcp.dst_ip[0],
+                result.tcp.dst_ip[1],
+                result.tcp.dst_ip[2],
+                result.tcp.dst_ip[3],
+                result.tcp.dst_port,
+                result.tcp.src_port,
+                result.decrypt_status.as_str(),
+                yes_no(result.decrypted_certificate),
+                yes_no(result.decrypted_certificate_list_complete),
+            );
+            write_optional_sha256_hex(out, &result.decrypted_first_certificate_sha256);
+            let _ = write!(
+                out,
+                " expected-sha256={} pin-match={} reason={}",
+                expected_sha,
+                yes_no(pin_match),
+                tls_pin_reason(&result, pin_match)
+            );
+        }
+        Err(error) => {
+            let _ = write!(out, "XJQ ERR tls-pin {}", error.as_str());
         }
     }
 }
@@ -12428,6 +12522,82 @@ fn command_net_tls(
     }
 }
 
+fn command_net_tls_pin(
+    uart: &mut Uart,
+    iface: Option<&str>,
+    host: Option<&str>,
+    port: Option<&str>,
+    sni_or_sha: Option<&str>,
+    sha_or_confirm: Option<&str>,
+    confirm: Option<&str>,
+) {
+    let Some(iface) = iface else {
+        uart.put_str(
+            "usage: net tls-pin <pcie3x1|pcie3x2|0|1> <host|ip> <port> [sni|-] <sha256> confirm\n",
+        );
+        return;
+    };
+    let Some(index) = parse_net_interface(iface) else {
+        uart.put_str("unknown interface; use pcie3x1, pcie3x2, 0, or 1\n");
+        return;
+    };
+    let Some(host) = host else {
+        uart.put_str("missing host\n");
+        return;
+    };
+    let Some(port) = port.and_then(parse_u16) else {
+        uart.put_str("missing or invalid TCP port\n");
+        return;
+    };
+    let Some(next) = sni_or_sha else {
+        uart.put_str(
+            "usage: net tls-pin <pcie3x1|pcie3x2|0|1> <host|ip> <port> [sni|-] <sha256> confirm\n",
+        );
+        return;
+    };
+    let (sni, expected_sha, confirmed) = match (sha_or_confirm, confirm) {
+        (Some(value), None) if value.eq_ignore_ascii_case("confirm") => (host, next, true),
+        (Some(sha), Some(value)) if value.eq_ignore_ascii_case("confirm") => {
+            (if next == "-" { host } else { next }, sha, true)
+        }
+        _ => ("", "", false),
+    };
+    if !confirmed {
+        uart.put_str(
+            "usage: net tls-pin <pcie3x1|pcie3x2|0|1> <host|ip> <port> [sni|-] <sha256> confirm\n",
+        );
+        uart.put_str("scope: require the decrypted first certificate SHA-256 to match the pin\n");
+        return;
+    }
+    if !is_sha256_hex(expected_sha.as_bytes()) {
+        uart.put_str("invalid SHA-256 hex pin; expected 64 hex characters\n");
+        return;
+    }
+
+    let _ = writeln!(
+        uart,
+        "net tls-pin {} tls://{host}:{port} sni={sni}:",
+        PCIE_CONTROLLERS[index].name
+    );
+    match net_tls_client_hello(index, host, port, sni, HTTP_TIMEOUT_MS) {
+        Ok(result) => {
+            print_tls_client_hello_result(uart, result);
+            let pin_match = tls_first_certificate_pin_matches(&result, expected_sha.as_bytes());
+            uart.put_str("  pin             expected-sha256=");
+            uart.put_str(expected_sha);
+            let _ = writeln!(
+                uart,
+                " match={} reason={}",
+                yes_no(pin_match),
+                tls_pin_reason(&result, pin_match)
+            );
+        }
+        Err(error) => {
+            let _ = writeln!(uart, "  error           {}", error.as_str());
+        }
+    }
+}
+
 fn command_maint_event(
     uart: &mut Uart,
     iface: Option<&str>,
@@ -13128,6 +13298,23 @@ fn print_tls_client_hello_result(uart: &mut Uart, result: TlsClientHelloResult) 
     uart.put_str("  raw             ");
     write_http_raw_sample_line(uart, &result.sample[..result.sample_len]);
     uart.put_str("\n");
+}
+
+fn tls_first_certificate_pin_matches(result: &TlsClientHelloResult, expected_sha: &[u8]) -> bool {
+    match result.decrypted_first_certificate_sha256 {
+        Some(actual) => sha256_hex_matches(&actual, expected_sha),
+        None => false,
+    }
+}
+
+fn tls_pin_reason(result: &TlsClientHelloResult, pin_match: bool) -> &'static str {
+    if pin_match {
+        "matched"
+    } else if result.decrypted_first_certificate_sha256.is_none() {
+        "certificate-missing"
+    } else {
+        "mismatch"
+    }
 }
 
 fn write_maint_poll_summary<W: Write>(
@@ -18420,6 +18607,8 @@ fn net_handle_query_packet(
                 write_net_http_trace_query_summary(index, query, &mut reply);
             } else if query.starts_with("net http-post ") {
                 write_net_http_post_query_summary(index, query, &mut reply);
+            } else if query.starts_with("net tls-pin ") {
+                write_net_tls_pin_query_summary(index, query, &mut reply);
             } else if query.starts_with("net tls ") {
                 write_net_tls_query_summary(index, query, &mut reply);
             } else if query.starts_with("net http ") {

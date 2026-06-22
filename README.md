@@ -47,6 +47,7 @@ Available commands:
 - `net tcp <if> <host|ip> <port> confirm`
 - `net http <if> <host|ip> <port> <path> confirm`
 - `net tls <if> <host|ip> <port> [sni] confirm`
+- `net tls-pin <if> <host|ip> <port> [sni|-] <sha256> confirm`
 - `net loop confirm`
 - `net listen confirm`
 - `net sniff confirm`
@@ -277,7 +278,9 @@ CertificateVerify, and Finished are present in that first record. When a
 Certificate message is present, the probe also parses the TLS 1.3 certificate
 list framing and reports the certificate-entry count, certificate-list length,
 first-certificate length, list completeness, and the SHA-256 fingerprint of the
-first certificate DER bytes. It is not yet a complete TLS stack,
+first certificate DER bytes. `net tls-pin <if> <host|ip> <port> [sni|-] <sha256>
+confirm` runs the same first-flight probe and fails the pin check unless that
+first certificate DER SHA-256 matches the supplied 64-character hex digest. It is not yet a complete TLS stack,
 certificate-chain validator, or HTTPS client.
 
 `wifi facts`, `wifi status`, `wifi pcie`, `wifi cru`, `wifi apb`, `wifi phy`,
@@ -369,7 +372,8 @@ UART `xload` as the recovery path until the network path is stable.
     and parses the response status while ACKing sequential response payload
     segments up to the built-in sample cap. `net tls ... confirm` performs TLS
     first-flight key schedule, first encrypted record decrypt, and certificate
-    list framing probes. Full TCP stream reassembly, certificate validation,
+    list framing probes; `net tls-pin ... confirm` adds first-certificate
+    SHA-256 pin verification for early secure-control experiments. Full TCP stream reassembly, certificate validation,
     complete TLS/HTTPS, and kernel-native cloud polling remain follow-on stages.
 11. OTA storage: `sd facts`, `sd regs confirm`, `sd read0 confirm`, `sd bpb
     confirm`, `sd root confirm`, and `sd slots confirm` verify the SD
