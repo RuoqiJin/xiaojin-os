@@ -212,9 +212,17 @@
       :implemented [fat-chain-copy-to-dram ram-crc32-verify safe-range-check]
       :safety "Copies one staged firmware blob into reserved DRAM only; no WiFi BAR/MMIO/register writes."
       :purpose "Make the Realtek firmware bytes available in RAM for the next RTL8822CE loader step.")
+    (stage wifi-mmio-snapshot
+      :status implemented-readonly-after-bar-map
+      :commands [wifi mmio-snapshot]
+      :queries [xjq-wifi-mmio-snapshot]
+      :requires [pcie2x1-enumeration firmware-ram-staging]
+      :implemented [pcie2-bar2-map pci-command-memory-master fixed-mmio-read-snapshot]
+      :safety "Writes only PCIe config/iATU state for the WiFi endpoint BAR2 mapping; reads WiFi MMIO registers without writing them."
+      :purpose "Collect first BAR2 register evidence needed before implementing the Realtek firmware/register loader.")
     (stage rtl8822ce-driver
       :status planned
-      :requires [firmware-ram-staging firmware-loader mmio-map dma-rings interrupts-or-polling regulatory-domain]
+      :requires [wifi-mmio-snapshot firmware-loader mmio-map dma-rings interrupts-or-polling regulatory-domain]
       :purpose "Bring up the WiFi MAC/PHY and enough packet IO to support 802.11 station and AP work.")
     (stage station-mode
       :status planned

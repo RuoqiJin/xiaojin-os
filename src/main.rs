@@ -110,6 +110,7 @@ const PCIE_ATU_PROBE_UNROLLED: u32 = 0xffff_ffff;
 const RTL8125_BAR2_SIZE: u64 = 0x0001_0000;
 const RTL8125_BAR4_SIZE: u64 = 0x0000_4000;
 const RTL8125_MEM_WINDOW_SIZE: u64 = RTL8125_BAR2_SIZE + RTL8125_BAR4_SIZE;
+const RTL_WIFI_BAR2_SIZE: u64 = 0x0001_0000;
 const RTL_REG_MAC0: u64 = 0x0000;
 const RTL_REG_TX_DESC_ADDR_LOW: u64 = 0x0020;
 const RTL_REG_TX_DESC_ADDR_HIGH: u64 = 0x0024;
@@ -1746,6 +1747,10 @@ const PCIE_CONTROLLERS: &[PcieController] = &[
     },
 ];
 
+const RTL_WIFI_MMIO_SNAPSHOT_OFFSETS: &[u64] = &[
+    0x0000, 0x0004, 0x0008, 0x000c, 0x0010, 0x0014, 0x0018, 0x001c, 0x0030, 0x0040,
+];
+
 const PCIE2_CONTROLLER: PcieController = PcieController {
     name: "pcie2x1",
     apb_base: PCIE2X1_APB_BASE,
@@ -2370,6 +2375,8 @@ fn print_help(uart: &mut Uart) {
     uart.put_str("                       read staged WiFi firmware blobs and report CRC32\n");
     uart.put_str("  wifi firmware-load <chip|auto> confirm\n");
     uart.put_str("                       load one staged WiFi firmware blob into RAM staging\n");
+    uart.put_str("  wifi mmio-snapshot confirm\n");
+    uart.put_str("                       map WiFi BAR2 and read a small MMIO snapshot\n");
     uart.put_str("  wifi trace confirm   retrain PCIe2 and show LTSSM debug FIFO evidence\n");
     uart.put_str("  wifi sideband <in|low|high> confirm\n");
     uart.put_str("  wifi pcie-init confirm\n");
@@ -2532,6 +2539,7 @@ fn print_caps(uart: &mut Uart) {
     uart.put_str("  wifi firmware-sd-confirm yes\n");
     uart.put_str("  wifi firmware-crc-confirm yes\n");
     uart.put_str("  wifi firmware-load-confirm yes\n");
+    uart.put_str("  wifi mmio-snapshot-confirm yes\n");
     uart.put_str("  wifi station planned\n");
     uart.put_str("  wifi ap planned\n");
     uart.put_str("  sd probe-readonly yes\n");
@@ -2550,7 +2558,7 @@ fn print_caps(uart: &mut Uart) {
 fn write_caps_query_summary<W: Write>(out: &mut W) {
     let _ = write!(
         out,
-        "XJQ OK caps net-dev=yes dhcp=yes auto-dhcp=yes route=yes arp=yes dns=yes tcp-connect=yes http-get=yes http-post=yes http-trace=yes http-debug=yes tls-clienthello=yes tls-aes128gcm-decrypt=yes tls-chacha20poly1305-decrypt=yes tls-handshake-parse=yes tls-certificate-list-parse=yes tls-first-certificate-sha256=yes maint-poll=yes maint-status=yes maint-pending-summary=yes maint-command-digest=yes maint-command-verify=yes maint-command-verify-hmac=yes maint-local-hmac-key=yes maint-pull-exec=yes maint-loop=yes maint-config=yes maint-config-paths=yes maint-cold-boot-tick=yes maint-ack-intent=yes maint-remote-event=yes maint-local-audit=yes identity=yes rng=development-hmac-drbg query=yes reboot=yes wifi=pcie-enum wifi-pcie=facts wifi-cru=read-only wifi-apb=read-only wifi-phy=read-only wifi-power=read-only wifi-link=read-only wifi-firmware=facts wifi-firmware-sd=confirm wifi-firmware-crc=confirm wifi-firmware-load=confirm wifi-trace=confirm wifi-pcie-init=confirm wifi-pcie-init-high=confirm wifi-pcie-init-linux=confirm wifi-pcie-init-dt=confirm wifi-enum=confirm wifi-station=planned wifi-ap=planned sd-probe=yes sd-writer=yes ab-persist=yes boot-slot=extlinux db=page-store,catalog,wal,fixed-table,btree,btree-delete,table-namespace,event-log,blob-backup,blob-restore"
+        "XJQ OK caps net-dev=yes dhcp=yes auto-dhcp=yes route=yes arp=yes dns=yes tcp-connect=yes http-get=yes http-post=yes http-trace=yes http-debug=yes tls-clienthello=yes tls-aes128gcm-decrypt=yes tls-chacha20poly1305-decrypt=yes tls-handshake-parse=yes tls-certificate-list-parse=yes tls-first-certificate-sha256=yes maint-poll=yes maint-status=yes maint-pending-summary=yes maint-command-digest=yes maint-command-verify=yes maint-command-verify-hmac=yes maint-local-hmac-key=yes maint-pull-exec=yes maint-loop=yes maint-config=yes maint-config-paths=yes maint-cold-boot-tick=yes maint-ack-intent=yes maint-remote-event=yes maint-local-audit=yes identity=yes rng=development-hmac-drbg query=yes reboot=yes wifi=pcie-enum wifi-pcie=facts wifi-cru=read-only wifi-apb=read-only wifi-phy=read-only wifi-power=read-only wifi-link=read-only wifi-firmware=facts wifi-firmware-sd=confirm wifi-firmware-crc=confirm wifi-firmware-load=confirm wifi-mmio-snapshot=confirm wifi-trace=confirm wifi-pcie-init=confirm wifi-pcie-init-high=confirm wifi-pcie-init-linux=confirm wifi-pcie-init-dt=confirm wifi-enum=confirm wifi-station=planned wifi-ap=planned sd-probe=yes sd-writer=yes ab-persist=yes boot-slot=extlinux db=page-store,catalog,wal,fixed-table,btree,btree-delete,table-namespace,event-log,blob-backup,blob-restore"
     );
 }
 
@@ -2746,6 +2754,7 @@ fn command_wifi<'a>(uart: &mut Uart, parts: &mut core::str::SplitWhitespace<'a>)
         Some("firmware-sd") => command_wifi_firmware_sd(uart, parts.next()),
         Some("firmware-crc") => command_wifi_firmware_crc(uart, parts.next()),
         Some("firmware-load") => command_wifi_firmware_load(uart, parts.next(), parts.next()),
+        Some("mmio-snapshot") => command_wifi_mmio_snapshot(uart, parts.next()),
         Some("trace") => command_wifi_trace(uart, parts.next()),
         Some("sideband") => command_wifi_sideband(uart, parts.next(), parts.next()),
         Some("pcie-init") => command_wifi_pcie_init(uart, parts.next()),
@@ -2771,6 +2780,7 @@ fn command_wifi<'a>(uart: &mut Uart, parts: &mut core::str::SplitWhitespace<'a>)
             uart.put_str("  wifi firmware-sd confirm\n");
             uart.put_str("  wifi firmware-crc confirm\n");
             uart.put_str("  wifi firmware-load <chip|auto> confirm\n");
+            uart.put_str("  wifi mmio-snapshot confirm\n");
             uart.put_str("  wifi trace confirm\n");
             uart.put_str("  wifi sideband <in|low|high> confirm\n");
             uart.put_str("  wifi pcie-init confirm\n");
@@ -2851,6 +2861,17 @@ fn command_wifi_firmware_load(uart: &mut Uart, chip: Option<&str>, confirm: Opti
     print_wifi_firmware_load(uart, chip);
 }
 
+fn command_wifi_mmio_snapshot(uart: &mut Uart, confirm: Option<&str>) {
+    if !matches!(confirm, Some(value) if value.eq_ignore_ascii_case("confirm")) {
+        uart.put_str("usage: wifi mmio-snapshot confirm\n");
+        uart.put_str(
+            "scope: initialize PCIe2, map WiFi BAR2, and read a small MMIO snapshot only\n",
+        );
+        return;
+    }
+    print_wifi_mmio_snapshot(uart);
+}
+
 fn print_wifi_firmware_sd<W: Write>(out: &mut W) {
     match scan_wifi_firmware_sd() {
         Ok((facts, entries)) => {
@@ -2913,6 +2934,40 @@ fn print_wifi_firmware_load<W: Write>(out: &mut W, chip: &str) {
             }
             if let WifiFirmwareLoadError::CrcMismatch(read_crc, ram_crc) = error {
                 let _ = writeln!(out, "  crc32=0x{read_crc:08x} ram-crc32=0x{ram_crc:08x}");
+            }
+        }
+    }
+}
+
+fn print_wifi_mmio_snapshot<W: Write>(out: &mut W) {
+    let _ = writeln!(out, "wifi MMIO snapshot:");
+    let result = wifi_pcie2_init_sequence_dt_order();
+    let _ = writeln!(
+        out,
+        "  pcie2-link      {} ltssm=0x{:08x}",
+        if result.link_up { "up" } else { "down" },
+        result.ltssm
+    );
+    if !result.link_up {
+        let _ = writeln!(out, "  endpoint        skipped; PCIe2 link is not up");
+        return;
+    }
+    let Some(config) = wifi_pcie2_endpoint_config() else {
+        let _ = writeln!(out, "  endpoint        absent-or-unreadable");
+        return;
+    };
+    print_wifi_endpoint_config(out, config);
+    let (bar2, command) = wifi_pcie2_map_bar2(config);
+    let _ = writeln!(out, "  mapped-bar2     0x{bar2:016x}");
+    let _ = writeln!(out, "  mapped-size     0x{RTL_WIFI_BAR2_SIZE:05x}");
+    let _ = writeln!(out, "  command-after   0x{command:08x}");
+    for offset in RTL_WIFI_MMIO_SNAPSHOT_OFFSETS {
+        match probe_read32(bar2 + *offset) {
+            Ok(value) => {
+                let _ = writeln!(out, "  mmio+0x{offset:04x}   0x{value:08x}");
+            }
+            Err(_) => {
+                let _ = writeln!(out, "  mmio+0x{offset:04x}   fault");
             }
         }
     }
@@ -3324,7 +3379,7 @@ fn print_wifi_pcie_init_result(uart: &mut Uart, result: WifiPcieInitResult) {
     }
 }
 
-fn print_wifi_endpoint_config(uart: &mut Uart, config: WifiPcieEndpointConfig) {
+fn print_wifi_endpoint_config<W: Write>(out: &mut W, config: WifiPcieEndpointConfig) {
     let vendor = (config.cfg0 & 0xffff) as u16;
     let device = (config.cfg0 >> 16) as u16;
     let driver = wifi_driver_info(vendor, device);
@@ -3336,29 +3391,29 @@ fn print_wifi_endpoint_config(uart: &mut Uart, config: WifiPcieEndpointConfig) {
     let subsystem_device = (config.subsystem >> 16) as u16;
 
     let _ = writeln!(
-        uart,
+        out,
         "  endpoint        {}",
         wifi_endpoint_name(vendor, device)
     );
-    let _ = writeln!(uart, "  vendor-device   0x{vendor:04x}:0x{device:04x}");
-    let _ = writeln!(uart, "  linux-driver    {}", driver.linux_driver);
-    let _ = writeln!(uart, "  firmware        {}", driver.firmware);
-    let _ = writeln!(uart, "  next-stage      {}", driver.next_stage);
+    let _ = writeln!(out, "  vendor-device   0x{vendor:04x}:0x{device:04x}");
+    let _ = writeln!(out, "  linux-driver    {}", driver.linux_driver);
+    let _ = writeln!(out, "  firmware        {}", driver.firmware);
+    let _ = writeln!(out, "  next-stage      {}", driver.next_stage);
     let _ = writeln!(
-        uart,
+        out,
         "  class           0x{class:02x} subclass=0x{subclass:02x} prog-if=0x{prog_if:02x} rev=0x{revision:02x}"
     );
-    let _ = writeln!(uart, "  command-status  0x{:08x}", config.command_status);
+    let _ = writeln!(out, "  command-status  0x{:08x}", config.command_status);
     let _ = writeln!(
-        uart,
+        out,
         "  subsystem       0x{subsystem_vendor:04x}:0x{subsystem_device:04x}"
     );
-    let _ = writeln!(uart, "  bar0            0x{:08x}", config.bar0);
-    let _ = writeln!(uart, "  bar1            0x{:08x}", config.bar1);
-    let _ = writeln!(uart, "  bar2            0x{:08x}", config.bar2);
-    let _ = writeln!(uart, "  bar3            0x{:08x}", config.bar3);
-    let _ = writeln!(uart, "  bar4            0x{:08x}", config.bar4);
-    let _ = writeln!(uart, "  bar5            0x{:08x}", config.bar5);
+    let _ = writeln!(out, "  bar0            0x{:08x}", config.bar0);
+    let _ = writeln!(out, "  bar1            0x{:08x}", config.bar1);
+    let _ = writeln!(out, "  bar2            0x{:08x}", config.bar2);
+    let _ = writeln!(out, "  bar3            0x{:08x}", config.bar3);
+    let _ = writeln!(out, "  bar4            0x{:08x}", config.bar4);
+    let _ = writeln!(out, "  bar5            0x{:08x}", config.bar5);
 }
 
 fn command_wifi_sideband(uart: &mut Uart, mode: Option<&str>, confirm: Option<&str>) {
@@ -3902,6 +3957,42 @@ fn write_wifi_firmware_load_summary<W: Write>(out: &mut W, chip: &str) {
             }
             if let WifiFirmwareLoadError::CrcMismatch(read_crc, ram_crc) = error {
                 let _ = write!(out, " crc32=0x{read_crc:08x} ram-crc32=0x{ram_crc:08x}");
+            }
+        }
+    }
+}
+
+fn write_wifi_mmio_snapshot_summary<W: Write>(out: &mut W) {
+    let result = wifi_pcie2_init_sequence_dt_order();
+    let _ = write!(
+        out,
+        "OK wifi-mmio-snapshot link={} ltssm=0x{:08x}",
+        if result.link_up { "up" } else { "down" },
+        result.ltssm
+    );
+    if !result.link_up {
+        let _ = write!(out, " endpoint=skipped");
+        return;
+    }
+    let Some(config) = wifi_pcie2_endpoint_config() else {
+        let _ = write!(out, " endpoint=absent-or-unreadable");
+        return;
+    };
+    let vendor = (config.cfg0 & 0xffff) as u16;
+    let device = (config.cfg0 >> 16) as u16;
+    let (bar2, command) = wifi_pcie2_map_bar2(config);
+    let _ = write!(
+        out,
+        " endpoint={} vendor=0x{vendor:04x} device=0x{device:04x} bar2=0x{bar2:016x} size=0x{RTL_WIFI_BAR2_SIZE:05x} command=0x{command:08x}",
+        wifi_endpoint_name(vendor, device)
+    );
+    for offset in RTL_WIFI_MMIO_SNAPSHOT_OFFSETS {
+        match probe_read32(bar2 + *offset) {
+            Ok(value) => {
+                let _ = write!(out, " r{offset:04x}=0x{value:08x}");
+            }
+            Err(_) => {
+                let _ = write!(out, " r{offset:04x}=fault");
             }
         }
     }
@@ -17816,6 +17907,9 @@ fn net_handle_query_packet(
                 } else {
                     let _ = write!(reply, "XJQ ERR wifi-firmware-load-usage");
                 }
+            } else if query.eq_ignore_ascii_case("wifi mmio-snapshot confirm") {
+                let _ = write!(reply, "XJQ ");
+                write_wifi_mmio_snapshot_summary(&mut reply);
             } else if query.eq_ignore_ascii_case("wifi trace confirm") {
                 let _ = write!(reply, "XJQ OK ");
                 write_wifi_trace_summary(&mut reply);
@@ -19940,6 +20034,30 @@ fn pcie_map_rtl_bars(controller: PcieController) {
         PCI_COMMAND_MEMORY | PCI_COMMAND_MASTER,
     );
     mmio_write_barrier();
+}
+
+fn wifi_pcie2_map_bar2(config: WifiPcieEndpointConfig) -> (u64, u32) {
+    let bar2 = PCIE2X1_MEM32_BASE;
+    let bar2_flags = config.bar2 & 0x0f;
+    pcie_select_rtl_endpoint(PCIE2_CONTROLLER);
+    pcie_program_mem_atu(
+        PCIE2_CONTROLLER,
+        1,
+        PCIE2X1_MEM32_BASE,
+        PCIE2X1_MEM32_BASE,
+        RTL_WIFI_BAR2_SIZE,
+    );
+    write_mmio32(PCIE2X1_CFG_BASE + 0x18, (bar2 as u32) | bar2_flags);
+    if bar2_flags & 0x04 != 0 {
+        write_mmio32(PCIE2X1_CFG_BASE + 0x1c, (bar2 >> 32) as u32);
+    }
+    let command = ((config.command_status & 0xffff) as u16)
+        | PCI_COMMAND_MEMORY as u16
+        | PCI_COMMAND_MASTER as u16;
+    write_mmio16(PCIE2X1_CFG_BASE + 0x04, command);
+    mmio_write_barrier();
+    let command_after = probe_read32(PCIE2X1_CFG_BASE + 0x04).unwrap_or(command as u32);
+    (bar2, command_after)
 }
 
 fn pcie_program_mem_atu(

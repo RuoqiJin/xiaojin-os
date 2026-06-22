@@ -307,8 +307,10 @@ firmware bytes from SD before the loader exists. `wifi firmware-load
 <chip|auto> confirm` copies one staged blob into the reserved RAM staging range
 `0x06080000..0x06480000` and verifies RAM CRC32. It still does not write WiFi
 MMIO or start the chip; it prepares the blob for the next register-level loader
-step. Station mode and AP mode are not implemented yet. `wifi pcie-init
-confirm` / `xjctl wifi-init` is the first write-stage probe: it
+step. `wifi mmio-snapshot confirm` then maps the Realtek WiFi endpoint BAR2 into
+the PCIe2 mem32 window, enables PCI Memory/BusMaster in config space, and reads
+a small fixed MMIO snapshot without writing WiFi registers. Station mode and AP
+mode are not implemented yet. `wifi pcie-init confirm` / `xjctl wifi-init` is the first write-stage probe: it
 initializes only the PCIe2/combphy2 WiFi path, waits for LTSSM, and reads config
 word 0 when the link comes up. `wifi pcie-init-dt confirm` / `xjctl
 wifi-init-dt` is the narrower device-tree-aligned probe: it only drives the
