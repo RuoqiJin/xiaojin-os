@@ -341,8 +341,11 @@ const MAINT_CONFIG_VERSION_V3: u8 = 3;
 const MAINT_CONFIG_VERSION_V4: u8 = 4;
 const MAINT_CONFIG_FLAG_TLS_PIN: u8 = 1;
 const MAINT_CONFIG_FLAG_HOST_NAME: u8 = 2;
+const MAINT_CONFIG_FLAG_HTTPS: u8 = 4;
+const MAINT_CONFIG_FLAG_TLS_SNI: u8 = 8;
 const MAINT_CONFIG_PATH_MAX_BYTES: usize = 96;
 const MAINT_CONFIG_HOST_MAX_BYTES: usize = 96;
+const MAINT_CONFIG_TLS_SNI_MAX_BYTES: usize = 96;
 const MAINT_CONFIG_PATH_CHUNK_BYTES: usize = DB_TABLE_VALUE_BYTES;
 const MAINT_CONFIG_PATH_CHUNKS: usize =
     (MAINT_CONFIG_PATH_MAX_BYTES + MAINT_CONFIG_PATH_CHUNK_BYTES - 1)
@@ -350,11 +353,15 @@ const MAINT_CONFIG_PATH_CHUNKS: usize =
 const MAINT_CONFIG_HOST_CHUNKS: usize =
     (MAINT_CONFIG_HOST_MAX_BYTES + MAINT_CONFIG_PATH_CHUNK_BYTES - 1)
         / MAINT_CONFIG_PATH_CHUNK_BYTES;
+const MAINT_CONFIG_TLS_SNI_CHUNKS: usize =
+    (MAINT_CONFIG_TLS_SNI_MAX_BYTES + MAINT_CONFIG_PATH_CHUNK_BYTES - 1)
+        / MAINT_CONFIG_PATH_CHUNK_BYTES;
 const MAINT_CONFIG_PATH_TABLE: &str = "maint_config";
 const MAINT_CONFIG_POLL_PATH_ROW_BASE: u64 = 1;
 const MAINT_CONFIG_EVENT_PATH_ROW_BASE: u64 = 16;
 const MAINT_CONFIG_TLS_PIN_ROW_BASE: u64 = 32;
 const MAINT_CONFIG_HOST_ROW_BASE: u64 = 48;
+const MAINT_CONFIG_TLS_SNI_ROW_BASE: u64 = 64;
 const MAINT_CONFIG_TLS_PIN_CHUNKS: usize =
     (32 + MAINT_CONFIG_PATH_CHUNK_BYTES - 1) / MAINT_CONFIG_PATH_CHUNK_BYTES;
 const MAINT_CONFIG_DEFAULT_POLL_PATH: &str = "/xiaojin-maintainer/device-pull/r5c-lab/poll.txt";
@@ -1555,6 +1562,9 @@ struct MaintConfig {
     host_ip: [u8; 4],
     host_name: [u8; MAINT_CONFIG_HOST_MAX_BYTES],
     host_name_len: usize,
+    https: bool,
+    tls_sni: [u8; MAINT_CONFIG_TLS_SNI_MAX_BYTES],
+    tls_sni_len: usize,
     port: u16,
     count: u64,
     interval_ms: u64,
@@ -2674,6 +2684,7 @@ fn print_caps(uart: &mut Uart) {
     uart.put_str("  maint loop yes\n");
     uart.put_str("  maint ack-intent yes\n");
     uart.put_str("  maint config-host-name yes\n");
+    uart.put_str("  maint config-https yes\n");
     uart.put_str("  maint config-tls-pin yes\n");
     uart.put_str("  maint remote-event yes\n");
     uart.put_str("  maint local-audit yes\n");
@@ -2709,14 +2720,14 @@ fn print_caps(uart: &mut Uart) {
 fn write_caps_query_summary<W: Write>(out: &mut W) {
     let _ = write!(
         out,
-        "XJQ OK caps net-dev=yes dhcp=yes auto-dhcp=yes route=yes arp=yes dns=yes tcp-connect=yes http-get=yes http-post=yes tls-clienthello=yes tls-aes128gcm-decrypt=yes tls-chacha20poly1305-decrypt=yes tls-handshake-parse=yes tls-certificate-list-parse=yes tls-first-certificate-sha256=yes tls-first-certificate-pin=yes tls-server-finished-verify=yes maint-poll=yes maint-status=yes maint-command-verify=yes maint-command-verify-hmac=yes maint-local-hmac-key=yes maint-pull-exec=yes maint-loop=yes maint-config=yes maint-config-paths=yes maint-config-host-name=yes maint-config-tls-pin=yes maint-cold-boot-tick=yes maint-ack-intent=yes maint-remote-event=yes identity=yes query=yes reboot=yes wifi-firmware-sd=confirm wifi-firmware-crc=confirm wifi-firmware-load=confirm wifi-enum=confirm wifi-mmio-snapshot=confirm wifi-mmio-fingerprint=confirm sd-writer=yes ab-persist=yes boot-slot=extlinux db=page-store,catalog,wal,fixed-table,btree,event-log"
+        "XJQ OK caps net-dev=yes dhcp=yes auto-dhcp=yes route=yes arp=yes dns=yes tcp-connect=yes http-get=yes http-post=yes tls-clienthello=yes tls-aes128gcm-decrypt=yes tls-chacha20poly1305-decrypt=yes tls-handshake-parse=yes tls-certificate-list-parse=yes tls-first-certificate-sha256=yes tls-first-certificate-pin=yes tls-server-finished-verify=yes maint-poll=yes maint-status=yes maint-command-verify=yes maint-command-verify-hmac=yes maint-local-hmac-key=yes maint-pull-exec=yes maint-loop=yes maint-config=yes maint-config-paths=yes maint-config-host-name=yes maint-config-https=yes maint-config-tls-pin=yes maint-cold-boot-tick=yes maint-ack-intent=yes maint-remote-event=yes identity=yes query=yes reboot=yes wifi-firmware-sd=confirm wifi-firmware-crc=confirm wifi-firmware-load=confirm wifi-enum=confirm wifi-mmio-snapshot=confirm wifi-mmio-fingerprint=confirm sd-writer=yes ab-persist=yes boot-slot=extlinux db=page-store,catalog,wal,fixed-table,btree,event-log"
     );
 }
 
 fn write_caps_full_query_summary<W: Write>(out: &mut W) {
     let _ = write!(
         out,
-        "XJQ OK caps-full net=dev,dhcp,auto-dhcp,route,arp,dns,tcp,http-get,http-post,http-trace,http-debug tls=clienthello,aes128gcm,chacha20poly1305,handshake,cert-list,first-cert-sha256,first-cert-pin,server-finished maint=poll,status,pending,digest,verify,verify-hmac,local-key,pull-exec,loop,config,paths,host-name,tls-pin,cold-boot,ack-intent,remote-event,local-audit wifi=pcie,firmware,firmware-crc,firmware-load,mmio-snapshot,mmio-fingerprint,driver-gate,rtw88-profile,trace,pcie-init,pcie-init-high,pcie-init-linux,pcie-init-dt,enum,station-planned,ap-planned sd=probe,writer,ab-persist,extlinux db=page-store,catalog,wal,fixed-table,btree,btree-delete,table-namespace,event-log,blob-backup,blob-restore"
+        "XJQ OK caps-full net=dev,dhcp,auto-dhcp,route,arp,dns,tcp,http-get,http-post,http-trace,http-debug tls=clienthello,aes128gcm,chacha20poly1305,handshake,cert-list,first-cert-sha256,first-cert-pin,server-finished maint=poll,status,pending,digest,verify,verify-hmac,local-key,pull-exec,loop,config,paths,host-name,https,tls-pin,cold-boot,ack-intent,remote-event,local-audit wifi=pcie,firmware,firmware-crc,firmware-load,mmio-snapshot,mmio-fingerprint,driver-gate,rtw88-profile,trace,pcie-init,pcie-init-high,pcie-init-linux,pcie-init-dt,enum,station-planned,ap-planned sd=probe,writer,ab-persist,extlinux db=page-store,catalog,wal,fixed-table,btree,btree-delete,table-namespace,event-log,blob-backup,blob-restore"
     );
 }
 
@@ -4780,6 +4791,9 @@ fn command_maint<'a>(uart: &mut Uart, parts: &mut core::str::SplitWhitespace<'a>
             parts.next(),
         ),
         Some("config-pin") => command_maint_config_pin(uart, parts.next(), parts.next()),
+        Some("config-tls") => {
+            command_maint_config_tls(uart, parts.next(), parts.next(), parts.next())
+        }
         Some("key-status") => command_maint_key_status(uart, parts.next()),
         Some("key-set") => command_maint_key_set(uart, parts.next(), parts.next()),
         Some("key-clear") => command_maint_key_clear(uart, parts.next()),
@@ -4818,6 +4832,7 @@ fn command_maint<'a>(uart: &mut Uart, parts: &mut core::str::SplitWhitespace<'a>
                 "  maint loop <pcie3x1|pcie3x2|0|1> <host|ip> <port> <poll-path> <event-path> <count> <interval-ms> confirm\n",
             );
             uart.put_str("  maint config-pin <sha256|none> confirm\n");
+            uart.put_str("  maint config-tls <http|https> [sni|-] confirm\n");
             uart.put_str("  maint key-status confirm\n");
             uart.put_str("  maint key-set <key-hex> confirm\n");
             uart.put_str("  maint key-clear confirm\n");
@@ -6016,6 +6031,50 @@ fn write_maint_config_pin_query_summary<W: Write>(query: &str, out: &mut W) {
     }
 }
 
+fn write_maint_config_tls_query_summary<W: Write>(query: &str, out: &mut W) {
+    let mut parts = query.split_whitespace();
+    let _maint = parts.next();
+    if parts.next() != Some("config-tls") {
+        let _ = write!(out, "XJQ ERR maint-config-tls-usage");
+        return;
+    }
+    let Some(mode) = parts.next() else {
+        let _ = write!(out, "XJQ ERR maint-config-tls-usage");
+        return;
+    };
+    let next = parts.next();
+    let (sni, confirm) = match next {
+        Some("confirm") => (None, Some("confirm")),
+        Some(value) => (Some(value), parts.next()),
+        None => (None, None),
+    };
+    if confirm != Some("confirm") || parts.next().is_some() {
+        let _ = write!(out, "XJQ ERR maint-config-tls-usage");
+        return;
+    }
+    let https = if mode.eq_ignore_ascii_case("https") {
+        true
+    } else if mode.eq_ignore_ascii_case("http") {
+        false
+    } else {
+        let _ = write!(out, "XJQ ERR maint-config-tls-mode");
+        return;
+    };
+    match put_maint_config_tls(https, sni) {
+        Ok(()) => {
+            let _ = write!(
+                out,
+                "XJQ OK maint-config-tls scheme={} sni={}",
+                if https { "https" } else { "http" },
+                sni.unwrap_or("default")
+            );
+        }
+        Err(error) => {
+            let _ = write!(out, "XJQ ERR maint-config-tls {}", error.as_str());
+        }
+    }
+}
+
 fn write_maint_config_status_summary<W: Write>(out: &mut W) {
     match load_maint_config() {
         Ok(config) => {
@@ -6031,12 +6090,17 @@ fn write_maint_config_status_summary<W: Write>(out: &mut W) {
             } else {
                 "name"
             };
+            let mut sni_text = NetReplyBuf::new();
+            let _ = write_maint_config_tls_sni(&config, &mut sni_text);
+            let sni = str::from_utf8(sni_text.as_slice()).unwrap_or("none");
             let _ = write!(
                 out,
-                "XJQ OK maint-config iface={} host={} host-kind={} port={} poll={} event={} count={} interval-ms={} tls-pin=",
+                "XJQ OK maint-config iface={} host={} host-kind={} scheme={} tls-sni={} port={} poll={} event={} count={} interval-ms={} tls-pin=",
                 PCIE_CONTROLLERS[config.index].name,
                 host,
                 host_kind,
+                if config.https { "https" } else { "http" },
+                sni,
                 config.port,
                 poll_path,
                 event_path,
@@ -6058,6 +6122,13 @@ fn write_maint_config_status_summary<W: Write>(out: &mut W) {
 fn write_maint_config_run_summary<W: Write>(out: &mut W) {
     match load_maint_config() {
         Ok(config) => {
+            if config.https {
+                let _ = write!(
+                    out,
+                    "XJQ ERR maint-config-run https-transport-not-implemented"
+                );
+                return;
+            }
             let mut host_text = NetReplyBuf::new();
             let _ = write_maint_config_host(&config, &mut host_text);
             let host = str::from_utf8(host_text.as_slice()).unwrap_or("0.0.0.0");
@@ -6085,6 +6156,13 @@ fn write_maint_config_run_summary<W: Write>(out: &mut W) {
 fn write_maint_config_run_once_summary<W: Write>(out: &mut W) {
     match load_maint_config() {
         Ok(config) => {
+            if config.https {
+                let _ = write!(
+                    out,
+                    "XJQ ERR maint-config-run-once https-transport-not-implemented"
+                );
+                return;
+            }
             let mut host_text = NetReplyBuf::new();
             let _ = write_maint_config_host(&config, &mut host_text);
             let host = str::from_utf8(host_text.as_slice()).unwrap_or("0.0.0.0");
@@ -8831,6 +8909,8 @@ fn put_maint_config(
         index,
         host_ip,
         host_name,
+        false,
+        None,
         port,
         poll_path.as_bytes(),
         event_path.as_bytes(),
@@ -8853,6 +8933,8 @@ fn put_maint_config_tls_pin(expected_sha: Option<&str>) -> Result<(), MaintConfi
         config.index,
         config.host_ip,
         maint_config_host_name_slice(&config),
+        config.https,
+        maint_config_tls_sni_slice(&config),
         config.port,
         poll_path,
         event_path,
@@ -8862,10 +8944,46 @@ fn put_maint_config_tls_pin(expected_sha: Option<&str>) -> Result<(), MaintConfi
     )
 }
 
+fn put_maint_config_tls(https: bool, sni: Option<&str>) -> Result<(), MaintConfigError> {
+    let config = load_maint_config()?;
+    let poll_path = &config.poll_path[..config.poll_path_len];
+    let event_path = &config.event_path[..config.event_path_len];
+    let tls_sni = if https {
+        match sni {
+            Some(value) if value != "-" => {
+                validate_maint_config_tls_sni(value)?;
+                Some(value.as_bytes())
+            }
+            _ => None,
+        }
+    } else {
+        None
+    };
+    write_maint_config_record(
+        config.index,
+        config.host_ip,
+        maint_config_host_name_slice(&config),
+        https,
+        tls_sni,
+        config.port,
+        poll_path,
+        event_path,
+        config.count,
+        config.interval_ms,
+        if config.tls_pin_present {
+            Some(&config.tls_pin_sha256)
+        } else {
+            None
+        },
+    )
+}
+
 fn write_maint_config_record(
     index: usize,
     host_ip: [u8; 4],
     host_name: Option<&[u8]>,
+    https: bool,
+    tls_sni: Option<&[u8]>,
     port: u16,
     poll_path: &[u8],
     event_path: &[u8],
@@ -8884,6 +9002,15 @@ fn write_maint_config_record(
         };
         validate_maint_config_host_name(host_name_text)?;
     } else if !valid_unicast_ipv4(host_ip) {
+        return Err(MaintConfigError::BadHost);
+    }
+    if let Some(tls_sni) = tls_sni {
+        let Ok(tls_sni_text) = str::from_utf8(tls_sni) else {
+            return Err(MaintConfigError::BadHost);
+        };
+        validate_maint_config_tls_sni(tls_sni_text)?;
+    }
+    if https && host_name.is_none() && tls_sni.is_none() {
         return Err(MaintConfigError::BadHost);
     }
     if port == 0 {
@@ -8908,14 +9035,16 @@ fn write_maint_config_record(
     put_maint_config_path_chunks(MAINT_CONFIG_EVENT_PATH_ROW_BASE, event_path)?;
     put_maint_config_tls_pin_chunks(tls_pin_sha256)?;
     put_maint_config_host_chunks(host_name)?;
+    put_maint_config_tls_sni_chunks(tls_sni)?;
 
     let mut row = [0u8; MAINT_CONFIG_V4_ROW_BYTES];
     row[0..4].copy_from_slice(MAINT_CONFIG_MAGIC);
-    row[4] = if host_name.is_some() {
+    let version = if host_name.is_some() || https || tls_sni.is_some() {
         MAINT_CONFIG_VERSION_V4
     } else {
         MAINT_CONFIG_VERSION_V3
     };
+    row[4] = version;
     row[5] = index as u8;
     if let Some(host_name) = host_name {
         row[6] = host_name.len() as u8;
@@ -8939,8 +9068,18 @@ fn write_maint_config_record(
     if host_name.is_some() {
         flags |= MAINT_CONFIG_FLAG_HOST_NAME;
     }
+    if https {
+        flags |= MAINT_CONFIG_FLAG_HTTPS;
+    }
+    if tls_sni.is_some() {
+        flags |= MAINT_CONFIG_FLAG_TLS_SNI;
+    }
     row[19] = flags;
-    let crc = maint_config_record_crc(poll_path, event_path, host_name);
+    let crc = if version == MAINT_CONFIG_VERSION_V4 {
+        maint_config_record_crc(poll_path, event_path, host_name, https, tls_sni)
+    } else {
+        maint_config_paths_crc(poll_path, event_path)
+    };
     row[20] = crc as u8;
     row[21] = (crc >> 8) as u8;
     row[22] = (crc >> 16) as u8;
@@ -8989,7 +9128,10 @@ fn load_maint_config() -> Result<MaintConfig, MaintConfigError> {
         0
     };
     let allowed_flags = if version == MAINT_CONFIG_VERSION_V4 {
-        MAINT_CONFIG_FLAG_TLS_PIN | MAINT_CONFIG_FLAG_HOST_NAME
+        MAINT_CONFIG_FLAG_TLS_PIN
+            | MAINT_CONFIG_FLAG_HOST_NAME
+            | MAINT_CONFIG_FLAG_HTTPS
+            | MAINT_CONFIG_FLAG_TLS_SNI
     } else if version == MAINT_CONFIG_VERSION_V3 {
         MAINT_CONFIG_FLAG_TLS_PIN
     } else {
@@ -9019,6 +9161,21 @@ fn load_maint_config() -> Result<MaintConfig, MaintConfigError> {
     } else {
         [0, 0, 0, 0]
     };
+    let https = flags & MAINT_CONFIG_FLAG_HTTPS != 0;
+    let mut tls_sni = [0u8; MAINT_CONFIG_TLS_SNI_MAX_BYTES];
+    let tls_sni_len = if flags & MAINT_CONFIG_FLAG_TLS_SNI != 0 {
+        if version != MAINT_CONFIG_VERSION_V4 {
+            return Err(MaintConfigError::BadHost);
+        }
+        let (loaded_sni, loaded_len) = load_maint_config_tls_sni_chunks()?;
+        tls_sni = loaded_sni;
+        loaded_len
+    } else {
+        0
+    };
+    if https && host_name_len == 0 && tls_sni_len == 0 {
+        return Err(MaintConfigError::BadHost);
+    }
     let port = u16::from(row.value[10]) | (u16::from(row.value[11]) << 8);
     if port == 0 {
         return Err(MaintConfigError::BadPort);
@@ -9065,11 +9222,25 @@ fn load_maint_config() -> Result<MaintConfig, MaintConfigError> {
             } else {
                 None
             };
-            let actual_crc = maint_config_record_crc(
-                &poll_path[..poll_loaded_len],
-                &event_path[..event_loaded_len],
-                host_crc_slice,
-            );
+            let actual_crc = if version == MAINT_CONFIG_VERSION_V4 {
+                let sni_crc_slice = if tls_sni_len > 0 {
+                    Some(&tls_sni[..tls_sni_len])
+                } else {
+                    None
+                };
+                maint_config_record_crc(
+                    &poll_path[..poll_loaded_len],
+                    &event_path[..event_loaded_len],
+                    host_crc_slice,
+                    https,
+                    sni_crc_slice,
+                )
+            } else {
+                maint_config_paths_crc(
+                    &poll_path[..poll_loaded_len],
+                    &event_path[..event_loaded_len],
+                )
+            };
             if expected_crc != actual_crc {
                 return Err(MaintConfigError::BadPath);
             }
@@ -9092,6 +9263,9 @@ fn load_maint_config() -> Result<MaintConfig, MaintConfigError> {
         host_ip,
         host_name,
         host_name_len,
+        https,
+        tls_sni,
+        tls_sni_len,
         port,
         count,
         interval_ms,
@@ -9154,11 +9328,30 @@ fn validate_maint_config_host_name(host: &str) -> Result<usize, MaintConfigError
     Ok(bytes.len())
 }
 
+fn validate_maint_config_tls_sni(sni: &str) -> Result<usize, MaintConfigError> {
+    let bytes = sni.as_bytes();
+    if bytes.is_empty()
+        || bytes.len() > MAINT_CONFIG_TLS_SNI_MAX_BYTES
+        || !valid_tls_server_name(sni)
+    {
+        return Err(MaintConfigError::BadHost);
+    }
+    Ok(bytes.len())
+}
+
 fn maint_config_host_name_slice(config: &MaintConfig) -> Option<&[u8]> {
     if config.host_name_len == 0 {
         None
     } else {
         Some(&config.host_name[..config.host_name_len])
+    }
+}
+
+fn maint_config_tls_sni_slice(config: &MaintConfig) -> Option<&[u8]> {
+    if config.tls_sni_len == 0 {
+        None
+    } else {
+        Some(&config.tls_sni[..config.tls_sni_len])
     }
 }
 
@@ -9172,6 +9365,17 @@ fn write_maint_config_host<W: Write>(config: &MaintConfig, out: &mut W) -> fmt::
             "{}.{}.{}.{}",
             config.host_ip[0], config.host_ip[1], config.host_ip[2], config.host_ip[3]
         )
+    }
+}
+
+fn write_maint_config_tls_sni<W: Write>(config: &MaintConfig, out: &mut W) -> fmt::Result {
+    if let Some(tls_sni) = maint_config_tls_sni_slice(config) {
+        let sni = str::from_utf8(tls_sni).map_err(|_| fmt::Error)?;
+        out.write_str(sni)
+    } else if config.https {
+        write_maint_config_host(config, out)
+    } else {
+        out.write_str("none")
     }
 }
 
@@ -9275,6 +9479,36 @@ fn put_maint_config_host_chunks(host: Option<&[u8]>) -> Result<(), MaintConfigEr
     Ok(())
 }
 
+fn put_maint_config_tls_sni_chunks(sni: Option<&[u8]>) -> Result<(), MaintConfigError> {
+    for chunk in 0..MAINT_CONFIG_TLS_SNI_CHUNKS {
+        let key = maint_config_path_key(MAINT_CONFIG_TLS_SNI_ROW_BASE, chunk)?;
+        if let Some(sni) = sni {
+            let start = chunk * MAINT_CONFIG_PATH_CHUNK_BYTES;
+            if start < sni.len() {
+                let end = if start + MAINT_CONFIG_PATH_CHUNK_BYTES < sni.len() {
+                    start + MAINT_CONFIG_PATH_CHUNK_BYTES
+                } else {
+                    sni.len()
+                };
+                put_db_btree_row(key, &sni[start..end])?;
+            } else {
+                match delete_db_btree_row(key) {
+                    Ok((_info, _catalog, _root, _leaf)) => {}
+                    Err(DbError::KeyMissing | DbError::BtreeMissing) => {}
+                    Err(error) => return Err(MaintConfigError::Db(error)),
+                }
+            }
+        } else {
+            match delete_db_btree_row(key) {
+                Ok((_info, _catalog, _root, _leaf)) => {}
+                Err(DbError::KeyMissing | DbError::BtreeMissing) => {}
+                Err(error) => return Err(MaintConfigError::Db(error)),
+            }
+        }
+    }
+    Ok(())
+}
+
 fn load_maint_config_path_chunks(
     base_row: u64,
     len: usize,
@@ -9346,6 +9580,36 @@ fn load_maint_config_host_chunks(
     Ok((out, written))
 }
 
+fn load_maint_config_tls_sni_chunks(
+) -> Result<([u8; MAINT_CONFIG_TLS_SNI_MAX_BYTES], usize), MaintConfigError> {
+    let mut out = [0u8; MAINT_CONFIG_TLS_SNI_MAX_BYTES];
+    let mut written = 0usize;
+    for chunk in 0..MAINT_CONFIG_TLS_SNI_CHUNKS {
+        let key = maint_config_path_key(MAINT_CONFIG_TLS_SNI_ROW_BASE, chunk)?;
+        let (_info, _catalog, _root, _leaf, row) = match get_db_btree_row(key) {
+            Ok(value) => value,
+            Err(DbError::KeyMissing | DbError::BtreeMissing) => {
+                if written == 0 {
+                    return Err(MaintConfigError::BadHost);
+                }
+                break;
+            }
+            Err(error) => return Err(MaintConfigError::Db(error)),
+        };
+        if row.value_len == 0 || written + row.value_len > out.len() {
+            return Err(MaintConfigError::BadLength);
+        }
+        out[written..written + row.value_len].copy_from_slice(&row.value[..row.value_len]);
+        written += row.value_len;
+        if row.value_len < MAINT_CONFIG_PATH_CHUNK_BYTES {
+            break;
+        }
+    }
+    let sni = str::from_utf8(&out[..written]).map_err(|_| MaintConfigError::BadHost)?;
+    validate_maint_config_tls_sni(sni)?;
+    Ok((out, written))
+}
+
 fn load_maint_config_tls_pin_chunks() -> Result<[u8; 32], MaintConfigError> {
     let mut out = [0u8; 32];
     let mut written = 0usize;
@@ -9373,7 +9637,25 @@ fn load_maint_config_tls_pin_chunks() -> Result<[u8; 32], MaintConfigError> {
     Ok(out)
 }
 
-fn maint_config_record_crc(poll_path: &[u8], event_path: &[u8], host_name: Option<&[u8]>) -> u32 {
+fn maint_config_paths_crc(poll_path: &[u8], event_path: &[u8]) -> u32 {
+    let mut crc = 0xffff_ffffu32;
+    for &byte in poll_path {
+        crc = crc32_update(crc, byte);
+    }
+    crc = crc32_update(crc, 0);
+    for &byte in event_path {
+        crc = crc32_update(crc, byte);
+    }
+    !crc
+}
+
+fn maint_config_record_crc(
+    poll_path: &[u8],
+    event_path: &[u8],
+    host_name: Option<&[u8]>,
+    https: bool,
+    tls_sni: Option<&[u8]>,
+) -> u32 {
     let mut crc = 0xffff_ffffu32;
     for &byte in poll_path {
         crc = crc32_update(crc, byte);
@@ -9385,6 +9667,14 @@ fn maint_config_record_crc(poll_path: &[u8], event_path: &[u8], host_name: Optio
     if let Some(host_name) = host_name {
         crc = crc32_update(crc, 0);
         for &byte in host_name {
+            crc = crc32_update(crc, byte);
+        }
+    }
+    crc = crc32_update(crc, 0);
+    crc = crc32_update(crc, if https { 1 } else { 0 });
+    if let Some(tls_sni) = tls_sni {
+        crc = crc32_update(crc, 0);
+        for &byte in tls_sni {
             crc = crc32_update(crc, byte);
         }
     }
@@ -13441,6 +13731,48 @@ fn command_maint_config_pin(uart: &mut Uart, pin: Option<&str>, confirm: Option<
         }
         Err(error) => {
             let _ = writeln!(uart, "maint config-pin error: {}", error.as_str());
+        }
+    }
+}
+
+fn command_maint_config_tls(
+    uart: &mut Uart,
+    mode: Option<&str>,
+    sni_or_confirm: Option<&str>,
+    confirm: Option<&str>,
+) {
+    let Some(mode) = mode else {
+        uart.put_str("usage: maint config-tls <http|https> [sni|-] confirm\n");
+        return;
+    };
+    let (sni, confirm) = match (sni_or_confirm, confirm) {
+        (Some("confirm"), None) => (None, Some("confirm")),
+        (Some(value), Some(confirm)) => (Some(value), Some(confirm)),
+        _ => (None, None),
+    };
+    if confirm != Some("confirm") {
+        uart.put_str("usage: maint config-tls <http|https> [sni|-] confirm\n");
+        return;
+    }
+    let https = if mode.eq_ignore_ascii_case("https") {
+        true
+    } else if mode.eq_ignore_ascii_case("http") {
+        false
+    } else {
+        uart.put_str("maint config-tls error: mode must be http or https\n");
+        return;
+    };
+    match put_maint_config_tls(https, sni) {
+        Ok(()) => {
+            let _ = writeln!(
+                uart,
+                "maint config-tls scheme={} sni={}",
+                if https { "https" } else { "http" },
+                sni.unwrap_or("default")
+            );
+        }
+        Err(error) => {
+            let _ = writeln!(uart, "maint config-tls error: {}", error.as_str());
         }
     }
 }
@@ -19177,6 +19509,8 @@ fn net_handle_query_packet(
                 write_maint_config_set_query_summary(index, query, &mut reply);
             } else if query.starts_with("maint config-pin ") {
                 write_maint_config_pin_query_summary(query, &mut reply);
+            } else if query.starts_with("maint config-tls ") {
+                write_maint_config_tls_query_summary(query, &mut reply);
             } else if query.eq_ignore_ascii_case("maint config-status")
                 || query.eq_ignore_ascii_case("maint config-status confirm")
             {
