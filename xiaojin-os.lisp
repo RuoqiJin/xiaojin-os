@@ -214,12 +214,12 @@
       :purpose "Make the Realtek firmware bytes available in RAM for the next RTL8822CE loader step.")
     (stage wifi-mmio-snapshot
       :status implemented-readonly-after-bar-map
-      :commands [wifi mmio-snapshot]
-      :queries [xjq-wifi-mmio-snapshot]
+      :commands [wifi mmio-snapshot wifi mmio-fingerprint]
+      :queries [xjq-wifi-mmio-snapshot xjq-wifi-mmio-fingerprint]
       :requires [pcie2x1-enumeration firmware-ram-staging]
-      :implemented [pcie2-bar2-map pci-command-memory-master fixed-mmio-read-snapshot]
+      :implemented [pcie2-bar2-map pci-command-memory-master fixed-mmio-read-snapshot safe-4k-mmio-fingerprint]
       :safety "Writes only PCIe config/iATU state for the WiFi endpoint BAR2 mapping; reads WiFi MMIO registers without writing them."
-      :purpose "Collect first BAR2 register evidence needed before implementing the Realtek firmware/register loader.")
+      :purpose "Collect first BAR2 register evidence and a stable first-4KiB MMIO fingerprint needed before implementing the Realtek firmware/register loader.")
     (stage rtl8822ce-driver
       :status planned
       :requires [wifi-mmio-snapshot firmware-loader mmio-map dma-rings interrupts-or-polling regulatory-domain]
