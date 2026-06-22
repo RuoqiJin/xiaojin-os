@@ -234,12 +234,16 @@ provisioned and every executed query is audited in XiaojinDB. This is
 manual/bounded today. The board can persist the maintainer endpoint in
 XiaojinDB with
 `xjctl net-command "maint config-set <if> <host|ip> <port> <poll-path> <event-path> <count> <interval-ms> confirm"`,
-inspect it with `maint config-status`, and execute the saved bounded loop with
-`maint config-run`. The current v2 persistent format stores an IPv4 maintainer
-host in the fixed config row and stores custom poll/event paths as checked
-chunks in the XiaojinDB B-tree; old v1 rows still load with the default deployed
-public poll/event path pair. This lets one SD image persist a device-specific
-GCP VM queue path without rebuilding the OS. When the network listener starts
+add or clear a future HTTPS maintainer pin with `maint config-pin <sha256|none>
+confirm`, inspect it with `maint config-status`, and execute the saved bounded
+loop with `maint config-run`. The current v3 persistent format stores an IPv4
+maintainer host, count, interval, and pin-present flag in the fixed config row,
+stores custom poll/event paths as checked chunks in the XiaojinDB B-tree, and
+stores the optional first-certificate SHA-256 pin as separate B-tree chunks; old
+v1/v2 rows still load. This lets one SD image persist a device-specific GCP VM
+queue path and endpoint identity material without rebuilding the OS. The
+runtime poll itself is still the signed cleartext maintainer path until HTTPS
+polling lands. When the network listener starts
 without a serial escape, it performs one bounded `maint config-run` tick if a
 saved config exists, then continues serving local LAN control. The PostgreSQL
 backup lane now has a host-side backup-set path:

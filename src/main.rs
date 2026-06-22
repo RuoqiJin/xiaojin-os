@@ -333,8 +333,11 @@ const DB_TABLE_KEY_MAINT_CONFIG: u32 = 0x584a_4d43; // "XJMC"
 const MAINT_CONFIG_MAGIC: &[u8; 4] = b"XJMC";
 const MAINT_CONFIG_V1_ROW_BYTES: usize = 20;
 const MAINT_CONFIG_V2_ROW_BYTES: usize = DB_TABLE_VALUE_BYTES;
+const MAINT_CONFIG_V3_ROW_BYTES: usize = DB_TABLE_VALUE_BYTES;
 const MAINT_CONFIG_VERSION_V1: u8 = 1;
 const MAINT_CONFIG_VERSION_V2: u8 = 2;
+const MAINT_CONFIG_VERSION_V3: u8 = 3;
+const MAINT_CONFIG_FLAG_TLS_PIN: u8 = 1;
 const MAINT_CONFIG_PATH_MAX_BYTES: usize = 96;
 const MAINT_CONFIG_PATH_CHUNK_BYTES: usize = DB_TABLE_VALUE_BYTES;
 const MAINT_CONFIG_PATH_CHUNKS: usize =
@@ -343,6 +346,9 @@ const MAINT_CONFIG_PATH_CHUNKS: usize =
 const MAINT_CONFIG_PATH_TABLE: &str = "maint_config";
 const MAINT_CONFIG_POLL_PATH_ROW_BASE: u64 = 1;
 const MAINT_CONFIG_EVENT_PATH_ROW_BASE: u64 = 16;
+const MAINT_CONFIG_TLS_PIN_ROW_BASE: u64 = 32;
+const MAINT_CONFIG_TLS_PIN_CHUNKS: usize =
+    (32 + MAINT_CONFIG_PATH_CHUNK_BYTES - 1) / MAINT_CONFIG_PATH_CHUNK_BYTES;
 const MAINT_CONFIG_DEFAULT_POLL_PATH: &str = "/xiaojin-maintainer/device-pull/r5c-lab/poll.txt";
 const MAINT_CONFIG_DEFAULT_EVENT_PATH: &str = "/xiaojin-maintainer/device-pull/r5c-lab/events";
 const DB_WAL_KIND_TEST: u32 = 1;
@@ -1500,6 +1506,7 @@ enum MaintConfigError {
     BadInterval,
     BadLength,
     BadPath,
+    BadTlsPin,
 }
 
 impl MaintConfigError {
@@ -1515,6 +1522,7 @@ impl MaintConfigError {
             Self::BadInterval => "maint-config-bad-interval",
             Self::BadLength => "maint-config-bad-length",
             Self::BadPath => "maint-config-bad-path",
+            Self::BadTlsPin => "maint-config-bad-tls-pin",
         }
     }
 }
@@ -1539,6 +1547,8 @@ struct MaintConfig {
     poll_path_len: usize,
     event_path: [u8; MAINT_CONFIG_PATH_MAX_BYTES],
     event_path_len: usize,
+    tls_pin_present: bool,
+    tls_pin_sha256: [u8; 32],
 }
 
 #[derive(Clone, Copy)]
@@ -2647,6 +2657,7 @@ fn print_caps(uart: &mut Uart) {
     uart.put_str("  maint pull-exec yes\n");
     uart.put_str("  maint loop yes\n");
     uart.put_str("  maint ack-intent yes\n");
+    uart.put_str("  maint config-tls-pin yes\n");
     uart.put_str("  maint remote-event yes\n");
     uart.put_str("  maint local-audit yes\n");
     uart.put_str("  identity facts yes\n");
@@ -2681,7 +2692,7 @@ fn print_caps(uart: &mut Uart) {
 fn write_caps_query_summary<W: Write>(out: &mut W) {
     let _ = write!(
         out,
-        "XJQ OK caps net-dev=yes dhcp=yes auto-dhcp=yes route=yes arp=yes dns=yes tcp-connect=yes http-get=yes http-post=yes http-trace=yes http-debug=yes tls-clienthello=yes tls-aes128gcm-decrypt=yes tls-chacha20poly1305-decrypt=yes tls-handshake-parse=yes tls-certificate-list-parse=yes tls-first-certificate-sha256=yes tls-first-certificate-pin=yes maint-poll=yes maint-status=yes maint-pending-summary=yes maint-command-digest=yes maint-command-verify=yes maint-command-verify-hmac=yes maint-local-hmac-key=yes maint-pull-exec=yes maint-loop=yes maint-config=yes maint-config-paths=yes maint-cold-boot-tick=yes maint-ack-intent=yes maint-remote-event=yes maint-local-audit=yes identity=yes rng=development-hmac-drbg query=yes reboot=yes wifi=pcie-enum wifi-pcie=facts wifi-cru=read-only wifi-apb=read-only wifi-phy=read-only wifi-power=read-only wifi-link=read-only wifi-firmware=facts wifi-firmware-sd=confirm wifi-firmware-crc=confirm wifi-firmware-load=confirm wifi-mmio-snapshot=confirm wifi-mmio-fingerprint=confirm wifi-driver-gate=confirm wifi-rtw88-profile=read-only wifi-trace=confirm wifi-pcie-init=confirm wifi-pcie-init-high=confirm wifi-pcie-init-linux=confirm wifi-pcie-init-dt=confirm wifi-enum=confirm wifi-station=planned wifi-ap=planned sd-probe=yes sd-writer=yes ab-persist=yes boot-slot=extlinux db=page-store,catalog,wal,fixed-table,btree,btree-delete,table-namespace,event-log,blob-backup,blob-restore"
+        "XJQ OK caps net-dev=yes dhcp=yes auto-dhcp=yes route=yes arp=yes dns=yes tcp-connect=yes http-get=yes http-post=yes http-trace=yes http-debug=yes tls-clienthello=yes tls-aes128gcm-decrypt=yes tls-chacha20poly1305-decrypt=yes tls-handshake-parse=yes tls-certificate-list-parse=yes tls-first-certificate-sha256=yes tls-first-certificate-pin=yes maint-poll=yes maint-status=yes maint-pending-summary=yes maint-command-digest=yes maint-command-verify=yes maint-command-verify-hmac=yes maint-local-hmac-key=yes maint-pull-exec=yes maint-loop=yes maint-config=yes maint-config-paths=yes maint-config-tls-pin=yes maint-cold-boot-tick=yes maint-ack-intent=yes maint-remote-event=yes maint-local-audit=yes identity=yes rng=development-hmac-drbg query=yes reboot=yes wifi=pcie-enum wifi-pcie=facts wifi-cru=read-only wifi-apb=read-only wifi-phy=read-only wifi-power=read-only wifi-link=read-only wifi-firmware=facts wifi-firmware-sd=confirm wifi-firmware-crc=confirm wifi-firmware-load=confirm wifi-mmio-snapshot=confirm wifi-mmio-fingerprint=confirm wifi-driver-gate=confirm wifi-rtw88-profile=read-only wifi-trace=confirm wifi-pcie-init=confirm wifi-pcie-init-high=confirm wifi-pcie-init-linux=confirm wifi-pcie-init-dt=confirm wifi-enum=confirm wifi-station=planned wifi-ap=planned sd-probe=yes sd-writer=yes ab-persist=yes boot-slot=extlinux db=page-store,catalog,wal,fixed-table,btree,btree-delete,table-namespace,event-log,blob-backup,blob-restore"
     );
 }
 
@@ -4744,6 +4755,7 @@ fn command_maint<'a>(uart: &mut Uart, parts: &mut core::str::SplitWhitespace<'a>
             parts.next(),
             parts.next(),
         ),
+        Some("config-pin") => command_maint_config_pin(uart, parts.next(), parts.next()),
         Some("key-status") => command_maint_key_status(uart, parts.next()),
         Some("key-set") => command_maint_key_set(uart, parts.next(), parts.next()),
         Some("key-clear") => command_maint_key_clear(uart, parts.next()),
@@ -4781,6 +4793,7 @@ fn command_maint<'a>(uart: &mut Uart, parts: &mut core::str::SplitWhitespace<'a>
             uart.put_str(
                 "  maint loop <pcie3x1|pcie3x2|0|1> <host|ip> <port> <poll-path> <event-path> <count> <interval-ms> confirm\n",
             );
+            uart.put_str("  maint config-pin <sha256|none> confirm\n");
             uart.put_str("  maint key-status confirm\n");
             uart.put_str("  maint key-set <key-hex> confirm\n");
             uart.put_str("  maint key-clear confirm\n");
@@ -5946,6 +5959,35 @@ fn write_maint_config_set_query_summary<W: Write>(default_index: usize, query: &
     }
 }
 
+fn write_maint_config_pin_query_summary<W: Write>(query: &str, out: &mut W) {
+    let mut parts = query.split_whitespace();
+    let _maint = parts.next();
+    if parts.next() != Some("config-pin") {
+        let _ = write!(out, "XJQ ERR maint-config-pin-usage");
+        return;
+    }
+    let Some(pin) = parts.next() else {
+        let _ = write!(out, "XJQ ERR maint-config-pin-usage");
+        return;
+    };
+    if parts.next() != Some("confirm") || parts.next().is_some() {
+        let _ = write!(out, "XJQ ERR maint-config-pin-usage");
+        return;
+    }
+    if !pin.eq_ignore_ascii_case("none") && !is_sha256_hex(pin.as_bytes()) {
+        let _ = write!(out, "XJQ ERR maint-config-pin-bad-sha256");
+        return;
+    }
+    match put_maint_config_tls_pin(Some(pin)) {
+        Ok(()) => {
+            let _ = write!(out, "XJQ OK maint-config-pin tls-pin={pin}");
+        }
+        Err(error) => {
+            let _ = write!(out, "XJQ ERR maint-config-pin {}", error.as_str());
+        }
+    }
+}
+
 fn write_maint_config_status_summary<W: Write>(out: &mut W) {
     match load_maint_config() {
         Ok(config) => {
@@ -5955,7 +5997,7 @@ fn write_maint_config_status_summary<W: Write>(out: &mut W) {
                 str::from_utf8(&config.event_path[..config.event_path_len]).unwrap_or("/");
             let _ = write!(
                 out,
-                "XJQ OK maint-config iface={} host={}.{}.{}.{} port={} poll={} event={} count={} interval-ms={}",
+                "XJQ OK maint-config iface={} host={}.{}.{}.{} port={} poll={} event={} count={} interval-ms={} tls-pin=",
                 PCIE_CONTROLLERS[config.index].name,
                 config.host_ip[0],
                 config.host_ip[1],
@@ -5967,6 +6009,11 @@ fn write_maint_config_status_summary<W: Write>(out: &mut W) {
                 config.count,
                 config.interval_ms
             );
+            if config.tls_pin_present {
+                write_sha256_hex(out, &config.tls_pin_sha256);
+            } else {
+                let _ = write!(out, "none");
+            }
         }
         Err(error) => {
             let _ = write!(out, "XJQ ERR maint-config-status {}", error.as_str());
@@ -8742,8 +8789,73 @@ fn put_maint_config(
     if !valid_unicast_ipv4(host_ip) {
         return Err(MaintConfigError::BadHost);
     }
-    let poll_path_len = validate_maint_config_path(poll_path)?;
-    let event_path_len = validate_maint_config_path(event_path)?;
+    validate_maint_config_path(poll_path)?;
+    validate_maint_config_path(event_path)?;
+    if !(1..=4).contains(&count) {
+        return Err(MaintConfigError::BadCount);
+    }
+    if !(1_000..=600_000).contains(&interval_ms) || interval_ms > u32::MAX as u64 {
+        return Err(MaintConfigError::BadInterval);
+    }
+
+    write_maint_config_record(
+        index,
+        host_ip,
+        port,
+        poll_path.as_bytes(),
+        event_path.as_bytes(),
+        count,
+        interval_ms,
+        None,
+    )
+}
+
+fn put_maint_config_tls_pin(expected_sha: Option<&str>) -> Result<(), MaintConfigError> {
+    let config = load_maint_config()?;
+    let poll_path = &config.poll_path[..config.poll_path_len];
+    let event_path = &config.event_path[..config.event_path_len];
+    let tls_pin = match expected_sha {
+        Some(value) if value.eq_ignore_ascii_case("none") => None,
+        Some(value) => Some(parse_sha256_hex_array(value).ok_or(MaintConfigError::BadTlsPin)?),
+        None => None,
+    };
+    write_maint_config_record(
+        config.index,
+        config.host_ip,
+        config.port,
+        poll_path,
+        event_path,
+        config.count,
+        config.interval_ms,
+        tls_pin.as_ref(),
+    )
+}
+
+fn write_maint_config_record(
+    index: usize,
+    host_ip: [u8; 4],
+    port: u16,
+    poll_path: &[u8],
+    event_path: &[u8],
+    count: u64,
+    interval_ms: u64,
+    tls_pin_sha256: Option<&[u8; 32]>,
+) -> Result<(), MaintConfigError> {
+    let poll_path_len = poll_path.len();
+    let event_path_len = event_path.len();
+    if index >= RTL_DEVICE_COUNT {
+        return Err(MaintConfigError::BadInterface);
+    }
+    if port == 0 {
+        return Err(MaintConfigError::BadPort);
+    }
+    if poll_path_len == 0
+        || poll_path_len > MAINT_CONFIG_PATH_MAX_BYTES
+        || event_path_len == 0
+        || event_path_len > MAINT_CONFIG_PATH_MAX_BYTES
+    {
+        return Err(MaintConfigError::BadLength);
+    }
     if !(1..=4).contains(&count) {
         return Err(MaintConfigError::BadCount);
     }
@@ -8752,12 +8864,13 @@ fn put_maint_config(
     }
 
     ensure_maint_config_btree()?;
-    put_maint_config_path_chunks(MAINT_CONFIG_POLL_PATH_ROW_BASE, poll_path.as_bytes())?;
-    put_maint_config_path_chunks(MAINT_CONFIG_EVENT_PATH_ROW_BASE, event_path.as_bytes())?;
+    put_maint_config_path_chunks(MAINT_CONFIG_POLL_PATH_ROW_BASE, poll_path)?;
+    put_maint_config_path_chunks(MAINT_CONFIG_EVENT_PATH_ROW_BASE, event_path)?;
+    put_maint_config_tls_pin_chunks(tls_pin_sha256)?;
 
-    let mut row = [0u8; MAINT_CONFIG_V2_ROW_BYTES];
+    let mut row = [0u8; MAINT_CONFIG_V3_ROW_BYTES];
     row[0..4].copy_from_slice(MAINT_CONFIG_MAGIC);
-    row[4] = MAINT_CONFIG_VERSION_V2;
+    row[4] = MAINT_CONFIG_VERSION_V3;
     row[5] = index as u8;
     row[6..10].copy_from_slice(&host_ip);
     row[10] = port as u8;
@@ -8770,8 +8883,12 @@ fn put_maint_config(
     row[16] = (interval >> 16) as u8;
     row[17] = (interval >> 24) as u8;
     row[18] = event_path_len as u8;
-    row[19] = 0;
-    let crc = maint_config_paths_crc(poll_path.as_bytes(), event_path.as_bytes());
+    row[19] = if tls_pin_sha256.is_some() {
+        MAINT_CONFIG_FLAG_TLS_PIN
+    } else {
+        0
+    };
+    let crc = maint_config_paths_crc(poll_path, event_path);
     row[20] = crc as u8;
     row[21] = (crc >> 8) as u8;
     row[22] = (crc >> 16) as u8;
@@ -8782,23 +8899,26 @@ fn put_maint_config(
 
 fn load_maint_config() -> Result<MaintConfig, MaintConfigError> {
     let (_info, _catalog, _table, row) = get_db_row(DB_TABLE_KEY_MAINT_CONFIG)?;
-    if !matches!(
-        row.value_len,
-        MAINT_CONFIG_V1_ROW_BYTES | MAINT_CONFIG_V2_ROW_BYTES
-    ) {
+    if row.value_len != MAINT_CONFIG_V1_ROW_BYTES && row.value_len != DB_TABLE_VALUE_BYTES {
         return Err(MaintConfigError::BadLength);
     }
     if &row.value[0..4] != MAINT_CONFIG_MAGIC {
         return Err(MaintConfigError::BadMagic);
     }
     let version = row.value[4];
-    if !matches!(version, MAINT_CONFIG_VERSION_V1 | MAINT_CONFIG_VERSION_V2) {
+    if !matches!(
+        version,
+        MAINT_CONFIG_VERSION_V1 | MAINT_CONFIG_VERSION_V2 | MAINT_CONFIG_VERSION_V3
+    ) {
         return Err(MaintConfigError::BadMagic);
     }
     if version == MAINT_CONFIG_VERSION_V1 && row.value_len != MAINT_CONFIG_V1_ROW_BYTES {
         return Err(MaintConfigError::BadLength);
     }
     if version == MAINT_CONFIG_VERSION_V2 && row.value_len != MAINT_CONFIG_V2_ROW_BYTES {
+        return Err(MaintConfigError::BadLength);
+    }
+    if version == MAINT_CONFIG_VERSION_V3 && row.value_len != MAINT_CONFIG_V3_ROW_BYTES {
         return Err(MaintConfigError::BadLength);
     }
     let index = row.value[5] as usize;
@@ -8859,6 +8979,21 @@ fn load_maint_config() -> Result<MaintConfig, MaintConfigError> {
             }
             (poll_path, poll_loaded_len, event_path, event_loaded_len)
         };
+    let mut tls_pin_sha256 = [0u8; 32];
+    let tls_pin_present = if version == MAINT_CONFIG_VERSION_V3 {
+        let flags = row.value[19];
+        if flags & !MAINT_CONFIG_FLAG_TLS_PIN != 0 {
+            return Err(MaintConfigError::BadTlsPin);
+        }
+        if flags & MAINT_CONFIG_FLAG_TLS_PIN != 0 {
+            tls_pin_sha256 = load_maint_config_tls_pin_chunks()?;
+            true
+        } else {
+            false
+        }
+    } else {
+        false
+    };
     Ok(MaintConfig {
         index,
         host_ip,
@@ -8869,6 +9004,8 @@ fn load_maint_config() -> Result<MaintConfig, MaintConfigError> {
         poll_path_len,
         event_path,
         event_path_len,
+        tls_pin_present,
+        tls_pin_sha256,
     })
 }
 
@@ -8934,6 +9071,28 @@ fn put_maint_config_path_chunks(base_row: u64, bytes: &[u8]) -> Result<(), Maint
     Ok(())
 }
 
+fn put_maint_config_tls_pin_chunks(pin: Option<&[u8; 32]>) -> Result<(), MaintConfigError> {
+    for chunk in 0..MAINT_CONFIG_TLS_PIN_CHUNKS {
+        let key = maint_config_path_key(MAINT_CONFIG_TLS_PIN_ROW_BASE, chunk)?;
+        if let Some(pin) = pin {
+            let start = chunk * MAINT_CONFIG_PATH_CHUNK_BYTES;
+            let end = if start + MAINT_CONFIG_PATH_CHUNK_BYTES < pin.len() {
+                start + MAINT_CONFIG_PATH_CHUNK_BYTES
+            } else {
+                pin.len()
+            };
+            put_db_btree_row(key, &pin[start..end])?;
+        } else {
+            match delete_db_btree_row(key) {
+                Ok((_info, _catalog, _root, _leaf)) => {}
+                Err(DbError::KeyMissing | DbError::BtreeMissing) => {}
+                Err(error) => return Err(MaintConfigError::Db(error)),
+            }
+        }
+    }
+    Ok(())
+}
+
 fn load_maint_config_path_chunks(
     base_row: u64,
     len: usize,
@@ -8968,6 +9127,33 @@ fn load_maint_config_path_chunks(
     let path = str::from_utf8(&out[..written]).map_err(|_| MaintConfigError::BadPath)?;
     validate_maint_config_path(path)?;
     Ok((out, written))
+}
+
+fn load_maint_config_tls_pin_chunks() -> Result<[u8; 32], MaintConfigError> {
+    let mut out = [0u8; 32];
+    let mut written = 0usize;
+    for chunk in 0..MAINT_CONFIG_TLS_PIN_CHUNKS {
+        let key = maint_config_path_key(MAINT_CONFIG_TLS_PIN_ROW_BASE, chunk)?;
+        let (_info, _catalog, _root, _leaf, row) = match get_db_btree_row(key) {
+            Ok(value) => value,
+            Err(DbError::KeyMissing | DbError::BtreeMissing) => {
+                return Err(MaintConfigError::BadTlsPin);
+            }
+            Err(error) => return Err(MaintConfigError::Db(error)),
+        };
+        let remaining = out.len() - written;
+        let expected = if MAINT_CONFIG_PATH_CHUNK_BYTES < remaining {
+            MAINT_CONFIG_PATH_CHUNK_BYTES
+        } else {
+            remaining
+        };
+        if row.value_len != expected {
+            return Err(MaintConfigError::BadTlsPin);
+        }
+        out[written..written + expected].copy_from_slice(&row.value[..expected]);
+        written += expected;
+    }
+    Ok(out)
 }
 
 fn maint_config_paths_crc(poll_path: &[u8], event_path: &[u8]) -> u32 {
@@ -13009,6 +13195,31 @@ fn command_maint_key_status(uart: &mut Uart, confirm: Option<&str>) {
     }
     write_maint_key_status_summary(uart);
     uart.put_str("\n");
+}
+
+fn command_maint_config_pin(uart: &mut Uart, pin: Option<&str>, confirm: Option<&str>) {
+    if confirm != Some("confirm") {
+        uart.put_str("usage: maint config-pin <sha256|none> confirm\n");
+        return;
+    }
+    let Some(pin) = pin else {
+        uart.put_str("missing pin\n");
+        return;
+    };
+    if !pin.eq_ignore_ascii_case("none") && !is_sha256_hex(pin.as_bytes()) {
+        uart.put_str("invalid SHA-256 hex pin; expected 64 hex characters or none\n");
+        return;
+    }
+    match put_maint_config_tls_pin(Some(pin)) {
+        Ok(()) => {
+            uart.put_str("maint config-pin tls-pin=");
+            uart.put_str(pin);
+            uart.put_str("\n");
+        }
+        Err(error) => {
+            let _ = writeln!(uart, "maint config-pin error: {}", error.as_str());
+        }
+    }
 }
 
 fn command_maint_key_set(uart: &mut Uart, key_hex: Option<&str>, confirm: Option<&str>) {
@@ -18629,6 +18840,8 @@ fn net_handle_query_packet(
                 write_maint_loop_query_summary(index, query, &mut reply);
             } else if query.starts_with("maint config-set ") {
                 write_maint_config_set_query_summary(index, query, &mut reply);
+            } else if query.starts_with("maint config-pin ") {
+                write_maint_config_pin_query_summary(query, &mut reply);
             } else if query.eq_ignore_ascii_case("maint config-status")
                 || query.eq_ignore_ascii_case("maint config-status confirm")
             {
@@ -22154,6 +22367,16 @@ fn sha256_hex_matches(digest: &[u8; 32], expected: &[u8]) -> bool {
         }
     }
     true
+}
+
+fn parse_sha256_hex_array(value: &str) -> Option<[u8; 32]> {
+    let mut out = [0u8; 32];
+    let len = decode_hex_to_buf(value.as_bytes(), &mut out)?;
+    if len == out.len() && is_sha256_hex(value.as_bytes()) {
+        Some(out)
+    } else {
+        None
+    }
 }
 
 fn write_sha256_hex<W: Write>(out: &mut W, digest: &[u8; 32]) {

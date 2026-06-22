@@ -146,8 +146,8 @@
       :purpose "Prove Xiaojin OS can move from DNS/TCP to the TLS key-agreement, record-key schedule, and first encrypted handshake record layer without claiming full TLS yet.")
     (stage maintainer-poll-client
       :status implemented-narrow-signed-exec
-      :implemented [maint-poll maint-status maint-audit maint-verify maint-verify-hmac maint-local-hmac-key maint-pull-exec maint-loop-bounded maint-loop-xjq-compact maint-config-persistent maint-config-run maint-cold-boot-tick maint-ack-intent public-poll-text-parse command-digest-check hmac-command-signature-check xiaojindb-audit-event http-post-event]
-      :next [scheduled-cold-boot-maint-loop signed-artifact-fetch tls-client]
+      :implemented [maint-poll maint-status maint-audit maint-verify maint-verify-hmac maint-local-hmac-key maint-pull-exec maint-loop-bounded maint-loop-xjq-compact maint-config-persistent maint-config-run maint-config-tls-pin-persistent maint-cold-boot-tick maint-ack-intent public-poll-text-parse command-digest-check hmac-command-signature-check xiaojindb-audit-event http-post-event]
+      :next [scheduled-cold-boot-maint-loop signed-artifact-fetch https-poll tls-client]
       :purpose "Let Xiaojin OS poll the GCP maintainer, verify a narrow signed public xj_query command, execute it locally, write XiaojinDB audit events, persist a bounded maintainer endpoint config, and run bounded device-side loops from UART, compact Ethernet XJQ control, saved config, or one listener-start maintenance tick before scheduled autonomous maintenance is enabled.")
     (stage udp-query-control
       :status implemented-readonly
