@@ -1753,6 +1753,116 @@ const RTL_WIFI_MMIO_SNAPSHOT_OFFSETS: &[u64] = &[
 const RTL_WIFI_MMIO_FINGERPRINT_BYTES: u64 = 0x1000;
 const RTL_WIFI_MMIO_FINGERPRINT_STEP: u64 = 4;
 
+#[derive(Clone, Copy)]
+struct WifiRtw88ProfileReg {
+    name: &'static str,
+    offset: u64,
+    width: u8,
+}
+
+const RTL_WIFI_RTW88_PROFILE_REGS: &[WifiRtw88ProfileReg] = &[
+    WifiRtw88ProfileReg {
+        name: "sys-func-en",
+        offset: 0x0002,
+        width: 2,
+    },
+    WifiRtw88ProfileReg {
+        name: "hci-opt-ctrl",
+        offset: 0x0074,
+        width: 4,
+    },
+    WifiRtw88ProfileReg {
+        name: "mcufw-ctrl",
+        offset: 0x0080,
+        width: 4,
+    },
+    WifiRtw88ProfileReg {
+        name: "pci-himr0",
+        offset: 0x00b0,
+        width: 4,
+    },
+    WifiRtw88ProfileReg {
+        name: "pci-hisr0",
+        offset: 0x00b4,
+        width: 4,
+    },
+    WifiRtw88ProfileReg {
+        name: "pci-himr1",
+        offset: 0x00b8,
+        width: 4,
+    },
+    WifiRtw88ProfileReg {
+        name: "pci-hisr1",
+        offset: 0x00bc,
+        width: 4,
+    },
+    WifiRtw88ProfileReg {
+        name: "cr",
+        offset: 0x0100,
+        width: 1,
+    },
+    WifiRtw88ProfileReg {
+        name: "txdma-status",
+        offset: 0x0210,
+        width: 4,
+    },
+    WifiRtw88ProfileReg {
+        name: "rxdma-status",
+        offset: 0x0288,
+        width: 4,
+    },
+    WifiRtw88ProfileReg {
+        name: "pci-ctrl",
+        offset: 0x0300,
+        width: 4,
+    },
+    WifiRtw88ProfileReg {
+        name: "rxbd-desa-mpduq",
+        offset: 0x0338,
+        width: 4,
+    },
+    WifiRtw88ProfileReg {
+        name: "rxbd-num-mpduq",
+        offset: 0x0382,
+        width: 2,
+    },
+    WifiRtw88ProfileReg {
+        name: "rxbd-idx-mpduq",
+        offset: 0x03b4,
+        width: 2,
+    },
+    WifiRtw88ProfileReg {
+        name: "bcn-ctrl",
+        offset: 0x0550,
+        width: 1,
+    },
+    WifiRtw88ProfileReg {
+        name: "pcie-link-cfg",
+        offset: 0x0719,
+        width: 1,
+    },
+    WifiRtw88ProfileReg {
+        name: "pcie-clkdly-ctrl",
+        offset: 0x0725,
+        width: 1,
+    },
+    WifiRtw88ProfileReg {
+        name: "crc-vht",
+        offset: 0x0f0c,
+        width: 4,
+    },
+    WifiRtw88ProfileReg {
+        name: "pci-hisr2",
+        offset: 0x10b4,
+        width: 4,
+    },
+    WifiRtw88ProfileReg {
+        name: "txbd-idx-h2cq",
+        offset: 0x132c,
+        width: 2,
+    },
+];
+
 const PCIE2_CONTROLLER: PcieController = PcieController {
     name: "pcie2x1",
     apb_base: PCIE2X1_APB_BASE,
@@ -2382,6 +2492,9 @@ fn print_help(uart: &mut Uart) {
     uart.put_str("  wifi mmio-fingerprint confirm\n");
     uart.put_str("                       map WiFi BAR2 and fingerprint first 4KiB safely\n");
     uart.put_str("  wifi driver-gate [chip|auto] confirm\n");
+    uart.put_str("                       validate rtw88 firmware/PCIe/MMIO readiness gate\n");
+    uart.put_str("  wifi rtw88-profile confirm\n");
+    uart.put_str("                       read selected Linux rtw88 PCI/MMIO status registers\n");
     uart.put_str("                       report readiness for the first RTL WiFi driver writes\n");
     uart.put_str("  wifi trace confirm   retrain PCIe2 and show LTSSM debug FIFO evidence\n");
     uart.put_str("  wifi sideband <in|low|high> confirm\n");
@@ -2548,6 +2661,7 @@ fn print_caps(uart: &mut Uart) {
     uart.put_str("  wifi mmio-snapshot-confirm yes\n");
     uart.put_str("  wifi mmio-fingerprint-confirm yes\n");
     uart.put_str("  wifi driver-gate-confirm yes\n");
+    uart.put_str("  wifi rtw88-profile-readonly yes\n");
     uart.put_str("  wifi station planned\n");
     uart.put_str("  wifi ap planned\n");
     uart.put_str("  sd probe-readonly yes\n");
@@ -2566,7 +2680,7 @@ fn print_caps(uart: &mut Uart) {
 fn write_caps_query_summary<W: Write>(out: &mut W) {
     let _ = write!(
         out,
-        "XJQ OK caps net-dev=yes dhcp=yes auto-dhcp=yes route=yes arp=yes dns=yes tcp-connect=yes http-get=yes http-post=yes http-trace=yes http-debug=yes tls-clienthello=yes tls-aes128gcm-decrypt=yes tls-chacha20poly1305-decrypt=yes tls-handshake-parse=yes tls-certificate-list-parse=yes tls-first-certificate-sha256=yes maint-poll=yes maint-status=yes maint-pending-summary=yes maint-command-digest=yes maint-command-verify=yes maint-command-verify-hmac=yes maint-local-hmac-key=yes maint-pull-exec=yes maint-loop=yes maint-config=yes maint-config-paths=yes maint-cold-boot-tick=yes maint-ack-intent=yes maint-remote-event=yes maint-local-audit=yes identity=yes rng=development-hmac-drbg query=yes reboot=yes wifi=pcie-enum wifi-pcie=facts wifi-cru=read-only wifi-apb=read-only wifi-phy=read-only wifi-power=read-only wifi-link=read-only wifi-firmware=facts wifi-firmware-sd=confirm wifi-firmware-crc=confirm wifi-firmware-load=confirm wifi-mmio-snapshot=confirm wifi-mmio-fingerprint=confirm wifi-driver-gate=confirm wifi-trace=confirm wifi-pcie-init=confirm wifi-pcie-init-high=confirm wifi-pcie-init-linux=confirm wifi-pcie-init-dt=confirm wifi-enum=confirm wifi-station=planned wifi-ap=planned sd-probe=yes sd-writer=yes ab-persist=yes boot-slot=extlinux db=page-store,catalog,wal,fixed-table,btree,btree-delete,table-namespace,event-log,blob-backup,blob-restore"
+        "XJQ OK caps net-dev=yes dhcp=yes auto-dhcp=yes route=yes arp=yes dns=yes tcp-connect=yes http-get=yes http-post=yes http-trace=yes http-debug=yes tls-clienthello=yes tls-aes128gcm-decrypt=yes tls-chacha20poly1305-decrypt=yes tls-handshake-parse=yes tls-certificate-list-parse=yes tls-first-certificate-sha256=yes maint-poll=yes maint-status=yes maint-pending-summary=yes maint-command-digest=yes maint-command-verify=yes maint-command-verify-hmac=yes maint-local-hmac-key=yes maint-pull-exec=yes maint-loop=yes maint-config=yes maint-config-paths=yes maint-cold-boot-tick=yes maint-ack-intent=yes maint-remote-event=yes maint-local-audit=yes identity=yes rng=development-hmac-drbg query=yes reboot=yes wifi=pcie-enum wifi-pcie=facts wifi-cru=read-only wifi-apb=read-only wifi-phy=read-only wifi-power=read-only wifi-link=read-only wifi-firmware=facts wifi-firmware-sd=confirm wifi-firmware-crc=confirm wifi-firmware-load=confirm wifi-mmio-snapshot=confirm wifi-mmio-fingerprint=confirm wifi-driver-gate=confirm wifi-rtw88-profile=read-only wifi-trace=confirm wifi-pcie-init=confirm wifi-pcie-init-high=confirm wifi-pcie-init-linux=confirm wifi-pcie-init-dt=confirm wifi-enum=confirm wifi-station=planned wifi-ap=planned sd-probe=yes sd-writer=yes ab-persist=yes boot-slot=extlinux db=page-store,catalog,wal,fixed-table,btree,btree-delete,table-namespace,event-log,blob-backup,blob-restore"
     );
 }
 
@@ -2765,6 +2879,7 @@ fn command_wifi<'a>(uart: &mut Uart, parts: &mut core::str::SplitWhitespace<'a>)
         Some("mmio-snapshot") => command_wifi_mmio_snapshot(uart, parts.next()),
         Some("mmio-fingerprint") => command_wifi_mmio_fingerprint(uart, parts.next()),
         Some("driver-gate") => command_wifi_driver_gate(uart, parts.next(), parts.next()),
+        Some("rtw88-profile") => command_wifi_rtw88_profile(uart, parts.next()),
         Some("trace") => command_wifi_trace(uart, parts.next()),
         Some("sideband") => command_wifi_sideband(uart, parts.next(), parts.next()),
         Some("pcie-init") => command_wifi_pcie_init(uart, parts.next()),
@@ -2793,6 +2908,7 @@ fn command_wifi<'a>(uart: &mut Uart, parts: &mut core::str::SplitWhitespace<'a>)
             uart.put_str("  wifi mmio-snapshot confirm\n");
             uart.put_str("  wifi mmio-fingerprint confirm\n");
             uart.put_str("  wifi driver-gate [chip|auto] confirm\n");
+            uart.put_str("  wifi rtw88-profile confirm\n");
             uart.put_str("  wifi trace confirm\n");
             uart.put_str("  wifi sideband <in|low|high> confirm\n");
             uart.put_str("  wifi pcie-init confirm\n");
@@ -2911,6 +3027,15 @@ fn command_wifi_driver_gate(uart: &mut Uart, first: Option<&str>, second: Option
         return;
     }
     print_wifi_driver_gate(uart, chip);
+}
+
+fn command_wifi_rtw88_profile(uart: &mut Uart, confirm: Option<&str>) {
+    if !matches!(confirm, Some(value) if value.eq_ignore_ascii_case("confirm")) {
+        uart.put_str("usage: wifi rtw88-profile confirm\n");
+        uart.put_str("scope: initialize PCIe2, map BAR2, and read selected Linux rtw88 PCI/MMIO status registers only\n");
+        return;
+    }
+    print_wifi_rtw88_profile(uart);
 }
 
 fn print_wifi_firmware_sd<W: Write>(out: &mut W) {
@@ -3055,6 +3180,54 @@ fn print_wifi_mmio_fingerprint<W: Write>(out: &mut W) {
 fn print_wifi_driver_gate<W: Write>(out: &mut W, chip: &str) {
     let _ = writeln!(out, "wifi driver gate:");
     write_wifi_driver_gate_summary_inner(out, chip, true);
+}
+
+fn print_wifi_rtw88_profile<W: Write>(out: &mut W) {
+    let _ = writeln!(out, "wifi rtw88 profile:");
+    write_wifi_rtw88_profile_human(out);
+}
+
+fn write_wifi_rtw88_profile_human<W: Write>(out: &mut W) {
+    let result = wifi_pcie2_init_sequence_dt_order();
+    let _ = writeln!(
+        out,
+        "  pcie2-link      {} ltssm=0x{:08x}",
+        if result.link_up { "up" } else { "down" },
+        result.ltssm
+    );
+    if !result.link_up {
+        let _ = writeln!(out, "  endpoint        skipped; PCIe2 link is not up");
+        return;
+    }
+
+    let Some(config) = wifi_pcie2_endpoint_config() else {
+        let _ = writeln!(out, "  endpoint        absent-or-unreadable");
+        return;
+    };
+    print_wifi_endpoint_config(out, config);
+    let (bar2, command) = wifi_pcie2_map_bar2(config);
+    let _ = writeln!(out, "  source          linux-rtw88-readonly-profile");
+    let _ = writeln!(out, "  mapped-bar2     0x{bar2:016x}");
+    let _ = writeln!(out, "  mapped-size     0x{RTL_WIFI_BAR2_SIZE:05x}");
+    let _ = writeln!(out, "  command-after   0x{command:08x}");
+    for reg in RTL_WIFI_RTW88_PROFILE_REGS {
+        match wifi_rtw88_read_profile_reg(bar2, *reg) {
+            Ok(value) => {
+                let _ = writeln!(
+                    out,
+                    "  {:<18} +0x{:04x}/{} 0x{:08x}",
+                    reg.name, reg.offset, reg.width, value
+                );
+            }
+            Err(_) => {
+                let _ = writeln!(
+                    out,
+                    "  {:<18} +0x{:04x}/{} fault",
+                    reg.name, reg.offset, reg.width
+                );
+            }
+        }
+    }
 }
 
 fn write_wifi_mmio_fingerprint_sample<W: Write>(
@@ -4361,6 +4534,55 @@ fn write_wifi_mmio_fingerprint_summary<W: Write>(out: &mut W) {
     write_wifi_mmio_fingerprint_summary_sample(out, "last-readable", fp.last_readable);
     write_wifi_mmio_fingerprint_summary_sample(out, "first-nonzero", fp.first_nonzero);
     write_wifi_mmio_fingerprint_summary_sample(out, "first-not-ones", fp.first_not_ones);
+}
+
+fn write_wifi_rtw88_profile_summary<W: Write>(out: &mut W) {
+    let result = wifi_pcie2_init_sequence_dt_order();
+    let _ = write!(
+        out,
+        "OK wifi-rtw88-profile source=linux-rtw88-readonly regs={} link={} ltssm=0x{:08x}",
+        RTL_WIFI_RTW88_PROFILE_REGS.len(),
+        if result.link_up { "up" } else { "down" },
+        result.ltssm
+    );
+    if !result.link_up {
+        let _ = write!(out, " endpoint=skipped");
+        return;
+    }
+
+    let Some(config) = wifi_pcie2_endpoint_config() else {
+        let _ = write!(out, " endpoint=absent-or-unreadable");
+        return;
+    };
+    let vendor = (config.cfg0 & 0xffff) as u16;
+    let device = (config.cfg0 >> 16) as u16;
+    let (bar2, command) = wifi_pcie2_map_bar2(config);
+    let _ = write!(
+        out,
+        " endpoint={} vendor=0x{vendor:04x} device=0x{device:04x} bar2=0x{bar2:016x} size=0x{RTL_WIFI_BAR2_SIZE:05x} command=0x{command:08x}",
+        wifi_endpoint_name(vendor, device)
+    );
+    for reg in RTL_WIFI_RTW88_PROFILE_REGS {
+        match wifi_rtw88_read_profile_reg(bar2, *reg) {
+            Ok(value) => {
+                let _ = write!(out, " r{:04x}w{}=0x{value:08x}", reg.offset, reg.width);
+            }
+            Err(_) => {
+                let _ = write!(out, " r{:04x}w{}=fault", reg.offset, reg.width);
+            }
+        }
+    }
+}
+
+fn wifi_rtw88_read_profile_reg(
+    bar2: u64,
+    reg: WifiRtw88ProfileReg,
+) -> Result<u32, ExceptionSnapshot> {
+    match reg.width {
+        1 => probe_read8(bar2 + reg.offset).map(u32::from),
+        2 => probe_read16(bar2 + reg.offset).map(u32::from),
+        _ => probe_read32(bar2 + reg.offset),
+    }
 }
 
 fn write_wifi_mmio_fingerprint_summary_sample<W: Write>(
@@ -18314,6 +18536,9 @@ fn net_handle_query_packet(
                 } else {
                     let _ = write!(reply, "XJQ ERR wifi-driver-gate-usage");
                 }
+            } else if query.eq_ignore_ascii_case("wifi rtw88-profile confirm") {
+                let _ = write!(reply, "XJQ ");
+                write_wifi_rtw88_profile_summary(&mut reply);
             } else if query.eq_ignore_ascii_case("wifi trace confirm") {
                 let _ = write!(reply, "XJQ OK ");
                 write_wifi_trace_summary(&mut reply);
@@ -21515,6 +21740,48 @@ fn probe_read32(addr: u64) -> Result<u32, ExceptionSnapshot> {
         Err(unsafe { LAST_EXCEPTION })
     } else {
         Ok(value)
+    }
+}
+
+fn probe_read16(addr: u64) -> Result<u16, ExceptionSnapshot> {
+    let mut value: u32 = 0;
+    probe_flag_set(addr_of_mut!(PROBE_FAULTED), false);
+    probe_flag_set(addr_of_mut!(PROBE_ACTIVE), true);
+    unsafe {
+        asm!(
+            "ldrh {value:w}, [{addr}]",
+            addr = in(reg) addr as usize,
+            value = inout(reg) value,
+            options(nostack, preserves_flags)
+        );
+    }
+    probe_flag_set(addr_of_mut!(PROBE_ACTIVE), false);
+
+    if probe_flag_take(addr_of_mut!(PROBE_FAULTED)) {
+        Err(unsafe { LAST_EXCEPTION })
+    } else {
+        Ok(value as u16)
+    }
+}
+
+fn probe_read8(addr: u64) -> Result<u8, ExceptionSnapshot> {
+    let mut value: u32 = 0;
+    probe_flag_set(addr_of_mut!(PROBE_FAULTED), false);
+    probe_flag_set(addr_of_mut!(PROBE_ACTIVE), true);
+    unsafe {
+        asm!(
+            "ldrb {value:w}, [{addr}]",
+            addr = in(reg) addr as usize,
+            value = inout(reg) value,
+            options(nostack, preserves_flags)
+        );
+    }
+    probe_flag_set(addr_of_mut!(PROBE_ACTIVE), false);
+
+    if probe_flag_take(addr_of_mut!(PROBE_FAULTED)) {
+        Err(unsafe { LAST_EXCEPTION })
+    } else {
+        Ok(value as u8)
     }
 }
 

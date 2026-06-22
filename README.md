@@ -317,8 +317,12 @@ evidence gate before Realtek firmware/register writes. `wifi driver-gate
 <chip|auto> confirm` combines firmware RAM staging, PCIe2 endpoint identity,
 BAR2 mapping, PCI Memory/BusMaster state, and the MMIO fingerprint into a
 machine-readable `ready=yes|no` gate for the first RTL register-loader
-experiment; it still does not write WiFi MMIO registers. Station mode and AP
-mode are not implemented yet. `wifi pcie-init confirm` / `xjctl wifi-init` is the first write-stage probe: it
+experiment; it still does not write WiFi MMIO registers. `wifi rtw88-profile
+confirm` maps BAR2 and reads a curated, read-only Linux `rtw88` PCI/MMIO
+register profile using 8/16/32-bit probe reads as appropriate, so non-aligned
+Realtek status registers can be captured without provoking a system halt.
+Station mode and AP mode are not implemented yet. `wifi pcie-init confirm` /
+`xjctl wifi-init` is the first write-stage probe: it
 initializes only the PCIe2/combphy2 WiFi path, waits for LTSSM, and reads config
 word 0 when the link comes up. `wifi pcie-init-dt confirm` / `xjctl
 wifi-init-dt` is the narrower device-tree-aligned probe: it only drives the
