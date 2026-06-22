@@ -1253,6 +1253,11 @@ struct TlsClientHelloResult {
     decrypted_certificate_list_complete: bool,
     decrypted_certificate_verify: bool,
     decrypted_finished: bool,
+    server_finished_len: Option<u16>,
+    server_finished_transcript_sha256: Option<[u8; 32]>,
+    server_finished_verify_data_sha256: Option<[u8; 32]>,
+    server_finished_expected_sha256: Option<[u8; 32]>,
+    server_finished_verified: bool,
     decrypted_handshake_parse_complete: bool,
     sample_len: usize,
     sample: [u8; HTTP_RESPONSE_SAMPLE_BYTES],
@@ -2644,6 +2649,7 @@ fn print_caps(uart: &mut Uart) {
     uart.put_str("  net tls-certificate-list-parse yes\n");
     uart.put_str("  net tls-first-certificate-sha256 yes\n");
     uart.put_str("  net tls-first-certificate-pin yes\n");
+    uart.put_str("  net tls-server-finished-verify yes\n");
     uart.put_str("  net udp-dhcp-control yes\n");
     uart.put_str("  net udp-query-control yes\n");
     uart.put_str("  net routed-udp-loader yes\n");
@@ -2692,7 +2698,7 @@ fn print_caps(uart: &mut Uart) {
 fn write_caps_query_summary<W: Write>(out: &mut W) {
     let _ = write!(
         out,
-        "XJQ OK caps net-dev=yes dhcp=yes auto-dhcp=yes route=yes arp=yes dns=yes tcp-connect=yes http-get=yes http-post=yes http-trace=yes http-debug=yes tls-clienthello=yes tls-aes128gcm-decrypt=yes tls-chacha20poly1305-decrypt=yes tls-handshake-parse=yes tls-certificate-list-parse=yes tls-first-certificate-sha256=yes tls-first-certificate-pin=yes maint-poll=yes maint-status=yes maint-pending-summary=yes maint-command-digest=yes maint-command-verify=yes maint-command-verify-hmac=yes maint-local-hmac-key=yes maint-pull-exec=yes maint-loop=yes maint-config=yes maint-config-paths=yes maint-config-tls-pin=yes maint-cold-boot-tick=yes maint-ack-intent=yes maint-remote-event=yes maint-local-audit=yes identity=yes rng=development-hmac-drbg query=yes reboot=yes wifi=pcie-enum wifi-pcie=facts wifi-cru=read-only wifi-apb=read-only wifi-phy=read-only wifi-power=read-only wifi-link=read-only wifi-firmware=facts wifi-firmware-sd=confirm wifi-firmware-crc=confirm wifi-firmware-load=confirm wifi-mmio-snapshot=confirm wifi-mmio-fingerprint=confirm wifi-driver-gate=confirm wifi-rtw88-profile=read-only wifi-trace=confirm wifi-pcie-init=confirm wifi-pcie-init-high=confirm wifi-pcie-init-linux=confirm wifi-pcie-init-dt=confirm wifi-enum=confirm wifi-station=planned wifi-ap=planned sd-probe=yes sd-writer=yes ab-persist=yes boot-slot=extlinux db=page-store,catalog,wal,fixed-table,btree,btree-delete,table-namespace,event-log,blob-backup,blob-restore"
+        "XJQ OK caps net-dev=yes dhcp=yes auto-dhcp=yes route=yes arp=yes dns=yes tcp-connect=yes http-get=yes http-post=yes http-trace=yes http-debug=yes tls-clienthello=yes tls-aes128gcm-decrypt=yes tls-chacha20poly1305-decrypt=yes tls-handshake-parse=yes tls-certificate-list-parse=yes tls-first-certificate-sha256=yes tls-first-certificate-pin=yes tls-server-finished-verify=yes maint-poll=yes maint-status=yes maint-pending-summary=yes maint-command-digest=yes maint-command-verify=yes maint-command-verify-hmac=yes maint-local-hmac-key=yes maint-pull-exec=yes maint-loop=yes maint-config=yes maint-config-paths=yes maint-config-tls-pin=yes maint-cold-boot-tick=yes maint-ack-intent=yes maint-remote-event=yes maint-local-audit=yes identity=yes rng=development-hmac-drbg query=yes reboot=yes wifi=pcie-enum wifi-pcie=facts wifi-cru=read-only wifi-apb=read-only wifi-phy=read-only wifi-power=read-only wifi-link=read-only wifi-firmware=facts wifi-firmware-sd=confirm wifi-firmware-crc=confirm wifi-firmware-load=confirm wifi-mmio-snapshot=confirm wifi-mmio-fingerprint=confirm wifi-driver-gate=confirm wifi-rtw88-profile=read-only wifi-trace=confirm wifi-pcie-init=confirm wifi-pcie-init-high=confirm wifi-pcie-init-linux=confirm wifi-pcie-init-dt=confirm wifi-enum=confirm wifi-station=planned wifi-ap=planned sd-probe=yes sd-writer=yes ab-persist=yes boot-slot=extlinux db=page-store,catalog,wal,fixed-table,btree,btree-delete,table-namespace,event-log,blob-backup,blob-restore"
     );
 }
 
@@ -5270,7 +5276,7 @@ fn write_net_tls_query_summary<W: Write>(default_index: usize, query: &str, out:
         Ok(result) => {
             let _ = write!(
                 out,
-                "XJQ OK tls iface={} host={} sni={} ip={}.{}.{}.{} port={} src-port={} sent={} record-type=0x{:02x} record-version=0x{:04x} record-len={} bytes={} payload={} segments={} fin={} truncated={} alert-level={} alert-description={} handshake-type={} selected-version={} cipher-suite={} keyshare-group={} keyshare-len={} decrypt-status={} decrypted-record-type={} decrypted-inner-type={} decrypted-handshake-type={} decrypted-payload-len={} decrypted-handshake-messages={} encrypted-extensions={} certificate={} certificate-entries={} certificate-list-len={} first-certificate-len={} certificate-list-complete={} certificate-verify={} finished={} handshake-parse-complete={} first-certificate-sha256=",
+                "XJQ OK tls iface={} host={} sni={} ip={}.{}.{}.{} port={} src-port={} sent={} record-type=0x{:02x} record-version=0x{:04x} record-len={} bytes={} payload={} segments={} fin={} truncated={} alert-level={} alert-description={} handshake-type={} selected-version={} cipher-suite={} keyshare-group={} keyshare-len={} decrypt-status={} decrypted-record-type={} decrypted-inner-type={} decrypted-handshake-type={} decrypted-payload-len={} decrypted-handshake-messages={} encrypted-extensions={} certificate={} certificate-entries={} certificate-list-len={} first-certificate-len={} certificate-list-complete={} certificate-verify={} finished={} server-finished-len={} server-finished-verified={} handshake-parse-complete={} first-certificate-sha256=",
                 PCIE_CONTROLLERS[index].name,
                 host,
                 sni,
@@ -5310,9 +5316,13 @@ fn write_net_tls_query_summary<W: Write>(default_index: usize, query: &str, out:
                 yes_no(result.decrypted_certificate_list_complete),
                 yes_no(result.decrypted_certificate_verify),
                 yes_no(result.decrypted_finished),
+                optional_u16_dec(result.server_finished_len),
+                yes_no(result.server_finished_verified),
                 yes_no(result.decrypted_handshake_parse_complete)
             );
             write_optional_sha256_hex(out, &result.decrypted_first_certificate_sha256);
+            let _ = write!(out, " server-finished-transcript-sha256=");
+            write_optional_sha256_hex(out, &result.server_finished_transcript_sha256);
             let _ = write!(out, " shared-secret-sha256=");
             write_optional_sha256_hex(out, &result.shared_secret_sha256);
             let _ = write!(out, " transcript-sha256=");
@@ -13461,6 +13471,19 @@ fn print_tls_client_hello_result(uart: &mut Uart, result: TlsClientHelloResult) 
         yes_no(result.decrypted_finished),
         yes_no(result.decrypted_handshake_parse_complete)
     );
+    let _ = writeln!(
+        uart,
+        "  server-finished len={} verified={}",
+        optional_u16_dec(result.server_finished_len),
+        yes_no(result.server_finished_verified)
+    );
+    uart.put_str("  server-finished transcript-sha256=");
+    write_optional_sha256_hex(uart, &result.server_finished_transcript_sha256);
+    uart.put_str(" verify-data-sha256=");
+    write_optional_sha256_hex(uart, &result.server_finished_verify_data_sha256);
+    uart.put_str(" expected-sha256=");
+    write_optional_sha256_hex(uart, &result.server_finished_expected_sha256);
+    uart.put_str("\n");
     uart.put_str("  shared-secret   sha256=");
     write_optional_sha256_hex(uart, &result.shared_secret_sha256);
     uart.put_str("\n");
@@ -16684,13 +16707,16 @@ fn net_tls_client_hello(
         let server_public = X25519PublicKey::from(server_key);
         let shared_secret = x25519_secret.diffie_hellman(&server_public);
         shared_secret_sha256 = Some(sha256_digest(shared_secret.as_bytes()));
-        if let (Some(cipher_suite), Some(transcript_hash)) = (
+        let mut transcript_prefix = [0u8; TLS_TRANSCRIPT_MAX_BYTES];
+        if let (Some(cipher_suite), Some(transcript_len)) = (
             record.cipher_suite,
-            tls_handshake_transcript_hash(
+            tls_handshake_transcript_prefix(
                 &client_hello[..client_hello_len],
                 &response.sample[..response.sample_len],
+                &mut transcript_prefix,
             ),
         ) {
+            let transcript_hash = sha256_digest(&transcript_prefix[..transcript_len]);
             transcript_sha256 = Some(transcript_hash);
             if let Some(traffic) = tls13_handshake_key_schedule_fingerprints(
                 shared_secret.as_bytes(),
@@ -16708,6 +16734,8 @@ fn net_tls_client_hello(
                     cipher_suite,
                     &traffic.server_key,
                     &traffic.server_iv,
+                    &traffic.server_secret,
+                    &transcript_prefix[..transcript_len],
                 );
             } else {
                 decrypt.status = TlsDecryptStatus::UnsupportedCipher;
@@ -16769,6 +16797,11 @@ fn net_tls_client_hello(
         decrypted_certificate_list_complete: decrypt.handshake.certificate_list_complete,
         decrypted_certificate_verify: decrypt.handshake.certificate_verify,
         decrypted_finished: decrypt.handshake.finished,
+        server_finished_len: decrypt.handshake.finished_len,
+        server_finished_transcript_sha256: decrypt.handshake.server_finished_transcript_sha256,
+        server_finished_verify_data_sha256: decrypt.handshake.server_finished_verify_data_sha256,
+        server_finished_expected_sha256: decrypt.handshake.server_finished_expected_sha256,
+        server_finished_verified: decrypt.handshake.server_finished_verified,
         decrypted_handshake_parse_complete: decrypt.handshake.complete,
         sample_len: response.sample_len,
         sample: response.sample,
@@ -16800,6 +16833,7 @@ struct Tls13HandshakeKeySchedule {
     server_iv_sha256: [u8; 32],
     server_key: [u8; 32],
     server_iv: [u8; 12],
+    server_secret: [u8; 32],
 }
 
 #[derive(Clone, Copy)]
@@ -16824,6 +16858,11 @@ struct TlsHandshakeParseSummary {
     certificate_list_complete: bool,
     certificate_verify: bool,
     finished: bool,
+    finished_len: Option<u16>,
+    server_finished_transcript_sha256: Option<[u8; 32]>,
+    server_finished_verify_data_sha256: Option<[u8; 32]>,
+    server_finished_expected_sha256: Option<[u8; 32]>,
+    server_finished_verified: bool,
     complete: bool,
 }
 
@@ -16840,6 +16879,11 @@ impl TlsHandshakeParseSummary {
             certificate_list_complete: false,
             certificate_verify: false,
             finished: false,
+            finished_len: None,
+            server_finished_transcript_sha256: None,
+            server_finished_verify_data_sha256: None,
+            server_finished_expected_sha256: None,
+            server_finished_verified: false,
             complete: false,
         }
     }
@@ -17019,7 +17063,11 @@ fn parse_tls_server_hello(sample: &[u8], summary: &mut TlsRecordSummary) -> Opti
     Some(())
 }
 
-fn tls_handshake_transcript_hash(client_record: &[u8], server_record: &[u8]) -> Option<[u8; 32]> {
+fn tls_handshake_transcript_prefix(
+    client_record: &[u8],
+    server_record: &[u8],
+    out: &mut [u8],
+) -> Option<usize> {
     if client_record.len() < 5 || server_record.len() < 9 {
         return None;
     }
@@ -17032,13 +17080,12 @@ fn tls_handshake_transcript_hash(client_record: &[u8], server_record: &[u8]) -> 
     let client_handshake = &client_record[5..];
     let server_handshake = &server_record[5..server_handshake_end];
     let transcript_len = client_handshake.len().checked_add(server_handshake.len())?;
-    if transcript_len > TLS_TRANSCRIPT_MAX_BYTES {
+    if transcript_len > out.len() {
         return None;
     }
-    let mut transcript = [0u8; TLS_TRANSCRIPT_MAX_BYTES];
-    transcript[..client_handshake.len()].copy_from_slice(client_handshake);
-    transcript[client_handshake.len()..transcript_len].copy_from_slice(server_handshake);
-    Some(sha256_digest(&transcript[..transcript_len]))
+    out[..client_handshake.len()].copy_from_slice(client_handshake);
+    out[client_handshake.len()..transcript_len].copy_from_slice(server_handshake);
+    Some(transcript_len)
 }
 
 fn tls13_handshake_key_schedule_fingerprints(
@@ -17069,6 +17116,7 @@ fn tls13_handshake_key_schedule_fingerprints(
         server_iv_sha256: sha256_digest(&server_iv[..12]),
         server_key,
         server_iv: server_iv12,
+        server_secret,
     })
 }
 
@@ -17137,6 +17185,8 @@ fn tls13_decrypt_first_server_handshake_record(
     cipher_suite: u16,
     server_key: &[u8; 32],
     server_iv: &[u8; 12],
+    server_secret: &[u8; 32],
+    transcript_prefix: &[u8],
 ) -> TlsDecryptSummary {
     if !matches!(cipher_suite, 0x1301 | 0x1303) {
         return TlsDecryptSummary {
@@ -17173,6 +17223,8 @@ fn tls13_decrypt_first_server_handshake_record(
                 cipher_suite,
                 server_key,
                 server_iv,
+                server_secret,
+                transcript_prefix,
             );
         }
         if record_type == TLS_RECORD_CHANGE_CIPHER_SPEC {
@@ -17195,6 +17247,8 @@ fn tls13_decrypt_application_record(
     cipher_suite: u16,
     server_key: &[u8; 32],
     server_iv: &[u8; 12],
+    server_secret: &[u8; 32],
+    transcript_prefix: &[u8],
 ) -> TlsDecryptSummary {
     if record.len() < 21 {
         return tls_decrypt_summary(TlsDecryptStatus::AuthFailed);
@@ -17248,7 +17302,11 @@ fn tls13_decrypt_application_record(
         return tls_decrypt_summary(TlsDecryptStatus::TooLarge);
     }
     let handshake = if inner_type == TLS_RECORD_HANDSHAKE {
-        tls_parse_decrypted_handshake_payload(&plaintext[..payload_len])
+        tls_parse_decrypted_handshake_payload(
+            &plaintext[..payload_len],
+            server_secret,
+            transcript_prefix,
+        )
     } else {
         TlsHandshakeParseSummary::empty()
     };
@@ -17299,7 +17357,11 @@ fn tls13_chacha20poly1305_decrypt_in_place(
         .is_ok()
 }
 
-fn tls_parse_decrypted_handshake_payload(payload: &[u8]) -> TlsHandshakeParseSummary {
+fn tls_parse_decrypted_handshake_payload(
+    payload: &[u8],
+    server_secret: &[u8; 32],
+    transcript_prefix: &[u8],
+) -> TlsHandshakeParseSummary {
     let mut summary = TlsHandshakeParseSummary {
         complete: true,
         ..TlsHandshakeParseSummary::empty()
@@ -17334,12 +17396,70 @@ fn tls_parse_decrypted_handshake_payload(payload: &[u8]) -> TlsHandshakeParseSum
                 tls_parse_certificate_handshake_body(&payload[offset + 4..next], &mut summary);
             }
             TLS_HANDSHAKE_CERTIFICATE_VERIFY => summary.certificate_verify = true,
-            TLS_HANDSHAKE_FINISHED => summary.finished = true,
+            TLS_HANDSHAKE_FINISHED => {
+                summary.finished = true;
+                if handshake_len <= u16::MAX as usize {
+                    summary.finished_len = Some(handshake_len as u16);
+                }
+                tls_verify_server_finished(
+                    &payload[offset + 4..next],
+                    &payload[..offset],
+                    server_secret,
+                    transcript_prefix,
+                    &mut summary,
+                );
+            }
             _ => {}
         }
         offset = next;
     }
     summary
+}
+
+fn tls_verify_server_finished(
+    verify_data: &[u8],
+    decrypted_before_finished: &[u8],
+    server_secret: &[u8; 32],
+    transcript_prefix: &[u8],
+    summary: &mut TlsHandshakeParseSummary,
+) {
+    if verify_data.len() != 32 {
+        return;
+    }
+    let Some(transcript_len) = transcript_prefix
+        .len()
+        .checked_add(decrypted_before_finished.len())
+    else {
+        return;
+    };
+    if transcript_len > TLS_TRANSCRIPT_MAX_BYTES {
+        return;
+    }
+    let mut transcript = [0u8; TLS_TRANSCRIPT_MAX_BYTES];
+    transcript[..transcript_prefix.len()].copy_from_slice(transcript_prefix);
+    transcript[transcript_prefix.len()..transcript_len].copy_from_slice(decrypted_before_finished);
+    let transcript_hash = sha256_digest(&transcript[..transcript_len]);
+    let expected = tls13_finished_verify_data(server_secret, &transcript_hash);
+    summary.server_finished_transcript_sha256 = Some(transcript_hash);
+    summary.server_finished_verify_data_sha256 = Some(sha256_digest(verify_data));
+    summary.server_finished_expected_sha256 = Some(sha256_digest(&expected));
+    summary.server_finished_verified = tls_bytes_eq(verify_data, &expected);
+}
+
+fn tls13_finished_verify_data(server_secret: &[u8; 32], transcript_hash: &[u8; 32]) -> [u8; 32] {
+    let finished_key = tls13_hkdf_expand_label_sha256(server_secret, b"finished", &[]);
+    hmac_sha256_digest(&finished_key, transcript_hash)
+}
+
+fn tls_bytes_eq(left: &[u8], right: &[u8]) -> bool {
+    if left.len() != right.len() {
+        return false;
+    }
+    let mut diff = 0u8;
+    for index in 0..left.len() {
+        diff |= left[index] ^ right[index];
+    }
+    diff == 0
 }
 
 fn tls_parse_certificate_handshake_body(body: &[u8], summary: &mut TlsHandshakeParseSummary) {

@@ -278,7 +278,10 @@ and, when the server selects `TLS_AES_128_GCM_SHA256` or
 `TLS_CHACHA20_POLY1305_SHA256`, attempts to decrypt the first encrypted server
 handshake record. The decrypted payload is then parsed as a TLS handshake
 message stream and reports whether EncryptedExtensions, Certificate,
-CertificateVerify, and Finished are present in that first record. When a
+CertificateVerify, and Finished are present in that first record. When Finished
+is present in that first decrypted record, the probe verifies the TLS 1.3 server
+Finished `verify_data` against the transcript and reports
+`server-finished-verified=yes`. When a
 Certificate message is present, the probe also parses the TLS 1.3 certificate
 list framing and reports the certificate-entry count, certificate-list length,
 first-certificate length, list completeness, and the SHA-256 fingerprint of the
@@ -375,10 +378,11 @@ UART `xload` as the recovery path until the network path is stable.
     SYN/SYN-ACK/ACK TCP path. `net http ... confirm` performs one HTTP/1.0 GET
     and parses the response status while ACKing sequential response payload
     segments up to the built-in sample cap. `net tls ... confirm` performs TLS
-    first-flight key schedule, first encrypted record decrypt, and certificate
-    list framing probes; `net tls-pin ... confirm` adds first-certificate
-    SHA-256 pin verification for early secure-control experiments. Full TCP stream reassembly, certificate validation,
-    complete TLS/HTTPS, and kernel-native cloud polling remain follow-on stages.
+    first-flight key schedule, first encrypted record decrypt, certificate list
+    framing, and server Finished probes; `net tls-pin ... confirm` adds
+    first-certificate SHA-256 pin verification for early secure-control
+    experiments. Full TCP stream reassembly, certificate validation, complete
+    TLS/HTTPS, and kernel-native cloud polling remain follow-on stages.
 11. OTA storage: `sd facts`, `sd regs confirm`, `sd read0 confirm`, `sd bpb
     confirm`, `sd root confirm`, and `sd slots confirm` verify the SD
     controller, FAT32 BPB, root directory, and A/B slot FAT chains.
