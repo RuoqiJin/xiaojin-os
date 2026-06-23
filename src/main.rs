@@ -2817,14 +2817,14 @@ fn print_caps(uart: &mut Uart) {
 fn write_caps_query_summary<W: Write>(out: &mut W) {
     let _ = write!(
         out,
-        "XJQ OK caps net-dev=yes dhcp=yes auto-dhcp=yes route=yes arp=yes dns=yes tcp-connect=yes http-get=yes http-post=yes https-get=yes https-post=yes tls-clienthello=yes tls-aes128gcm-decrypt=yes tls-chacha20poly1305-decrypt=yes tls-handshake-parse=yes tls-certificate-list-parse=yes tls-first-certificate-sha256=yes tls-first-certificate-pin=yes tls-server-finished-verify=yes tls-client-finished-send=yes tls-application-data=yes maint-poll=yes maint-status=yes maint-command-verify=yes maint-command-verify-hmac=yes maint-local-hmac-key=yes maint-pull-exec=yes maint-loop=yes maint-config=yes maint-config-paths=yes maint-config-host-name=yes maint-config-https=yes maint-config-tls-pin=yes maint-cold-boot-tick=yes maint-ack-intent=yes maint-remote-event=yes maint-https-event=yes identity=yes query=yes reboot=yes wifi-firmware-sd=confirm wifi-firmware-crc=confirm wifi-firmware-load=confirm wifi-enum=confirm wifi-mmio-snapshot=confirm wifi-mmio-fingerprint=confirm sd-writer=yes ab-persist=yes boot-slot=extlinux db=page-store,catalog,wal,fixed-table,btree,event-log"
+        "XJQ OK caps net-dev=yes net-ifaces=yes iface-auto=yes dhcp=yes auto-dhcp=yes failover=best-routed-dns route=yes arp=yes dns=yes tcp-connect=yes http-get=yes http-post=yes https-get=yes https-post=yes tls-clienthello=yes tls-aes128gcm-decrypt=yes tls-chacha20poly1305-decrypt=yes tls-handshake-parse=yes tls-certificate-list-parse=yes tls-first-certificate-sha256=yes tls-first-certificate-pin=yes tls-server-finished-verify=yes tls-client-finished-send=yes tls-application-data=yes maint-poll=yes maint-status=yes maint-command-verify=yes maint-command-verify-hmac=yes maint-local-hmac-key=yes maint-pull-exec=yes maint-loop=yes maint-config=yes maint-config-paths=yes maint-config-host-name=yes maint-config-https=yes maint-config-tls-pin=yes maint-cold-boot-tick=yes maint-ack-intent=yes maint-remote-event=yes maint-https-event=yes identity=yes query=yes reboot=yes wifi-firmware-sd=confirm wifi-firmware-crc=confirm wifi-firmware-load=confirm wifi-enum=confirm wifi-mmio-snapshot=confirm wifi-mmio-fingerprint=confirm sd-writer=yes ab-persist=yes boot-slot=extlinux db=page-store,catalog,wal,fixed-table,btree,event-log"
     );
 }
 
 fn write_caps_full_query_summary<W: Write>(out: &mut W) {
     let _ = write!(
         out,
-        "XJQ OK caps-full net=dev,dhcp,auto-dhcp,route,arp,dns,tcp,http-get,http-post,https-get,https-post,http-trace,http-debug tls=clienthello,aes128gcm,chacha20poly1305,handshake,cert-list,first-cert-sha256,first-cert-pin,server-finished,client-finished-material,client-finished-send,application-data maint=poll,status,pending,digest,verify,verify-hmac,local-key,pull-exec,loop,config,paths,host-name,https,tls-pin,cold-boot,ack-intent,remote-event,https-event,local-audit wifi=pcie,firmware,firmware-crc,firmware-load,mmio-snapshot,mmio-fingerprint,driver-gate,rtw88-profile,trace,pcie-init,pcie-init-high,pcie-init-linux,pcie-init-dt,enum,station-planned,ap-planned sd=probe,writer,ab-persist,extlinux db=page-store,catalog,wal,fixed-table,btree,btree-delete,table-namespace,event-log,blob-backup,blob-restore"
+        "XJQ OK caps-full net=dev,ifaces,iface-auto,dhcp,auto-dhcp,failover-best-routed-dns,route,arp,dns,tcp,http-get,http-post,https-get,https-post,http-trace,http-debug tls=clienthello,aes128gcm,chacha20poly1305,handshake,cert-list,first-cert-sha256,first-cert-pin,server-finished,client-finished-material,client-finished-send,application-data maint=poll,status,pending,digest,verify,verify-hmac,local-key,pull-exec,loop,config,paths,host-name,https,tls-pin,cold-boot,ack-intent,remote-event,https-event,local-audit wifi=pcie,firmware,firmware-crc,firmware-load,mmio-snapshot,mmio-fingerprint,driver-gate,rtw88-profile,trace,pcie-init,pcie-init-high,pcie-init-linux,pcie-init-dt,enum,station-planned,ap-planned sd=probe,writer,ab-persist,extlinux db=page-store,catalog,wal,fixed-table,btree,btree-delete,table-namespace,event-log,blob-backup,blob-restore"
     );
 }
 
@@ -4749,6 +4749,10 @@ fn command_net<'a>(uart: &mut Uart, parts: &mut core::str::SplitWhitespace<'a>) 
     match action {
         None | Some("facts") => print_net_facts(uart),
         Some("ips") => print_net_ips(uart),
+        Some("ifaces") => {
+            write_net_ifaces_summary(uart);
+            uart.put_str("\n");
+        }
         Some("ip") => command_net_ip(uart, parts.next(), parts.next(), parts.next()),
         Some("dhcp") => command_net_dhcp(uart, parts.next(), parts.next()),
         Some("dns") => command_net_dns(uart, parts.next(), parts.next(), parts.next()),
@@ -4823,24 +4827,27 @@ fn command_net<'a>(uart: &mut Uart, parts: &mut core::str::SplitWhitespace<'a>) 
             uart.put_str("usage:\n");
             uart.put_str("  net facts\n");
             uart.put_str("  net ips\n");
-            uart.put_str("  net ip <pcie3x1|pcie3x2|0|1> <a.b.c.d> confirm\n");
-            uart.put_str("  net dhcp <pcie3x1|pcie3x2|0|1> confirm\n");
-            uart.put_str("  net dns <pcie3x1|pcie3x2|0|1> <name> confirm\n");
-            uart.put_str("  net tcp <pcie3x1|pcie3x2|0|1> <host|ip> <port> confirm\n");
-            uart.put_str("  net http <pcie3x1|pcie3x2|0|1> <host|ip> <port> <path> confirm\n");
+            uart.put_str("  net ifaces\n");
+            uart.put_str("  net ip <pcie3x1|pcie3x2|auto|0|1> <a.b.c.d> confirm\n");
+            uart.put_str("  net dhcp <pcie3x1|pcie3x2|auto|0|1> confirm\n");
+            uart.put_str("  net dns <pcie3x1|pcie3x2|auto|0|1> <name> confirm\n");
+            uart.put_str("  net tcp <pcie3x1|pcie3x2|auto|0|1> <host|ip> <port> confirm\n");
+            uart.put_str("  net http <pcie3x1|pcie3x2|auto|0|1> <host|ip> <port> <path> confirm\n");
             uart.put_str(
-                "  net http-post <pcie3x1|pcie3x2|0|1> <host|ip> <port> <path> <body> confirm\n",
+                "  net http-post <pcie3x1|pcie3x2|auto|0|1> <host|ip> <port> <path> <body> confirm\n",
             );
             uart.put_str(
-                "  net https <pcie3x1|pcie3x2|0|1> <host|ip> <port> <path> [sni] confirm\n",
+                "  net https <pcie3x1|pcie3x2|auto|0|1> <host|ip> <port> <path> [sni] confirm\n",
             );
             uart.put_str(
-                "  net https-post <pcie3x1|pcie3x2|0|1> <host|ip> <port> <path> <body> [sni] confirm\n",
+                "  net https-post <pcie3x1|pcie3x2|auto|0|1> <host|ip> <port> <path> <body> [sni] confirm\n",
             );
-            uart.put_str("  net tls <pcie3x1|pcie3x2|0|1> <host|ip> <port> [sni] confirm\n");
-            uart.put_str("  net tls-finish <pcie3x1|pcie3x2|0|1> <host|ip> <port> [sni] confirm\n");
+            uart.put_str("  net tls <pcie3x1|pcie3x2|auto|0|1> <host|ip> <port> [sni] confirm\n");
             uart.put_str(
-                "  net tls-pin <pcie3x1|pcie3x2|0|1> <host|ip> <port> [sni|-] <sha256> confirm\n",
+                "  net tls-finish <pcie3x1|pcie3x2|auto|0|1> <host|ip> <port> [sni] confirm\n",
+            );
+            uart.put_str(
+                "  net tls-pin <pcie3x1|pcie3x2|auto|0|1> <host|ip> <port> [sni|-] <sha256> confirm\n",
             );
             uart.put_str("  net loop confirm\n");
             uart.put_str("  net listen confirm\n");
@@ -4958,19 +4965,27 @@ fn command_maint<'a>(uart: &mut Uart, parts: &mut core::str::SplitWhitespace<'a>
         ),
         _ => {
             uart.put_str("usage:\n");
-            uart.put_str("  maint poll <pcie3x1|pcie3x2|0|1> <host|ip> <port> <path> confirm\n");
-            uart.put_str("  maint status <pcie3x1|pcie3x2|0|1> <host|ip> <port> <path> confirm\n");
-            uart.put_str("  maint audit <pcie3x1|pcie3x2|0|1> <host|ip> <port> <path> confirm\n");
-            uart.put_str("  maint verify <pcie3x1|pcie3x2|0|1> <host|ip> <port> <path> confirm\n");
-            uart.put_str("  maint verify-hmac <pcie3x1|pcie3x2|0|1> <host|ip> <port> <path> <key-hex> confirm\n");
             uart.put_str(
-                "  maint verify-local <pcie3x1|pcie3x2|0|1> <host|ip> <port> <path> confirm\n",
+                "  maint poll <pcie3x1|pcie3x2|auto|0|1> <host|ip> <port> <path> confirm\n",
             );
             uart.put_str(
-                "  maint pull-exec <pcie3x1|pcie3x2|0|1> <host|ip> <port> <poll-path> [event-path] confirm\n",
+                "  maint status <pcie3x1|pcie3x2|auto|0|1> <host|ip> <port> <path> confirm\n",
             );
             uart.put_str(
-                "  maint loop <pcie3x1|pcie3x2|0|1> <host|ip> <port> <poll-path> <event-path> <count> <interval-ms> confirm\n",
+                "  maint audit <pcie3x1|pcie3x2|auto|0|1> <host|ip> <port> <path> confirm\n",
+            );
+            uart.put_str(
+                "  maint verify <pcie3x1|pcie3x2|auto|0|1> <host|ip> <port> <path> confirm\n",
+            );
+            uart.put_str("  maint verify-hmac <pcie3x1|pcie3x2|auto|0|1> <host|ip> <port> <path> <key-hex> confirm\n");
+            uart.put_str(
+                "  maint verify-local <pcie3x1|pcie3x2|auto|0|1> <host|ip> <port> <path> confirm\n",
+            );
+            uart.put_str(
+                "  maint pull-exec <pcie3x1|pcie3x2|auto|0|1> <host|ip> <port> <poll-path> [event-path] confirm\n",
+            );
+            uart.put_str(
+                "  maint loop <pcie3x1|pcie3x2|auto|0|1> <host|ip> <port> <poll-path> <event-path> <count> <interval-ms> confirm\n",
             );
             uart.put_str("  maint config-pin <sha256|none> confirm\n");
             uart.put_str("  maint config-tls <http|https> [sni|-] confirm\n");
@@ -4978,13 +4993,13 @@ fn command_maint<'a>(uart: &mut Uart, parts: &mut core::str::SplitWhitespace<'a>
             uart.put_str("  maint key-set <key-hex> confirm\n");
             uart.put_str("  maint key-clear confirm\n");
             uart.put_str(
-                "  maint ack-intent <pcie3x1|pcie3x2|0|1> <host|ip> <port> <poll-path> <event-path> confirm\n",
+                "  maint ack-intent <pcie3x1|pcie3x2|auto|0|1> <host|ip> <port> <poll-path> <event-path> confirm\n",
             );
             uart.put_str(
-                "  maint event <pcie3x1|pcie3x2|0|1> <host|ip> <port> <path> <kind> confirm\n",
+                "  maint event <pcie3x1|pcie3x2|auto|0|1> <host|ip> <port> <path> <kind> confirm\n",
             );
             uart.put_str(
-                "  maint https-event <pcie3x1|pcie3x2|0|1> <host|ip> <port> <path> <kind> [sni] confirm\n",
+                "  maint https-event <pcie3x1|pcie3x2|auto|0|1> <host|ip> <port> <path> <kind> [sni] confirm\n",
             );
         }
     }
@@ -5049,6 +5064,142 @@ fn write_net_ips_summary<W: Write>(out: &mut W) {
             dns[2],
             dns[3]
         );
+    }
+}
+
+fn net_device_route_ready(index: usize) -> bool {
+    valid_unicast_ipv4(net_device_ip(index))
+        && valid_ipv4_netmask(net_device_netmask(index))
+        && net_device_gateway(index) != IPV4_ANY_IP
+        && net_device_dns(index) != IPV4_ANY_IP
+}
+
+fn net_preferred_route_device() -> Option<usize> {
+    for index in [1usize, 0usize] {
+        if net_device_route_ready(index) {
+            return Some(index);
+        }
+    }
+    None
+}
+
+fn rtl_phy_status(index: usize) -> Result<u32, ExceptionSnapshot> {
+    probe_read32(PCIE_CONTROLLERS[index].mem32_base + RTL_REG_PHY_STATUS)
+}
+
+fn rtl_phy_link_up_from_status(phy_status: u32) -> bool {
+    phy_status & RTL_PHY_LINK_STATUS != 0
+}
+
+fn rtl_phy_speed_name(phy_status: u32) -> &'static str {
+    if phy_status & RTL_PHY_1000_FULL != 0 {
+        "1000"
+    } else if phy_status & RTL_PHY_100M != 0 {
+        "100"
+    } else if phy_status & RTL_PHY_10M != 0 {
+        "10"
+    } else {
+        "unknown-or-2.5g"
+    }
+}
+
+fn write_net_ifaces_summary<W: Write>(out: &mut W) {
+    let active = net_preferred_route_device();
+    let active_name = active
+        .map(|index| PCIE_CONTROLLERS[index].name)
+        .unwrap_or("none");
+    let _ = write!(
+        out,
+        "net-ifaces active={active_name} policy=best-routed-dns auto-dhcp={} failover-order=pcie3x2,pcie3x1",
+        yes_no(NET_AUTO_DHCP)
+    );
+
+    for (index, controller) in PCIE_CONTROLLERS.iter().enumerate() {
+        let mac = rtl_local_mac(index);
+        let ip = net_device_ip(index);
+        let netmask = net_device_netmask(index);
+        let gateway = net_device_gateway(index);
+        let dns = net_device_dns(index);
+        let route_ready = net_device_route_ready(index);
+        let ltssm = probe_read32(controller.apb_base + PCIE_CLIENT_LTSSM_STATUS);
+        let phy = rtl_phy_status(index);
+
+        let _ = write!(
+            out,
+            " {}.mac={:02x}:{:02x}:{:02x}:{:02x}:{:02x}:{:02x} {}.ip={}.{}.{}.{} {}.mask={}.{}.{}.{} {}.gateway={}.{}.{}.{} {}.dns={}.{}.{}.{} {}.route-ready={} {}.default-candidate={}",
+            controller.name,
+            mac[0],
+            mac[1],
+            mac[2],
+            mac[3],
+            mac[4],
+            mac[5],
+            controller.name,
+            ip[0],
+            ip[1],
+            ip[2],
+            ip[3],
+            controller.name,
+            netmask[0],
+            netmask[1],
+            netmask[2],
+            netmask[3],
+            controller.name,
+            gateway[0],
+            gateway[1],
+            gateway[2],
+            gateway[3],
+            controller.name,
+            dns[0],
+            dns[1],
+            dns[2],
+            dns[3],
+            controller.name,
+            yes_no(route_ready),
+            controller.name,
+            yes_no(active == Some(index))
+        );
+
+        match ltssm {
+            Ok(value) => {
+                let _ = write!(
+                    out,
+                    " {}.pcie-link={} {}.ltssm=0x{value:08x}",
+                    controller.name,
+                    yes_no(pcie_link_is_up(value)),
+                    controller.name
+                );
+            }
+            Err(_) => {
+                let _ = write!(
+                    out,
+                    " {}.pcie-link=fault {}.ltssm=fault",
+                    controller.name, controller.name
+                );
+            }
+        }
+
+        match phy {
+            Ok(value) => {
+                let _ = write!(
+                    out,
+                    " {}.rtl-link={} {}.rtl-speed={} {}.phy=0x{:02x}",
+                    controller.name,
+                    yes_no(rtl_phy_link_up_from_status(value)),
+                    controller.name,
+                    rtl_phy_speed_name(value),
+                    controller.name,
+                    value & 0xff
+                );
+            }
+            Err(_) => {
+                let _ = write!(
+                    out,
+                    " {}.rtl-link=fault {}.rtl-speed=fault {}.phy=fault",
+                    controller.name, controller.name, controller.name
+                );
+            }
+        }
     }
 }
 
@@ -13433,7 +13584,7 @@ fn wait_sd_rint_bit(
 
 fn command_net_ip(uart: &mut Uart, iface: Option<&str>, ip: Option<&str>, confirm: Option<&str>) {
     if confirm != Some("confirm") {
-        uart.put_str("usage: net ip <pcie3x1|pcie3x2|0|1> <a.b.c.d> confirm\n");
+        uart.put_str("usage: net ip <pcie3x1|pcie3x2|auto|0|1> <a.b.c.d> confirm\n");
         uart.put_str("scope: update runtime IP config and preserve it across net-dev reloads\n");
         return;
     }
@@ -13442,7 +13593,7 @@ fn command_net_ip(uart: &mut Uart, iface: Option<&str>, ip: Option<&str>, confir
         return;
     };
     let Some(index) = parse_net_interface(iface) else {
-        uart.put_str("unknown interface; use pcie3x1, pcie3x2, 0, or 1\n");
+        uart.put_str("unknown interface; use pcie3x1, pcie3x2, auto, 0, or 1\n");
         return;
     };
     let Some(ip_text) = ip else {
@@ -13467,7 +13618,7 @@ fn command_net_ip(uart: &mut Uart, iface: Option<&str>, ip: Option<&str>, confir
 
 fn command_net_dhcp(uart: &mut Uart, iface: Option<&str>, confirm: Option<&str>) {
     if confirm != Some("confirm") {
-        uart.put_str("usage: net dhcp <pcie3x1|pcie3x2|0|1> confirm\n");
+        uart.put_str("usage: net dhcp <pcie3x1|pcie3x2|auto|0|1> confirm\n");
         uart.put_str("scope: request runtime IPv4/mask/gateway/dns from a DHCP server\n");
         uart.put_str("note: this is manual for now; cold boot keeps the static fallback IPs\n");
         return;
@@ -13477,7 +13628,7 @@ fn command_net_dhcp(uart: &mut Uart, iface: Option<&str>, confirm: Option<&str>)
         return;
     };
     let Some(index) = parse_net_interface(iface) else {
-        uart.put_str("unknown interface; use pcie3x1, pcie3x2, 0, or 1\n");
+        uart.put_str("unknown interface; use pcie3x1, pcie3x2, auto, 0, or 1\n");
         return;
     };
 
@@ -13525,7 +13676,7 @@ fn command_net_dns(
     confirm: Option<&str>,
 ) {
     if confirm != Some("confirm") {
-        uart.put_str("usage: net dns <pcie3x1|pcie3x2|0|1> <name> confirm\n");
+        uart.put_str("usage: net dns <pcie3x1|pcie3x2|auto|0|1> <name> confirm\n");
         uart.put_str("scope: resolve one A record using runtime DNS/gateway state\n");
         uart.put_str("note: run `net dhcp <if> confirm` first when dns/gateway are 0.0.0.0\n");
         return;
@@ -13535,7 +13686,7 @@ fn command_net_dns(
         return;
     };
     let Some(index) = parse_net_interface(iface) else {
-        uart.put_str("unknown interface; use pcie3x1, pcie3x2, 0, or 1\n");
+        uart.put_str("unknown interface; use pcie3x1, pcie3x2, auto, 0, or 1\n");
         return;
     };
     let Some(name) = name else {
@@ -13586,7 +13737,7 @@ fn command_net_tcp(
     confirm: Option<&str>,
 ) {
     if confirm != Some("confirm") {
-        uart.put_str("usage: net tcp <pcie3x1|pcie3x2|0|1> <host|ip> <port> confirm\n");
+        uart.put_str("usage: net tcp <pcie3x1|pcie3x2|auto|0|1> <host|ip> <port> confirm\n");
         uart.put_str("scope: prove outbound TCP connect using SYN/SYN-ACK/ACK\n");
         uart.put_str("note: run `net dhcp <if> confirm` first for routed internet targets\n");
         return;
@@ -13596,7 +13747,7 @@ fn command_net_tcp(
         return;
     };
     let Some(index) = parse_net_interface(iface) else {
-        uart.put_str("unknown interface; use pcie3x1, pcie3x2, 0, or 1\n");
+        uart.put_str("unknown interface; use pcie3x1, pcie3x2, auto, 0, or 1\n");
         return;
     };
     let Some(host) = host else {
@@ -13663,7 +13814,9 @@ fn command_net_http(
     confirm: Option<&str>,
 ) {
     if confirm != Some("confirm") {
-        uart.put_str("usage: net http <pcie3x1|pcie3x2|0|1> <host|ip> <port> <path> confirm\n");
+        uart.put_str(
+            "usage: net http <pcie3x1|pcie3x2|auto|0|1> <host|ip> <port> <path> confirm\n",
+        );
         uart.put_str("scope: perform one HTTP/1.0 GET over the outbound TCP probe path\n");
         return;
     }
@@ -13672,7 +13825,7 @@ fn command_net_http(
         return;
     };
     let Some(index) = parse_net_interface(iface) else {
-        uart.put_str("unknown interface; use pcie3x1, pcie3x2, 0, or 1\n");
+        uart.put_str("unknown interface; use pcie3x1, pcie3x2, auto, 0, or 1\n");
         return;
     };
     let Some(host) = host else {
@@ -13712,7 +13865,7 @@ fn command_net_http_post(
 ) {
     if confirm != Some("confirm") {
         uart.put_str(
-            "usage: net http-post <pcie3x1|pcie3x2|0|1> <host|ip> <port> <path> <body> confirm\n",
+            "usage: net http-post <pcie3x1|pcie3x2|auto|0|1> <host|ip> <port> <path> <body> confirm\n",
         );
         uart.put_str("scope: perform one small HTTP/1.0 POST over the outbound TCP probe path\n");
         return;
@@ -13722,7 +13875,7 @@ fn command_net_http_post(
         return;
     };
     let Some(index) = parse_net_interface(iface) else {
-        uart.put_str("unknown interface; use pcie3x1, pcie3x2, 0, or 1\n");
+        uart.put_str("unknown interface; use pcie3x1, pcie3x2, auto, 0, or 1\n");
         return;
     };
     let Some(host) = host else {
@@ -13769,7 +13922,7 @@ fn command_net_tls(
         _ => ("", false),
     };
     if !confirmed {
-        uart.put_str("usage: net tls <pcie3x1|pcie3x2|0|1> <host|ip> <port> [sni] confirm\n");
+        uart.put_str("usage: net tls <pcie3x1|pcie3x2|auto|0|1> <host|ip> <port> [sni] confirm\n");
         uart.put_str(
             "scope: send one TLS ClientHello and probe the first encrypted server record\n",
         );
@@ -13780,7 +13933,7 @@ fn command_net_tls(
         return;
     };
     let Some(index) = parse_net_interface(iface) else {
-        uart.put_str("unknown interface; use pcie3x1, pcie3x2, 0, or 1\n");
+        uart.put_str("unknown interface; use pcie3x1, pcie3x2, auto, 0, or 1\n");
         return;
     };
     let Some(host) = host else {
@@ -13823,7 +13976,7 @@ fn command_net_https(
     };
     if !confirmed {
         uart.put_str(
-            "usage: net https <pcie3x1|pcie3x2|0|1> <host|ip> <port> <path> [sni] confirm\n",
+            "usage: net https <pcie3x1|pcie3x2|auto|0|1> <host|ip> <port> <path> [sni] confirm\n",
         );
         uart.put_str("scope: send HTTPS GET through a TLS 1.3 application-data record\n");
         return;
@@ -13833,7 +13986,7 @@ fn command_net_https(
         return;
     };
     let Some(index) = parse_net_interface(iface) else {
-        uart.put_str("unknown interface; use pcie3x1, pcie3x2, 0, or 1\n");
+        uart.put_str("unknown interface; use pcie3x1, pcie3x2, auto, 0, or 1\n");
         return;
     };
     let Some(host) = host else {
@@ -13881,7 +14034,7 @@ fn command_net_https_post(
     };
     if !confirmed {
         uart.put_str(
-            "usage: net https-post <pcie3x1|pcie3x2|0|1> <host|ip> <port> <path> <body> [sni] confirm\n",
+            "usage: net https-post <pcie3x1|pcie3x2|auto|0|1> <host|ip> <port> <path> <body> [sni] confirm\n",
         );
         uart.put_str(
             "scope: send one small HTTPS POST through a TLS 1.3 application-data record\n",
@@ -13893,7 +14046,7 @@ fn command_net_https_post(
         return;
     };
     let Some(index) = parse_net_interface(iface) else {
-        uart.put_str("unknown interface; use pcie3x1, pcie3x2, 0, or 1\n");
+        uart.put_str("unknown interface; use pcie3x1, pcie3x2, auto, 0, or 1\n");
         return;
     };
     let Some(host) = host else {
@@ -13949,7 +14102,7 @@ fn command_net_tls_finish(
     };
     if !confirmed {
         uart.put_str(
-            "usage: net tls-finish <pcie3x1|pcie3x2|0|1> <host|ip> <port> [sni] confirm\n",
+            "usage: net tls-finish <pcie3x1|pcie3x2|auto|0|1> <host|ip> <port> [sni] confirm\n",
         );
         uart.put_str(
             "scope: send TLS ClientHello, verify server Finished, then send encrypted client Finished\n",
@@ -13961,7 +14114,7 @@ fn command_net_tls_finish(
         return;
     };
     let Some(index) = parse_net_interface(iface) else {
-        uart.put_str("unknown interface; use pcie3x1, pcie3x2, 0, or 1\n");
+        uart.put_str("unknown interface; use pcie3x1, pcie3x2, auto, 0, or 1\n");
         return;
     };
     let Some(host) = host else {
@@ -13997,12 +14150,12 @@ fn command_net_tls_pin(
 ) {
     let Some(iface) = iface else {
         uart.put_str(
-            "usage: net tls-pin <pcie3x1|pcie3x2|0|1> <host|ip> <port> [sni|-] <sha256> confirm\n",
+            "usage: net tls-pin <pcie3x1|pcie3x2|auto|0|1> <host|ip> <port> [sni|-] <sha256> confirm\n",
         );
         return;
     };
     let Some(index) = parse_net_interface(iface) else {
-        uart.put_str("unknown interface; use pcie3x1, pcie3x2, 0, or 1\n");
+        uart.put_str("unknown interface; use pcie3x1, pcie3x2, auto, 0, or 1\n");
         return;
     };
     let Some(host) = host else {
@@ -14015,7 +14168,7 @@ fn command_net_tls_pin(
     };
     let Some(next) = sni_or_sha else {
         uart.put_str(
-            "usage: net tls-pin <pcie3x1|pcie3x2|0|1> <host|ip> <port> [sni|-] <sha256> confirm\n",
+            "usage: net tls-pin <pcie3x1|pcie3x2|auto|0|1> <host|ip> <port> [sni|-] <sha256> confirm\n",
         );
         return;
     };
@@ -14028,7 +14181,7 @@ fn command_net_tls_pin(
     };
     if !confirmed {
         uart.put_str(
-            "usage: net tls-pin <pcie3x1|pcie3x2|0|1> <host|ip> <port> [sni|-] <sha256> confirm\n",
+            "usage: net tls-pin <pcie3x1|pcie3x2|auto|0|1> <host|ip> <port> [sni|-] <sha256> confirm\n",
         );
         uart.put_str("scope: require the decrypted first certificate SHA-256 to match the pin\n");
         return;
@@ -14073,7 +14226,7 @@ fn command_maint_event(
 ) {
     if confirm != Some("confirm") {
         uart.put_str(
-            "usage: maint event <pcie3x1|pcie3x2|0|1> <host|ip> <port> <path> <kind> confirm\n",
+            "usage: maint event <pcie3x1|pcie3x2|auto|0|1> <host|ip> <port> <path> <kind> confirm\n",
         );
         return;
     }
@@ -14082,7 +14235,7 @@ fn command_maint_event(
         return;
     };
     let Some(index) = parse_net_interface(iface) else {
-        uart.put_str("unknown interface; use pcie3x1, pcie3x2, 0, or 1\n");
+        uart.put_str("unknown interface; use pcie3x1, pcie3x2, auto, 0, or 1\n");
         return;
     };
     let Some(host) = host else {
@@ -14130,7 +14283,7 @@ fn command_maint_https_event(
     };
     if !confirmed {
         uart.put_str(
-            "usage: maint https-event <pcie3x1|pcie3x2|0|1> <host|ip> <port> <path> <kind> [sni] confirm\n",
+            "usage: maint https-event <pcie3x1|pcie3x2|auto|0|1> <host|ip> <port> <path> <kind> [sni] confirm\n",
         );
         return;
     }
@@ -14139,7 +14292,7 @@ fn command_maint_https_event(
         return;
     };
     let Some(index) = parse_net_interface(iface) else {
-        uart.put_str("unknown interface; use pcie3x1, pcie3x2, 0, or 1\n");
+        uart.put_str("unknown interface; use pcie3x1, pcie3x2, auto, 0, or 1\n");
         return;
     };
     let Some(host) = host else {
@@ -14179,7 +14332,7 @@ fn command_maint_ack_intent(
 ) {
     if confirm != Some("confirm") {
         uart.put_str(
-            "usage: maint ack-intent <pcie3x1|pcie3x2|0|1> <host|ip> <port> <poll-path> <event-path> confirm\n",
+            "usage: maint ack-intent <pcie3x1|pcie3x2|auto|0|1> <host|ip> <port> <poll-path> <event-path> confirm\n",
         );
         return;
     }
@@ -14188,7 +14341,7 @@ fn command_maint_ack_intent(
         return;
     };
     let Some(index) = parse_net_interface(iface) else {
-        uart.put_str("unknown interface; use pcie3x1, pcie3x2, 0, or 1\n");
+        uart.put_str("unknown interface; use pcie3x1, pcie3x2, auto, 0, or 1\n");
         return;
     };
     let Some(host) = host else {
@@ -14226,7 +14379,9 @@ fn command_maint_verify(
     confirm: Option<&str>,
 ) {
     if confirm != Some("confirm") {
-        uart.put_str("usage: maint verify <pcie3x1|pcie3x2|0|1> <host|ip> <port> <path> confirm\n");
+        uart.put_str(
+            "usage: maint verify <pcie3x1|pcie3x2|auto|0|1> <host|ip> <port> <path> confirm\n",
+        );
         return;
     }
     let Some(iface) = iface else {
@@ -14234,7 +14389,7 @@ fn command_maint_verify(
         return;
     };
     let Some(index) = parse_net_interface(iface) else {
-        uart.put_str("unknown interface; use pcie3x1, pcie3x2, 0, or 1\n");
+        uart.put_str("unknown interface; use pcie3x1, pcie3x2, auto, 0, or 1\n");
         return;
     };
     let Some(host) = host else {
@@ -14270,7 +14425,7 @@ fn command_maint_verify_hmac(
 ) {
     if confirm != Some("confirm") {
         uart.put_str(
-            "usage: maint verify-hmac <pcie3x1|pcie3x2|0|1> <host|ip> <port> <path> <key-hex> confirm\n",
+            "usage: maint verify-hmac <pcie3x1|pcie3x2|auto|0|1> <host|ip> <port> <path> <key-hex> confirm\n",
         );
         return;
     }
@@ -14279,7 +14434,7 @@ fn command_maint_verify_hmac(
         return;
     };
     let Some(index) = parse_net_interface(iface) else {
-        uart.put_str("unknown interface; use pcie3x1, pcie3x2, 0, or 1\n");
+        uart.put_str("unknown interface; use pcie3x1, pcie3x2, auto, 0, or 1\n");
         return;
     };
     let Some(host) = host else {
@@ -14318,7 +14473,7 @@ fn command_maint_verify_local(
 ) {
     if confirm != Some("confirm") {
         uart.put_str(
-            "usage: maint verify-local <pcie3x1|pcie3x2|0|1> <host|ip> <port> <path> confirm\n",
+            "usage: maint verify-local <pcie3x1|pcie3x2|auto|0|1> <host|ip> <port> <path> confirm\n",
         );
         return;
     }
@@ -14327,7 +14482,7 @@ fn command_maint_verify_local(
         return;
     };
     let Some(index) = parse_net_interface(iface) else {
-        uart.put_str("unknown interface; use pcie3x1, pcie3x2, 0, or 1\n");
+        uart.put_str("unknown interface; use pcie3x1, pcie3x2, auto, 0, or 1\n");
         return;
     };
     let Some(host) = host else {
@@ -14377,7 +14532,7 @@ fn command_maint_pull_exec(
         (Some(event_path), Some("confirm")) => Some(event_path),
         _ => {
             uart.put_str(
-                "usage: maint pull-exec <pcie3x1|pcie3x2|0|1> <host|ip> <port> <poll-path> [event-path] confirm\n",
+                "usage: maint pull-exec <pcie3x1|pcie3x2|auto|0|1> <host|ip> <port> <poll-path> [event-path] confirm\n",
             );
             return;
         }
@@ -14393,7 +14548,7 @@ fn command_maint_pull_exec(
         return;
     };
     let Some(index) = parse_net_interface(iface) else {
-        uart.put_str("unknown interface; use pcie3x1, pcie3x2, 0, or 1\n");
+        uart.put_str("unknown interface; use pcie3x1, pcie3x2, auto, 0, or 1\n");
         return;
     };
     let Some(host) = host else {
@@ -14443,7 +14598,7 @@ fn command_maint_loop(
 ) {
     if confirm != Some("confirm") {
         uart.put_str(
-            "usage: maint loop <pcie3x1|pcie3x2|0|1> <host|ip> <port> <poll-path> <event-path> <count> <interval-ms> confirm\n",
+            "usage: maint loop <pcie3x1|pcie3x2|auto|0|1> <host|ip> <port> <poll-path> <event-path> <count> <interval-ms> confirm\n",
         );
         return;
     }
@@ -14452,7 +14607,7 @@ fn command_maint_loop(
         return;
     };
     let Some(index) = parse_net_interface(iface) else {
-        uart.put_str("unknown interface; use pcie3x1, pcie3x2, 0, or 1\n");
+        uart.put_str("unknown interface; use pcie3x1, pcie3x2, auto, 0, or 1\n");
         return;
     };
     let Some(host) = host else {
@@ -14630,7 +14785,9 @@ fn command_maint_poll(
     confirm: Option<&str>,
 ) {
     if confirm != Some("confirm") {
-        uart.put_str("usage: maint poll <pcie3x1|pcie3x2|0|1> <host|ip> <port> <path> confirm\n");
+        uart.put_str(
+            "usage: maint poll <pcie3x1|pcie3x2|auto|0|1> <host|ip> <port> <path> confirm\n",
+        );
         return;
     }
     let Some(iface) = iface else {
@@ -14638,7 +14795,7 @@ fn command_maint_poll(
         return;
     };
     let Some(index) = parse_net_interface(iface) else {
-        uart.put_str("unknown interface; use pcie3x1, pcie3x2, 0, or 1\n");
+        uart.put_str("unknown interface; use pcie3x1, pcie3x2, auto, 0, or 1\n");
         return;
     };
     let Some(host) = host else {
@@ -14672,7 +14829,9 @@ fn command_maint_status(
     confirm: Option<&str>,
 ) {
     if confirm != Some("confirm") {
-        uart.put_str("usage: maint status <pcie3x1|pcie3x2|0|1> <host|ip> <port> <path> confirm\n");
+        uart.put_str(
+            "usage: maint status <pcie3x1|pcie3x2|auto|0|1> <host|ip> <port> <path> confirm\n",
+        );
         return;
     }
     let Some(iface) = iface else {
@@ -14680,7 +14839,7 @@ fn command_maint_status(
         return;
     };
     let Some(index) = parse_net_interface(iface) else {
-        uart.put_str("unknown interface; use pcie3x1, pcie3x2, 0, or 1\n");
+        uart.put_str("unknown interface; use pcie3x1, pcie3x2, auto, 0, or 1\n");
         return;
     };
     let Some(host) = host else {
@@ -14714,7 +14873,9 @@ fn command_maint_audit(
     confirm: Option<&str>,
 ) {
     if confirm != Some("confirm") {
-        uart.put_str("usage: maint audit <pcie3x1|pcie3x2|0|1> <host|ip> <port> <path> confirm\n");
+        uart.put_str(
+            "usage: maint audit <pcie3x1|pcie3x2|auto|0|1> <host|ip> <port> <path> confirm\n",
+        );
         return;
     }
     let Some(iface) = iface else {
@@ -14722,7 +14883,7 @@ fn command_maint_audit(
         return;
     };
     let Some(index) = parse_net_interface(iface) else {
-        uart.put_str("unknown interface; use pcie3x1, pcie3x2, 0, or 1\n");
+        uart.put_str("unknown interface; use pcie3x1, pcie3x2, auto, 0, or 1\n");
         return;
     };
     let Some(host) = host else {
@@ -16107,6 +16268,7 @@ fn is_public_xj_query(query: &[u8]) -> bool {
         "identity",
         "identity facts",
         "net ips",
+        "net ifaces",
         "db facts",
         "db status",
         "db status confirm",
@@ -16135,6 +16297,9 @@ fn write_public_xj_query_result<W: Write>(query: &str, out: &mut W) -> bool {
     } else if query.eq_ignore_ascii_case("net ips") {
         let _ = write!(out, "XJQ OK ");
         write_net_ips_summary(out);
+    } else if query.eq_ignore_ascii_case("net ifaces") {
+        let _ = write!(out, "XJQ OK ");
+        write_net_ifaces_summary(out);
     } else if query.eq_ignore_ascii_case("db facts") {
         let _ = write!(
             out,
@@ -17501,6 +17666,8 @@ fn parse_net_interface(value: &str) -> Option<usize> {
         Some(0)
     } else if value.eq_ignore_ascii_case("pcie3x2") || value == "1" {
         Some(1)
+    } else if value.eq_ignore_ascii_case("auto") || value.eq_ignore_ascii_case("default") {
+        net_preferred_route_device()
     } else {
         None
     }
@@ -21537,6 +21704,9 @@ fn net_handle_query_packet(
             } else if query.eq_ignore_ascii_case("net ips") {
                 let _ = write!(reply, "XJQ OK ");
                 write_net_ips_summary(&mut reply);
+            } else if query.eq_ignore_ascii_case("net ifaces") {
+                let _ = write!(reply, "XJQ OK ");
+                write_net_ifaces_summary(&mut reply);
             } else if query.starts_with("net dns ") {
                 write_net_dns_query_summary(index, query, &mut reply);
             } else if query.starts_with("net tcp ") {
