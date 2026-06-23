@@ -1415,6 +1415,7 @@ enum TlsError {
     ClientFinishedEncrypt,
     ClientFinishedTx,
     HttpsBadPath,
+    HttpsBadBody,
     HttpsRequestTooLong,
     HttpsRequestEncrypt,
     HttpsRequestTx,
@@ -1436,6 +1437,7 @@ impl TlsError {
             Self::ClientFinishedEncrypt => "client-finished-encrypt",
             Self::ClientFinishedTx => "client-finished-tx",
             Self::HttpsBadPath => "https-bad-path",
+            Self::HttpsBadBody => "https-bad-body",
             Self::HttpsRequestTooLong => "https-request-too-long",
             Self::HttpsRequestEncrypt => "https-request-encrypt",
             Self::HttpsRequestTx => "https-request-tx",
@@ -2565,6 +2567,8 @@ fn print_help(uart: &mut Uart) {
     uart.put_str("                       perform minimal HTTP/1.0 POST over outbound TCP\n");
     uart.put_str("  net https <if> <host|ip> <port> <path> [sni] confirm\n");
     uart.put_str("                       perform minimal HTTPS GET over TLS 1.3\n");
+    uart.put_str("  net https-post <if> <host|ip> <port> <path> <body> [sni] confirm\n");
+    uart.put_str("                       perform minimal HTTPS POST over TLS 1.3\n");
     uart.put_str("  net tls <if> <host|ip> <port> [sni] confirm\n");
     uart.put_str("                       send TLS ClientHello and probe first encrypted record\n");
     uart.put_str("  net tls-finish <if> <host|ip> <port> [sni] confirm\n");
@@ -2765,6 +2769,7 @@ fn print_caps(uart: &mut Uart) {
     uart.put_str("  net routed-udp-loader yes\n");
     uart.put_str("  net http-post yes\n");
     uart.put_str("  net https-get yes\n");
+    uart.put_str("  net https-post yes\n");
     uart.put_str("  net tls-application-data yes\n");
     uart.put_str("  maint http-poll yes\n");
     uart.put_str("  maint pending-summary yes\n");
@@ -2812,14 +2817,14 @@ fn print_caps(uart: &mut Uart) {
 fn write_caps_query_summary<W: Write>(out: &mut W) {
     let _ = write!(
         out,
-        "XJQ OK caps net-dev=yes dhcp=yes auto-dhcp=yes route=yes arp=yes dns=yes tcp-connect=yes http-get=yes http-post=yes https-get=yes tls-clienthello=yes tls-aes128gcm-decrypt=yes tls-chacha20poly1305-decrypt=yes tls-handshake-parse=yes tls-certificate-list-parse=yes tls-first-certificate-sha256=yes tls-first-certificate-pin=yes tls-server-finished-verify=yes tls-client-finished-send=yes tls-application-data=yes maint-poll=yes maint-status=yes maint-command-verify=yes maint-command-verify-hmac=yes maint-local-hmac-key=yes maint-pull-exec=yes maint-loop=yes maint-config=yes maint-config-paths=yes maint-config-host-name=yes maint-config-https=yes maint-config-tls-pin=yes maint-cold-boot-tick=yes maint-ack-intent=yes maint-remote-event=yes identity=yes query=yes reboot=yes wifi-firmware-sd=confirm wifi-firmware-crc=confirm wifi-firmware-load=confirm wifi-enum=confirm wifi-mmio-snapshot=confirm wifi-mmio-fingerprint=confirm sd-writer=yes ab-persist=yes boot-slot=extlinux db=page-store,catalog,wal,fixed-table,btree,event-log"
+        "XJQ OK caps net-dev=yes dhcp=yes auto-dhcp=yes route=yes arp=yes dns=yes tcp-connect=yes http-get=yes http-post=yes https-get=yes https-post=yes tls-clienthello=yes tls-aes128gcm-decrypt=yes tls-chacha20poly1305-decrypt=yes tls-handshake-parse=yes tls-certificate-list-parse=yes tls-first-certificate-sha256=yes tls-first-certificate-pin=yes tls-server-finished-verify=yes tls-client-finished-send=yes tls-application-data=yes maint-poll=yes maint-status=yes maint-command-verify=yes maint-command-verify-hmac=yes maint-local-hmac-key=yes maint-pull-exec=yes maint-loop=yes maint-config=yes maint-config-paths=yes maint-config-host-name=yes maint-config-https=yes maint-config-tls-pin=yes maint-cold-boot-tick=yes maint-ack-intent=yes maint-remote-event=yes maint-https-event=yes identity=yes query=yes reboot=yes wifi-firmware-sd=confirm wifi-firmware-crc=confirm wifi-firmware-load=confirm wifi-enum=confirm wifi-mmio-snapshot=confirm wifi-mmio-fingerprint=confirm sd-writer=yes ab-persist=yes boot-slot=extlinux db=page-store,catalog,wal,fixed-table,btree,event-log"
     );
 }
 
 fn write_caps_full_query_summary<W: Write>(out: &mut W) {
     let _ = write!(
         out,
-        "XJQ OK caps-full net=dev,dhcp,auto-dhcp,route,arp,dns,tcp,http-get,http-post,https-get,http-trace,http-debug tls=clienthello,aes128gcm,chacha20poly1305,handshake,cert-list,first-cert-sha256,first-cert-pin,server-finished,client-finished-material,client-finished-send,application-data maint=poll,status,pending,digest,verify,verify-hmac,local-key,pull-exec,loop,config,paths,host-name,https,tls-pin,cold-boot,ack-intent,remote-event,local-audit wifi=pcie,firmware,firmware-crc,firmware-load,mmio-snapshot,mmio-fingerprint,driver-gate,rtw88-profile,trace,pcie-init,pcie-init-high,pcie-init-linux,pcie-init-dt,enum,station-planned,ap-planned sd=probe,writer,ab-persist,extlinux db=page-store,catalog,wal,fixed-table,btree,btree-delete,table-namespace,event-log,blob-backup,blob-restore"
+        "XJQ OK caps-full net=dev,dhcp,auto-dhcp,route,arp,dns,tcp,http-get,http-post,https-get,https-post,http-trace,http-debug tls=clienthello,aes128gcm,chacha20poly1305,handshake,cert-list,first-cert-sha256,first-cert-pin,server-finished,client-finished-material,client-finished-send,application-data maint=poll,status,pending,digest,verify,verify-hmac,local-key,pull-exec,loop,config,paths,host-name,https,tls-pin,cold-boot,ack-intent,remote-event,https-event,local-audit wifi=pcie,firmware,firmware-crc,firmware-load,mmio-snapshot,mmio-fingerprint,driver-gate,rtw88-profile,trace,pcie-init,pcie-init-high,pcie-init-linux,pcie-init-dt,enum,station-planned,ap-planned sd=probe,writer,ab-persist,extlinux db=page-store,catalog,wal,fixed-table,btree,btree-delete,table-namespace,event-log,blob-backup,blob-restore"
     );
 }
 
@@ -4776,6 +4781,16 @@ fn command_net<'a>(uart: &mut Uart, parts: &mut core::str::SplitWhitespace<'a>) 
             parts.next(),
             parts.next(),
         ),
+        Some("https-post") => command_net_https_post(
+            uart,
+            parts.next(),
+            parts.next(),
+            parts.next(),
+            parts.next(),
+            parts.next(),
+            parts.next(),
+            parts.next(),
+        ),
         Some("tls") => command_net_tls(
             uart,
             parts.next(),
@@ -4818,6 +4833,9 @@ fn command_net<'a>(uart: &mut Uart, parts: &mut core::str::SplitWhitespace<'a>) 
             );
             uart.put_str(
                 "  net https <pcie3x1|pcie3x2|0|1> <host|ip> <port> <path> [sni] confirm\n",
+            );
+            uart.put_str(
+                "  net https-post <pcie3x1|pcie3x2|0|1> <host|ip> <port> <path> <body> [sni] confirm\n",
             );
             uart.put_str("  net tls <pcie3x1|pcie3x2|0|1> <host|ip> <port> [sni] confirm\n");
             uart.put_str("  net tls-finish <pcie3x1|pcie3x2|0|1> <host|ip> <port> [sni] confirm\n");
@@ -4928,6 +4946,16 @@ fn command_maint<'a>(uart: &mut Uart, parts: &mut core::str::SplitWhitespace<'a>
             parts.next(),
             parts.next(),
         ),
+        Some("https-event") => command_maint_https_event(
+            uart,
+            parts.next(),
+            parts.next(),
+            parts.next(),
+            parts.next(),
+            parts.next(),
+            parts.next(),
+            parts.next(),
+        ),
         _ => {
             uart.put_str("usage:\n");
             uart.put_str("  maint poll <pcie3x1|pcie3x2|0|1> <host|ip> <port> <path> confirm\n");
@@ -4954,6 +4982,9 @@ fn command_maint<'a>(uart: &mut Uart, parts: &mut core::str::SplitWhitespace<'a>
             );
             uart.put_str(
                 "  maint event <pcie3x1|pcie3x2|0|1> <host|ip> <port> <path> <kind> confirm\n",
+            );
+            uart.put_str(
+                "  maint https-event <pcie3x1|pcie3x2|0|1> <host|ip> <port> <path> <kind> [sni] confirm\n",
             );
         }
     }
@@ -5668,6 +5699,111 @@ fn write_net_https_query_summary<W: Write>(default_index: usize, query: &str, ou
     }
 }
 
+fn write_net_https_post_query_summary<W: Write>(default_index: usize, query: &str, out: &mut W) {
+    let mut parts = query.split_whitespace();
+    let _net = parts.next();
+    let _https_post = parts.next();
+    let Some(first) = parts.next() else {
+        let _ = write!(out, "XJQ ERR https-post-usage");
+        return;
+    };
+    let (index, host) = if let Some(index) = parse_net_interface(first) {
+        let Some(host) = parts.next() else {
+            let _ = write!(out, "XJQ ERR https-post-usage");
+            return;
+        };
+        (index, host)
+    } else {
+        (default_index, first)
+    };
+    let Some(port) = parts.next().and_then(parse_u16) else {
+        let _ = write!(out, "XJQ ERR https-post-usage");
+        return;
+    };
+    let Some(path) = parts.next() else {
+        let _ = write!(out, "XJQ ERR https-post-usage");
+        return;
+    };
+    let Some(body) = parts.next() else {
+        let _ = write!(out, "XJQ ERR https-post-usage");
+        return;
+    };
+    let Some(next) = parts.next() else {
+        let _ = write!(out, "XJQ ERR https-post-usage");
+        return;
+    };
+    let (sni, confirm) = if next.eq_ignore_ascii_case("confirm") {
+        (host, next)
+    } else {
+        (
+            if next == "-" { host } else { next },
+            parts.next().unwrap_or(""),
+        )
+    };
+    if !confirm.eq_ignore_ascii_case("confirm") || parts.next().is_some() {
+        let _ = write!(out, "XJQ ERR https-post-usage");
+        return;
+    }
+
+    match net_https_post(
+        index,
+        host,
+        port,
+        path,
+        body.as_bytes(),
+        sni,
+        HTTP_TIMEOUT_MS,
+    ) {
+        Ok(result) => {
+            let _ = write!(
+                out,
+                "XJQ OK https-post iface={} host={} sni={} ip={}.{}.{}.{} port={} src-port={} status={} body-len={} client-hello-sent={} server-finished-verified={} client-finished-sent=yes client-finished-record-len={} request-record-len={} encrypted-sent={} encrypted-bytes={} encrypted-payload={} encrypted-segments={} encrypted-fin={} encrypted-truncated={} decrypted-records={} decrypted-application-records={} decrypted-handshake-records={} decrypted-payload={} decrypted-alert-level={} decrypted-alert-description={} app-client-secret-sha256=",
+                PCIE_CONTROLLERS[index].name,
+                host,
+                sni,
+                result.tls.tcp.dst_ip[0],
+                result.tls.tcp.dst_ip[1],
+                result.tls.tcp.dst_ip[2],
+                result.tls.tcp.dst_ip[3],
+                result.tls.tcp.dst_port,
+                result.tls.tcp.src_port,
+                optional_u16_dec(result.status_code),
+                body.as_bytes().len(),
+                result.tls.sent_payload_len,
+                yes_no(result.tls.server_finished_verified),
+                result.client_finished_record_len,
+                result.request_record_len,
+                result.encrypted_sent,
+                result.encrypted_response_bytes,
+                result.encrypted_response_payload,
+                result.encrypted_response_segments,
+                yes_no(result.encrypted_response_fin),
+                yes_no(result.encrypted_response_truncated),
+                result.decrypted_records,
+                result.decrypted_application_records,
+                result.decrypted_handshake_records,
+                result.decrypted_payload_bytes,
+                optional_u8_hex(result.decrypted_alert_level),
+                optional_u8_hex(result.decrypted_alert_description)
+            );
+            write_sha256_hex(out, &result.client_app_traffic_sha256);
+            let _ = write!(out, " app-server-secret-sha256=");
+            write_sha256_hex(out, &result.server_app_traffic_sha256);
+            let _ = write!(out, " first-line=\"");
+            write_http_sample_line(out, &result.decrypted_sample[..result.decrypted_sample_len]);
+            let _ = write!(out, "\" raw=\"");
+            write_http_raw_sample_line(
+                out,
+                &result.decrypted_sample[..result.decrypted_sample_len],
+            );
+            let _ = write!(out, "\"");
+        }
+        Err(error) => {
+            let _ = write!(out, "XJQ ERR https-post {}", error.as_str());
+        }
+    }
+}
+
 fn write_net_tls_pin_query_summary<W: Write>(default_index: usize, query: &str, out: &mut W) {
     let mut parts = query.split_whitespace();
     let _net = parts.next();
@@ -6163,10 +6299,23 @@ fn write_maint_https_loop_execute_summary<W: Write>(
     let count_usize = count as usize;
 
     for iteration in 0..count_usize {
-        let mut iteration_reply = NetReplyBuf::new();
-        write_maint_https_poll_summary(&mut iteration_reply, index, host, port, poll_path, sni);
-        let text = str::from_utf8(iteration_reply.as_slice()).unwrap_or("");
-        if text.starts_with("XJQ OK maint-poll ") {
+        let mut poll_reply = NetReplyBuf::new();
+        write_maint_https_poll_summary(&mut poll_reply, index, host, port, poll_path, sni);
+        let poll_text = str::from_utf8(poll_reply.as_slice()).unwrap_or("");
+        let mut event_reply = NetReplyBuf::new();
+        write_maint_https_event_summary(
+            &mut event_reply,
+            index,
+            host,
+            port,
+            event_path,
+            "heartbeat",
+            sni,
+        );
+        let event_text = str::from_utf8(event_reply.as_slice()).unwrap_or("");
+        if poll_text.starts_with("XJQ OK maint-poll ")
+            && event_text.starts_with("XJQ OK maint-event ")
+        {
             ok_flags[iteration] = true;
             ok_count += 1;
         } else {
@@ -6180,7 +6329,7 @@ fn write_maint_https_loop_execute_summary<W: Write>(
 
     let _ = write!(
         out,
-        "XJQ OK maint-loop iface={} scheme=https host={host} sni={sni} port={port} poll={poll_path} event={event_path} count={count} interval-ms={interval_ms} ok={ok_count} err={err_count} note=https-event-post-pending",
+        "XJQ OK maint-loop iface={} scheme=https host={host} sni={sni} port={port} poll={poll_path} event={event_path} count={count} interval-ms={interval_ms} ok={ok_count} err={err_count} note=https-poll-heartbeat",
         PCIE_CONTROLLERS[index].name
     );
     for iteration in 0..count_usize {
@@ -6731,6 +6880,62 @@ fn write_maint_event_query_summary<W: Write>(default_index: usize, query: &str, 
     };
 
     write_maint_event_summary(out, index, host, port, path, kind);
+}
+
+fn write_maint_https_event_query_summary<W: Write>(default_index: usize, query: &str, out: &mut W) {
+    let mut parts = query.split_whitespace();
+    let _maint = parts.next();
+    if parts.next() != Some("https-event") {
+        let _ = write!(out, "XJQ ERR maint-https-event-usage");
+        return;
+    }
+    let Some(first) = parts.next() else {
+        let _ = write!(out, "XJQ ERR maint-https-event-usage");
+        return;
+    };
+    let (index, host) = if let Some(index) = parse_net_interface(first) {
+        let Some(host) = parts.next() else {
+            let _ = write!(out, "XJQ ERR maint-https-event-usage");
+            return;
+        };
+        (index, host)
+    } else {
+        (default_index, first)
+    };
+    let Some(port_text) = parts.next() else {
+        let _ = write!(out, "XJQ ERR maint-https-event-usage");
+        return;
+    };
+    let Some(path) = parts.next() else {
+        let _ = write!(out, "XJQ ERR maint-https-event-usage");
+        return;
+    };
+    let Some(kind) = parts.next() else {
+        let _ = write!(out, "XJQ ERR maint-https-event-usage");
+        return;
+    };
+    let Some(next) = parts.next() else {
+        let _ = write!(out, "XJQ ERR maint-https-event-usage");
+        return;
+    };
+    let (sni, confirm) = if next.eq_ignore_ascii_case("confirm") {
+        (host, next)
+    } else {
+        (
+            if next == "-" { host } else { next },
+            parts.next().unwrap_or(""),
+        )
+    };
+    if !confirm.eq_ignore_ascii_case("confirm") || parts.next().is_some() {
+        let _ = write!(out, "XJQ ERR maint-https-event-usage");
+        return;
+    }
+    let Some(port) = parse_u16(port_text) else {
+        let _ = write!(out, "XJQ ERR maint-https-event-port");
+        return;
+    };
+
+    write_maint_https_event_summary(out, index, host, port, path, kind, sni);
 }
 
 fn command_sd(uart: &mut Uart, action: Option<&str>, confirm: Option<&str>) {
@@ -13634,6 +13839,78 @@ fn command_net_https(
     }
 }
 
+fn command_net_https_post(
+    uart: &mut Uart,
+    iface: Option<&str>,
+    host: Option<&str>,
+    port: Option<&str>,
+    path: Option<&str>,
+    body: Option<&str>,
+    sni_or_confirm: Option<&str>,
+    confirm: Option<&str>,
+) {
+    let (sni, confirmed) = match (host, sni_or_confirm, confirm) {
+        (Some(host), Some(value), _) if value.eq_ignore_ascii_case("confirm") => (host, true),
+        (_, Some(sni), Some(value)) if value.eq_ignore_ascii_case("confirm") => {
+            (if sni == "-" { host.unwrap_or("") } else { sni }, true)
+        }
+        _ => ("", false),
+    };
+    if !confirmed {
+        uart.put_str(
+            "usage: net https-post <pcie3x1|pcie3x2|0|1> <host|ip> <port> <path> <body> [sni] confirm\n",
+        );
+        uart.put_str(
+            "scope: send one small HTTPS POST through a TLS 1.3 application-data record\n",
+        );
+        return;
+    }
+    let Some(iface) = iface else {
+        uart.put_str("missing interface\n");
+        return;
+    };
+    let Some(index) = parse_net_interface(iface) else {
+        uart.put_str("unknown interface; use pcie3x1, pcie3x2, 0, or 1\n");
+        return;
+    };
+    let Some(host) = host else {
+        uart.put_str("missing host\n");
+        return;
+    };
+    let Some(port) = port.and_then(parse_u16) else {
+        uart.put_str("missing or invalid TCP port\n");
+        return;
+    };
+    let Some(path) = path else {
+        uart.put_str("missing path\n");
+        return;
+    };
+    let Some(body) = body else {
+        uart.put_str("missing body\n");
+        return;
+    };
+
+    let _ = writeln!(
+        uart,
+        "net https-post {} https://{host}:{port}{path} sni={sni}:",
+        PCIE_CONTROLLERS[index].name
+    );
+    match net_https_post(
+        index,
+        host,
+        port,
+        path,
+        body.as_bytes(),
+        sni,
+        HTTP_TIMEOUT_MS,
+    ) {
+        Ok(result) => print_https_get_result(uart, result),
+        Err(error) => {
+            let _ = writeln!(uart, "  error           {}", error.as_str());
+        }
+    }
+}
+
 fn command_net_tls_finish(
     uart: &mut Uart,
     iface: Option<&str>,
@@ -13808,6 +14085,63 @@ fn command_maint_event(
         PCIE_CONTROLLERS[index].name
     );
     write_maint_event_summary(uart, index, host, port, path, kind);
+    uart.put_str("\n");
+}
+
+fn command_maint_https_event(
+    uart: &mut Uart,
+    iface: Option<&str>,
+    host: Option<&str>,
+    port: Option<&str>,
+    path: Option<&str>,
+    kind: Option<&str>,
+    sni_or_confirm: Option<&str>,
+    confirm: Option<&str>,
+) {
+    let (sni, confirmed) = match (host, sni_or_confirm, confirm) {
+        (Some(host), Some(value), _) if value.eq_ignore_ascii_case("confirm") => (host, true),
+        (_, Some(sni), Some(value)) if value.eq_ignore_ascii_case("confirm") => {
+            (if sni == "-" { host.unwrap_or("") } else { sni }, true)
+        }
+        _ => ("", false),
+    };
+    if !confirmed {
+        uart.put_str(
+            "usage: maint https-event <pcie3x1|pcie3x2|0|1> <host|ip> <port> <path> <kind> [sni] confirm\n",
+        );
+        return;
+    }
+    let Some(iface) = iface else {
+        uart.put_str("missing interface\n");
+        return;
+    };
+    let Some(index) = parse_net_interface(iface) else {
+        uart.put_str("unknown interface; use pcie3x1, pcie3x2, 0, or 1\n");
+        return;
+    };
+    let Some(host) = host else {
+        uart.put_str("missing host\n");
+        return;
+    };
+    let Some(port) = port.and_then(parse_u16) else {
+        uart.put_str("missing or invalid TCP port\n");
+        return;
+    };
+    let Some(path) = path else {
+        uart.put_str("missing path\n");
+        return;
+    };
+    let Some(kind) = kind else {
+        uart.put_str("missing event kind\n");
+        return;
+    };
+
+    let _ = writeln!(
+        uart,
+        "maint https-event {} https://{host}:{port}{path} sni={sni}:",
+        PCIE_CONTROLLERS[index].name
+    );
+    write_maint_https_event_summary(uart, index, host, port, path, kind, sni);
     uart.put_str("\n");
 }
 
@@ -14927,6 +15261,71 @@ fn write_maint_event_summary<W: Write>(
         }
         Err(error) => {
             let _ = write!(out, "XJQ ERR maint-event {}", error.as_str());
+        }
+    }
+}
+
+fn write_maint_https_event_summary<W: Write>(
+    out: &mut W,
+    index: usize,
+    host: &str,
+    port: u16,
+    path: &str,
+    kind: &str,
+    sni: &str,
+) {
+    if !is_public_maint_event_kind(kind) {
+        let _ = write!(out, "XJQ ERR maint-event bad-kind");
+        return;
+    }
+    let mut body = NetReplyBuf::new();
+    if write!(
+        body,
+        "{{\"events\":[{{\"kind\":\"{}\",\"payload\":{{\"source\":\"xiaojin-os\",\"iface\":\"{}\",\"scheme\":\"https\"}}}}]}}",
+        kind, PCIE_CONTROLLERS[index].name
+    )
+    .is_err()
+    {
+        let _ = write!(out, "XJQ ERR maint-event body-too-long");
+        return;
+    }
+
+    match net_https_post(
+        index,
+        host,
+        port,
+        path,
+        body.as_slice(),
+        sni,
+        HTTP_TIMEOUT_MS,
+    ) {
+        Ok(result) => {
+            let _ = write!(
+                out,
+                "XJQ OK maint-event iface={} scheme=https host={} sni={} ip={}.{}.{}.{} port={} status={} encrypted-bytes={} encrypted-payload={} encrypted-segments={} decrypted-payload={} decrypted-application-records={} sent={} src-port={} kind={} first-line=\"",
+                PCIE_CONTROLLERS[index].name,
+                host,
+                sni,
+                result.tls.tcp.dst_ip[0],
+                result.tls.tcp.dst_ip[1],
+                result.tls.tcp.dst_ip[2],
+                result.tls.tcp.dst_ip[3],
+                result.tls.tcp.dst_port,
+                optional_u16_dec(result.status_code),
+                result.encrypted_response_bytes,
+                result.encrypted_response_payload,
+                result.encrypted_response_segments,
+                result.decrypted_payload_bytes,
+                result.decrypted_application_records,
+                result.encrypted_sent,
+                result.tls.tcp.src_port,
+                kind
+            );
+            write_http_sample_line(out, &result.decrypted_sample[..result.decrypted_sample_len]);
+            let _ = write!(out, "\"");
+        }
+        Err(error) => {
+            let _ = write!(out, "XJQ ERR maint-event https {}", error.as_str());
         }
     }
 }
@@ -18235,11 +18634,13 @@ fn net_tls_client_finish(
     })
 }
 
-fn net_https_get(
+fn net_https_request(
     index: usize,
     host: &str,
     dst_port: u16,
+    method: &[u8],
     path: &str,
+    body: &[u8],
     sni: &str,
     timeout_ms: u64,
 ) -> Result<HttpsGetResult, TlsError> {
@@ -18253,6 +18654,13 @@ fn net_https_get(
             .any(|b| *b == b' ' || *b == b'\r' || *b == b'\n')
     {
         return Err(TlsError::HttpsBadPath);
+    }
+    if body
+        .iter()
+        .any(|byte| *byte == b'\r' || *byte == b'\n' || *byte == 0)
+        || core::str::from_utf8(body).is_err()
+    {
+        return Err(TlsError::HttpsBadBody);
     }
 
     let x25519_secret = tls_x25519_secret();
@@ -18473,12 +18881,22 @@ fn net_https_get(
     }
 
     let mut request = HttpRequestBuf::new();
-    if write!(
-        request,
-        "GET {path} HTTP/1.0\r\nHost: {sni}\r\nUser-Agent: xiaojin-os/0.1\r\nConnection: close\r\n\r\n"
-    )
-    .is_err()
-    {
+    let request_ok = if method == b"POST" {
+        write!(
+            request,
+            "POST {path} HTTP/1.0\r\nHost: {sni}\r\nUser-Agent: xiaojin-os/0.1\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+            body.len()
+        )
+        .and_then(|_| request.write_str(core::str::from_utf8(body).unwrap_or("")))
+        .is_ok()
+    } else {
+        write!(
+            request,
+            "GET {path} HTTP/1.0\r\nHost: {sni}\r\nUser-Agent: xiaojin-os/0.1\r\nConnection: close\r\n\r\n"
+        )
+        .is_ok()
+    };
+    if !request_ok {
         let _ = net_tcp_reset(index, session);
         return Err(TlsError::HttpsRequestTooLong);
     }
@@ -18593,6 +19011,29 @@ fn net_https_get(
         decrypted_sample_len: decrypted.sample_len,
         decrypted_sample: decrypted.sample,
     })
+}
+
+fn net_https_get(
+    index: usize,
+    host: &str,
+    dst_port: u16,
+    path: &str,
+    sni: &str,
+    timeout_ms: u64,
+) -> Result<HttpsGetResult, TlsError> {
+    net_https_request(index, host, dst_port, b"GET", path, &[], sni, timeout_ms)
+}
+
+fn net_https_post(
+    index: usize,
+    host: &str,
+    dst_port: u16,
+    path: &str,
+    body: &[u8],
+    sni: &str,
+    timeout_ms: u64,
+) -> Result<HttpsGetResult, TlsError> {
+    net_https_request(index, host, dst_port, b"POST", path, body, sni, timeout_ms)
 }
 
 #[derive(Clone, Copy)]
@@ -21054,6 +21495,8 @@ fn net_handle_query_packet(
                 write_net_http_trace_query_summary(index, query, &mut reply);
             } else if query.starts_with("net http-post ") {
                 write_net_http_post_query_summary(index, query, &mut reply);
+            } else if query.starts_with("net https-post ") {
+                write_net_https_post_query_summary(index, query, &mut reply);
             } else if query.starts_with("net https ") || query.starts_with("net https-get ") {
                 write_net_https_query_summary(index, query, &mut reply);
             } else if query.starts_with("net tls-finish ") {
@@ -21106,6 +21549,8 @@ fn net_handle_query_packet(
                 write_maint_key_clear_summary(&mut reply);
             } else if query.starts_with("maint ack-intent ") {
                 write_maint_ack_intent_query_summary(index, query, &mut reply);
+            } else if query.starts_with("maint https-event ") {
+                write_maint_https_event_query_summary(index, query, &mut reply);
             } else if query.starts_with("maint event ") {
                 write_maint_event_query_summary(index, query, &mut reply);
             } else if query.eq_ignore_ascii_case("wifi facts") {
