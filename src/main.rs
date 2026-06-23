@@ -6288,6 +6288,7 @@ fn write_maint_https_loop_execute_summary<W: Write>(
     poll_path: &str,
     event_path: &str,
     sni: &str,
+    tls_pin_sha256: Option<&[u8; 32]>,
     count: u64,
     interval_ms: u64,
     out: &mut W,
@@ -6300,7 +6301,15 @@ fn write_maint_https_loop_execute_summary<W: Write>(
 
     for iteration in 0..count_usize {
         let mut poll_reply = NetReplyBuf::new();
-        write_maint_https_poll_summary(&mut poll_reply, index, host, port, poll_path, sni);
+        write_maint_https_poll_summary(
+            &mut poll_reply,
+            index,
+            host,
+            port,
+            poll_path,
+            sni,
+            tls_pin_sha256,
+        );
         let poll_text = str::from_utf8(poll_reply.as_slice()).unwrap_or("");
         let mut event_reply = NetReplyBuf::new();
         write_maint_https_event_summary(
@@ -6311,6 +6320,7 @@ fn write_maint_https_loop_execute_summary<W: Write>(
             event_path,
             "heartbeat",
             sni,
+            tls_pin_sha256,
         );
         let event_text = str::from_utf8(event_reply.as_slice()).unwrap_or("");
         if poll_text.starts_with("XJQ OK maint-poll ")
@@ -6329,8 +6339,9 @@ fn write_maint_https_loop_execute_summary<W: Write>(
 
     let _ = write!(
         out,
-        "XJQ OK maint-loop iface={} scheme=https host={host} sni={sni} port={port} poll={poll_path} event={event_path} count={count} interval-ms={interval_ms} ok={ok_count} err={err_count} note=https-poll-heartbeat",
-        PCIE_CONTROLLERS[index].name
+        "XJQ OK maint-loop iface={} scheme=https host={host} sni={sni} port={port} poll={poll_path} event={event_path} count={count} interval-ms={interval_ms} ok={ok_count} err={err_count} tls-pin={} note=https-poll-heartbeat",
+        PCIE_CONTROLLERS[index].name,
+        yes_no(tls_pin_sha256.is_some())
     );
     for iteration in 0..count_usize {
         let status = if ok_flags[iteration] {
@@ -6618,6 +6629,11 @@ fn write_maint_config_run_summary<W: Write>(out: &mut W) {
             let event_path =
                 str::from_utf8(&config.event_path[..config.event_path_len]).unwrap_or("/");
             if config.https {
+                let tls_pin_sha256 = if config.tls_pin_present {
+                    Some(&config.tls_pin_sha256)
+                } else {
+                    None
+                };
                 write_maint_https_loop_execute_summary(
                     config.index,
                     host,
@@ -6625,6 +6641,7 @@ fn write_maint_config_run_summary<W: Write>(out: &mut W) {
                     poll_path,
                     event_path,
                     sni,
+                    tls_pin_sha256,
                     config.count,
                     config.interval_ms,
                     out,
@@ -6662,6 +6679,11 @@ fn write_maint_config_run_once_summary<W: Write>(out: &mut W) {
             let event_path =
                 str::from_utf8(&config.event_path[..config.event_path_len]).unwrap_or("/");
             if config.https {
+                let tls_pin_sha256 = if config.tls_pin_present {
+                    Some(&config.tls_pin_sha256)
+                } else {
+                    None
+                };
                 write_maint_https_loop_execute_summary(
                     config.index,
                     host,
@@ -6669,6 +6691,7 @@ fn write_maint_config_run_once_summary<W: Write>(out: &mut W) {
                     poll_path,
                     event_path,
                     sni,
+                    tls_pin_sha256,
                     1,
                     config.interval_ms,
                     out,
@@ -6935,7 +6958,7 @@ fn write_maint_https_event_query_summary<W: Write>(default_index: usize, query: 
         return;
     };
 
-    write_maint_https_event_summary(out, index, host, port, path, kind, sni);
+    write_maint_https_event_summary(out, index, host, port, path, kind, sni, None);
 }
 
 fn command_sd(uart: &mut Uart, action: Option<&str>, confirm: Option<&str>) {
@@ -14141,7 +14164,7 @@ fn command_maint_https_event(
         "maint https-event {} https://{host}:{port}{path} sni={sni}:",
         PCIE_CONTROLLERS[index].name
     );
-    write_maint_https_event_summary(uart, index, host, port, path, kind, sni);
+    write_maint_https_event_summary(uart, index, host, port, path, kind, sni, None);
     uart.put_str("\n");
 }
 
@@ -14969,6 +14992,13 @@ fn tls_first_certificate_pin_matches(result: &TlsClientHelloResult, expected_sha
     }
 }
 
+fn https_result_certificate_pin_matches(result: &HttpsGetResult, expected_sha: &[u8; 32]) -> bool {
+    match result.tls.decrypted_first_certificate_sha256 {
+        Some(actual) => actual == *expected_sha,
+        None => false,
+    }
+}
+
 fn tls_pin_reason(result: &TlsClientHelloResult, pin_match: bool) -> &'static str {
     if pin_match {
         "matched"
@@ -15024,12 +15054,22 @@ fn write_maint_https_poll_summary<W: Write>(
     port: u16,
     path: &str,
     sni: &str,
+    tls_pin_sha256: Option<&[u8; 32]>,
 ) {
     match net_https_get(index, host, port, path, sni, HTTP_TIMEOUT_MS) {
         Ok(result) => {
+            if let Some(expected) = tls_pin_sha256 {
+                if !https_result_certificate_pin_matches(&result, expected) {
+                    let _ = write!(out, "XJQ ERR maint-poll https tls-pin-mismatch expected=");
+                    write_sha256_hex(out, expected);
+                    let _ = write!(out, " actual=");
+                    write_optional_sha256_hex(out, &result.tls.decrypted_first_certificate_sha256);
+                    return;
+                }
+            }
             let _ = write!(
                 out,
-                "XJQ OK maint-poll iface={} scheme=https host={} sni={} ip={}.{}.{}.{} port={} status={} encrypted-bytes={} encrypted-payload={} encrypted-segments={} decrypted-payload={} decrypted-application-records={} src-port={} first-line=\"",
+                "XJQ OK maint-poll iface={} scheme=https host={} sni={} ip={}.{}.{}.{} port={} status={} encrypted-bytes={} encrypted-payload={} encrypted-segments={} decrypted-payload={} decrypted-application-records={} tls-pin-match={} src-port={} first-line=\"",
                 PCIE_CONTROLLERS[index].name,
                 host,
                 sni,
@@ -15044,6 +15084,7 @@ fn write_maint_https_poll_summary<W: Write>(
                 result.encrypted_response_segments,
                 result.decrypted_payload_bytes,
                 result.decrypted_application_records,
+                yes_no(tls_pin_sha256.is_some()),
                 result.tls.tcp.src_port
             );
             write_http_sample_line(out, &result.decrypted_sample[..result.decrypted_sample_len]);
@@ -15273,6 +15314,7 @@ fn write_maint_https_event_summary<W: Write>(
     path: &str,
     kind: &str,
     sni: &str,
+    tls_pin_sha256: Option<&[u8; 32]>,
 ) {
     if !is_public_maint_event_kind(kind) {
         let _ = write!(out, "XJQ ERR maint-event bad-kind");
@@ -15300,9 +15342,18 @@ fn write_maint_https_event_summary<W: Write>(
         HTTP_TIMEOUT_MS,
     ) {
         Ok(result) => {
+            if let Some(expected) = tls_pin_sha256 {
+                if !https_result_certificate_pin_matches(&result, expected) {
+                    let _ = write!(out, "XJQ ERR maint-event https tls-pin-mismatch expected=");
+                    write_sha256_hex(out, expected);
+                    let _ = write!(out, " actual=");
+                    write_optional_sha256_hex(out, &result.tls.decrypted_first_certificate_sha256);
+                    return;
+                }
+            }
             let _ = write!(
                 out,
-                "XJQ OK maint-event iface={} scheme=https host={} sni={} ip={}.{}.{}.{} port={} status={} encrypted-bytes={} encrypted-payload={} encrypted-segments={} decrypted-payload={} decrypted-application-records={} sent={} src-port={} kind={} first-line=\"",
+                "XJQ OK maint-event iface={} scheme=https host={} sni={} ip={}.{}.{}.{} port={} status={} encrypted-bytes={} encrypted-payload={} encrypted-segments={} decrypted-payload={} decrypted-application-records={} tls-pin-match={} sent={} src-port={} kind={} first-line=\"",
                 PCIE_CONTROLLERS[index].name,
                 host,
                 sni,
@@ -15317,6 +15368,7 @@ fn write_maint_https_event_summary<W: Write>(
                 result.encrypted_response_segments,
                 result.decrypted_payload_bytes,
                 result.decrypted_application_records,
+                yes_no(tls_pin_sha256.is_some()),
                 result.encrypted_sent,
                 result.tls.tcp.src_port,
                 kind
