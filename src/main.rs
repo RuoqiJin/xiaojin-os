@@ -6145,6 +6145,56 @@ fn write_maint_loop_execute_summary<W: Write>(
     }
 }
 
+fn write_maint_https_loop_execute_summary<W: Write>(
+    index: usize,
+    host: &str,
+    port: u16,
+    poll_path: &str,
+    event_path: &str,
+    sni: &str,
+    count: u64,
+    interval_ms: u64,
+    out: &mut W,
+) {
+    let mut ok_flags = [false; 4];
+    let mut err_flags = [false; 4];
+    let mut ok_count = 0usize;
+    let mut err_count = 0usize;
+    let count_usize = count as usize;
+
+    for iteration in 0..count_usize {
+        let mut iteration_reply = NetReplyBuf::new();
+        write_maint_https_poll_summary(&mut iteration_reply, index, host, port, poll_path, sni);
+        let text = str::from_utf8(iteration_reply.as_slice()).unwrap_or("");
+        if text.starts_with("XJQ OK maint-poll ") {
+            ok_flags[iteration] = true;
+            ok_count += 1;
+        } else {
+            err_flags[iteration] = true;
+            err_count += 1;
+        }
+        if iteration + 1 < count_usize {
+            delay_ms(interval_ms);
+        }
+    }
+
+    let _ = write!(
+        out,
+        "XJQ OK maint-loop iface={} scheme=https host={host} sni={sni} port={port} poll={poll_path} event={event_path} count={count} interval-ms={interval_ms} ok={ok_count} err={err_count} note=https-event-post-pending",
+        PCIE_CONTROLLERS[index].name
+    );
+    for iteration in 0..count_usize {
+        let status = if ok_flags[iteration] {
+            "ok"
+        } else if err_flags[iteration] {
+            "err"
+        } else {
+            "skip"
+        };
+        let _ = write!(out, " i{}={status}", iteration + 1);
+    }
+}
+
 fn write_maint_loop_query_summary<W: Write>(default_index: usize, query: &str, out: &mut W) {
     let mut parts = query.split_whitespace();
     let _maint = parts.next();
@@ -6408,30 +6458,40 @@ fn write_maint_config_status_summary<W: Write>(out: &mut W) {
 fn write_maint_config_run_summary<W: Write>(out: &mut W) {
     match load_maint_config() {
         Ok(config) => {
-            if config.https {
-                let _ = write!(
-                    out,
-                    "XJQ ERR maint-config-run https-transport-not-implemented"
-                );
-                return;
-            }
             let mut host_text = NetReplyBuf::new();
             let _ = write_maint_config_host(&config, &mut host_text);
             let host = str::from_utf8(host_text.as_slice()).unwrap_or("0.0.0.0");
+            let mut sni_text = NetReplyBuf::new();
+            let _ = write_maint_config_tls_sni(&config, &mut sni_text);
+            let sni = str::from_utf8(sni_text.as_slice()).unwrap_or(host);
             let poll_path =
                 str::from_utf8(&config.poll_path[..config.poll_path_len]).unwrap_or("/");
             let event_path =
                 str::from_utf8(&config.event_path[..config.event_path_len]).unwrap_or("/");
-            write_maint_loop_execute_summary(
-                config.index,
-                host,
-                config.port,
-                poll_path,
-                event_path,
-                config.count,
-                config.interval_ms,
-                out,
-            );
+            if config.https {
+                write_maint_https_loop_execute_summary(
+                    config.index,
+                    host,
+                    config.port,
+                    poll_path,
+                    event_path,
+                    sni,
+                    config.count,
+                    config.interval_ms,
+                    out,
+                );
+            } else {
+                write_maint_loop_execute_summary(
+                    config.index,
+                    host,
+                    config.port,
+                    poll_path,
+                    event_path,
+                    config.count,
+                    config.interval_ms,
+                    out,
+                );
+            }
         }
         Err(error) => {
             let _ = write!(out, "XJQ ERR maint-config-run {}", error.as_str());
@@ -6442,30 +6502,40 @@ fn write_maint_config_run_summary<W: Write>(out: &mut W) {
 fn write_maint_config_run_once_summary<W: Write>(out: &mut W) {
     match load_maint_config() {
         Ok(config) => {
-            if config.https {
-                let _ = write!(
-                    out,
-                    "XJQ ERR maint-config-run-once https-transport-not-implemented"
-                );
-                return;
-            }
             let mut host_text = NetReplyBuf::new();
             let _ = write_maint_config_host(&config, &mut host_text);
             let host = str::from_utf8(host_text.as_slice()).unwrap_or("0.0.0.0");
+            let mut sni_text = NetReplyBuf::new();
+            let _ = write_maint_config_tls_sni(&config, &mut sni_text);
+            let sni = str::from_utf8(sni_text.as_slice()).unwrap_or(host);
             let poll_path =
                 str::from_utf8(&config.poll_path[..config.poll_path_len]).unwrap_or("/");
             let event_path =
                 str::from_utf8(&config.event_path[..config.event_path_len]).unwrap_or("/");
-            write_maint_loop_execute_summary(
-                config.index,
-                host,
-                config.port,
-                poll_path,
-                event_path,
-                1,
-                config.interval_ms,
-                out,
-            );
+            if config.https {
+                write_maint_https_loop_execute_summary(
+                    config.index,
+                    host,
+                    config.port,
+                    poll_path,
+                    event_path,
+                    sni,
+                    1,
+                    config.interval_ms,
+                    out,
+                );
+            } else {
+                write_maint_loop_execute_summary(
+                    config.index,
+                    host,
+                    config.port,
+                    poll_path,
+                    event_path,
+                    1,
+                    config.interval_ms,
+                    out,
+                );
+            }
         }
         Err(error) => {
             let _ = write!(out, "XJQ ERR maint-config-run-once {}", error.as_str());
@@ -14609,6 +14679,49 @@ fn write_maint_poll_summary<W: Write>(
         }
         Err(error) => {
             let _ = write!(out, "XJQ ERR maint-poll {}", error.as_str());
+        }
+    }
+}
+
+fn write_maint_https_poll_summary<W: Write>(
+    out: &mut W,
+    index: usize,
+    host: &str,
+    port: u16,
+    path: &str,
+    sni: &str,
+) {
+    match net_https_get(index, host, port, path, sni, HTTP_TIMEOUT_MS) {
+        Ok(result) => {
+            let _ = write!(
+                out,
+                "XJQ OK maint-poll iface={} scheme=https host={} sni={} ip={}.{}.{}.{} port={} status={} encrypted-bytes={} encrypted-payload={} encrypted-segments={} decrypted-payload={} decrypted-application-records={} src-port={} first-line=\"",
+                PCIE_CONTROLLERS[index].name,
+                host,
+                sni,
+                result.tls.tcp.dst_ip[0],
+                result.tls.tcp.dst_ip[1],
+                result.tls.tcp.dst_ip[2],
+                result.tls.tcp.dst_ip[3],
+                result.tls.tcp.dst_port,
+                optional_u16_dec(result.status_code),
+                result.encrypted_response_bytes,
+                result.encrypted_response_payload,
+                result.encrypted_response_segments,
+                result.decrypted_payload_bytes,
+                result.decrypted_application_records,
+                result.tls.tcp.src_port
+            );
+            write_http_sample_line(out, &result.decrypted_sample[..result.decrypted_sample_len]);
+            let _ = write!(out, "\" body=\"");
+            write_http_body_sample_line(
+                out,
+                &result.decrypted_sample[..result.decrypted_sample_len],
+            );
+            let _ = write!(out, "\"");
+        }
+        Err(error) => {
+            let _ = write!(out, "XJQ ERR maint-poll https {}", error.as_str());
         }
     }
 }
