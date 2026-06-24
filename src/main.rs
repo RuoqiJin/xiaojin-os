@@ -222,6 +222,8 @@ const HTTP_RESPONSE_MAX_BYTES: usize = 8 * 1024;
 const HTTP_RESPONSE_SAMPLE_BYTES: usize = 2048;
 const MAINT_OTA_PAYLOAD_BYTES: usize = 768;
 const MAINT_OTA_ARTIFACT_URL_BYTES: usize = 160;
+const AI_CHAT_PROMPT_BYTES: usize = 160;
+const AI_CHAT_MODEL_BYTES: usize = 64;
 const TLS_CLIENT_HELLO_BYTES: usize = 512;
 const TLS_TRANSCRIPT_MAX_BYTES: usize = 2048;
 const TLS_DECRYPT_MAX_BYTES: usize = 2048;
@@ -2833,14 +2835,14 @@ fn print_caps(uart: &mut Uart) {
 fn write_caps_query_summary<W: Write>(out: &mut W) {
     let _ = write!(
         out,
-        "XJQ OK caps net-dev=yes net-ifaces=yes iface-auto=yes dhcp=yes auto-dhcp=yes failover=best-routed-dns route=yes arp=yes dns=yes tcp-connect=yes http-get=yes http-post=yes https-get=yes https-post=yes tls-clienthello=yes tls-aes128gcm-decrypt=yes tls-chacha20poly1305-decrypt=yes tls-handshake-parse=yes tls-certificate-list-parse=yes tls-first-certificate-sha256=yes tls-first-certificate-pin=yes tls-server-finished-verify=yes tls-client-finished-send=yes tls-application-data=yes maint-poll=yes maint-status=yes maint-command-verify=yes maint-command-verify-hmac=yes maint-local-hmac-key=yes maint-pull-exec=yes maint-ota-stage-pull=http maint-loop=yes maint-config=yes maint-config-paths=yes maint-config-host-name=yes maint-config-https=yes maint-config-tls-pin=yes maint-cold-boot-tick=yes maint-ack-intent=yes maint-remote-event=yes maint-https-event=yes identity=yes query=yes reboot=yes wifi-firmware-sd=confirm wifi-firmware-crc=confirm wifi-firmware-load=confirm wifi-enum=confirm wifi-mmio-snapshot=confirm wifi-mmio-fingerprint=confirm sd-writer=yes ab-persist=yes boot-slot=extlinux db=page-store,catalog,wal,fixed-table,btree,event-log"
+        "XJQ OK caps net-dev=yes net-ifaces=yes iface-auto=yes dhcp=yes auto-dhcp=yes failover=best-routed-dns route=yes arp=yes dns=yes tcp-connect=yes http-get=yes http-post=yes https-get=yes https-post=yes tls-clienthello=yes tls-aes128gcm-decrypt=yes tls-chacha20poly1305-decrypt=yes tls-handshake-parse=yes tls-certificate-list-parse=yes tls-first-certificate-sha256=yes tls-first-certificate-pin=yes tls-server-finished-verify=yes tls-client-finished-send=yes tls-application-data=yes ai-chat=http,https-experimental maint-poll=yes maint-status=yes maint-command-verify=yes maint-command-verify-hmac=yes maint-local-hmac-key=yes maint-pull-exec=yes maint-ota-stage-pull=http maint-loop=yes maint-config=yes maint-config-paths=yes maint-config-host-name=yes maint-config-https=yes maint-config-tls-pin=yes maint-cold-boot-tick=yes maint-ack-intent=yes maint-remote-event=yes maint-https-event=yes identity=yes query=yes reboot=yes wifi-firmware-sd=confirm wifi-firmware-crc=confirm wifi-firmware-load=confirm wifi-enum=confirm wifi-mmio-snapshot=confirm wifi-mmio-fingerprint=confirm sd-writer=yes ab-persist=yes boot-slot=extlinux db=page-store,catalog,wal,fixed-table,btree,event-log"
     );
 }
 
 fn write_caps_full_query_summary<W: Write>(out: &mut W) {
     let _ = write!(
         out,
-        "XJQ OK caps-full net=dev,ifaces,iface-auto,dhcp,auto-dhcp,failover-best-routed-dns,route,arp,dns,tcp,http-get,http-post,https-get,https-post,http-trace,http-debug tls=clienthello,aes128gcm,chacha20poly1305,handshake,cert-list,first-cert-sha256,first-cert-pin,server-finished,client-finished-material,client-finished-send,application-data maint=poll,status,pending,digest,verify,verify-hmac,local-key,pull-exec,ota-stage-pull-http,loop,config,paths,host-name,https,tls-pin,cold-boot,ack-intent,remote-event,https-event,local-audit wifi=pcie,firmware,firmware-crc,firmware-load,mmio-snapshot,mmio-fingerprint,driver-gate,rtw88-profile,trace,pcie-init,pcie-init-high,pcie-init-linux,pcie-init-dt,enum,station-planned,ap-planned sd=probe,writer,ab-persist,extlinux db=page-store,catalog,wal,fixed-table,btree,btree-delete,table-namespace,event-log,blob-backup,blob-restore"
+        "XJQ OK caps-full net=dev,ifaces,iface-auto,dhcp,auto-dhcp,failover-best-routed-dns,route,arp,dns,tcp,http-get,http-post,https-get,https-post,http-trace,http-debug tls=clienthello,aes128gcm,chacha20poly1305,handshake,cert-list,first-cert-sha256,first-cert-pin,server-finished,client-finished-material,client-finished-send,application-data ai=chat-http,chat-https-experimental maint=poll,status,pending,digest,verify,verify-hmac,local-key,pull-exec,ota-stage-pull-http,loop,config,paths,host-name,https,tls-pin,cold-boot,ack-intent,remote-event,https-event,local-audit wifi=pcie,firmware,firmware-crc,firmware-load,mmio-snapshot,mmio-fingerprint,driver-gate,rtw88-profile,trace,pcie-init,pcie-init-high,pcie-init-linux,pcie-init-dt,enum,station-planned,ap-planned sd=probe,writer,ab-persist,extlinux db=page-store,catalog,wal,fixed-table,btree,btree-delete,table-namespace,event-log,blob-backup,blob-restore"
     );
 }
 
@@ -5969,6 +5971,238 @@ fn write_net_https_post_query_summary<W: Write>(default_index: usize, query: &st
             let _ = write!(out, "XJQ ERR https-post {}", error.as_str());
         }
     }
+}
+
+fn write_ai_http_chat_query_summary<W: Write>(default_index: usize, query: &str, out: &mut W) {
+    let mut parts = query.split_whitespace();
+    let _ai = parts.next();
+    let _http_chat = parts.next();
+    let Some(first) = parts.next() else {
+        let _ = write!(out, "XJQ ERR ai-http-chat-usage");
+        return;
+    };
+    let (index, host) = if let Some(index) = parse_net_interface(first) {
+        let Some(host) = parts.next() else {
+            let _ = write!(out, "XJQ ERR ai-http-chat-usage");
+            return;
+        };
+        (index, host)
+    } else {
+        (default_index, first)
+    };
+    let Some(port) = parts.next().and_then(parse_u16) else {
+        let _ = write!(out, "XJQ ERR ai-http-chat-usage");
+        return;
+    };
+    let Some(path) = parts.next() else {
+        let _ = write!(out, "XJQ ERR ai-http-chat-usage");
+        return;
+    };
+    let Some(model) = parts.next() else {
+        let _ = write!(out, "XJQ ERR ai-http-chat-usage");
+        return;
+    };
+    let Some(prompt_hex) = parts.next() else {
+        let _ = write!(out, "XJQ ERR ai-http-chat-usage");
+        return;
+    };
+    if !matches!(parts.next(), Some(confirm) if confirm.eq_ignore_ascii_case("confirm"))
+        || parts.next().is_some()
+    {
+        let _ = write!(out, "XJQ ERR ai-http-chat-usage");
+        return;
+    }
+
+    let (body, prompt_len) = match build_ai_chat_body(model, prompt_hex) {
+        Ok(value) => value,
+        Err(reason) => {
+            let _ = write!(out, "XJQ ERR ai-http-chat {reason}");
+            return;
+        }
+    };
+
+    match net_http_post(index, host, port, path, body.as_slice(), HTTP_TIMEOUT_MS) {
+        Ok(result) => {
+            let _ = write!(
+                out,
+                "XJQ OK ai-http-chat iface={} host={} ip={}.{}.{}.{} port={} status={} request-bytes={} prompt-bytes={} response-bytes={} payload={} segments={} fin={} truncated={} src-port={} first-line=\"",
+                PCIE_CONTROLLERS[index].name,
+                host,
+                result.tcp.dst_ip[0],
+                result.tcp.dst_ip[1],
+                result.tcp.dst_ip[2],
+                result.tcp.dst_ip[3],
+                result.tcp.dst_port,
+                result.status_code,
+                body.as_slice().len(),
+                prompt_len,
+                result.response_bytes,
+                result.payload_bytes,
+                result.segments,
+                yes_no(result.fin),
+                yes_no(result.truncated),
+                result.tcp.src_port
+            );
+            write_http_sample_line(out, &result.sample[..result.sample_len]);
+            let _ = write!(out, "\" body=\"");
+            write_http_body_raw_sample_line(out, &result.sample[..result.sample_len]);
+            let _ = write!(out, "\"");
+        }
+        Err(error) => {
+            let _ = write!(out, "XJQ ERR ai-http-chat {}", error.as_str());
+        }
+    }
+}
+
+fn write_ai_https_chat_query_summary<W: Write>(default_index: usize, query: &str, out: &mut W) {
+    let mut parts = query.split_whitespace();
+    let _ai = parts.next();
+    let _https_chat = parts.next();
+    let Some(first) = parts.next() else {
+        let _ = write!(out, "XJQ ERR ai-https-chat-usage");
+        return;
+    };
+    let (index, host) = if let Some(index) = parse_net_interface(first) {
+        let Some(host) = parts.next() else {
+            let _ = write!(out, "XJQ ERR ai-https-chat-usage");
+            return;
+        };
+        (index, host)
+    } else {
+        (default_index, first)
+    };
+    let Some(port) = parts.next().and_then(parse_u16) else {
+        let _ = write!(out, "XJQ ERR ai-https-chat-usage");
+        return;
+    };
+    let Some(path) = parts.next() else {
+        let _ = write!(out, "XJQ ERR ai-https-chat-usage");
+        return;
+    };
+    let Some(model) = parts.next() else {
+        let _ = write!(out, "XJQ ERR ai-https-chat-usage");
+        return;
+    };
+    let Some(prompt_hex) = parts.next() else {
+        let _ = write!(out, "XJQ ERR ai-https-chat-usage");
+        return;
+    };
+    let Some(next) = parts.next() else {
+        let _ = write!(out, "XJQ ERR ai-https-chat-usage");
+        return;
+    };
+    let (sni, confirm) = if next.eq_ignore_ascii_case("confirm") {
+        (host, next)
+    } else {
+        (
+            if next == "-" { host } else { next },
+            parts.next().unwrap_or(""),
+        )
+    };
+    if !confirm.eq_ignore_ascii_case("confirm") || parts.next().is_some() {
+        let _ = write!(out, "XJQ ERR ai-https-chat-usage");
+        return;
+    }
+
+    let (body, prompt_len) = match build_ai_chat_body(model, prompt_hex) {
+        Ok(value) => value,
+        Err(reason) => {
+            let _ = write!(out, "XJQ ERR ai-https-chat {reason}");
+            return;
+        }
+    };
+
+    match net_https_post(
+        index,
+        host,
+        port,
+        path,
+        body.as_slice(),
+        sni,
+        HTTP_TIMEOUT_MS,
+    ) {
+        Ok(result) => {
+            let _ = write!(
+                out,
+                "XJQ OK ai-https-chat iface={} host={} sni={} ip={}.{}.{}.{} port={} status={} request-bytes={} prompt-bytes={} encrypted-bytes={} encrypted-payload={} encrypted-segments={} encrypted-fin={} encrypted-truncated={} decrypted-payload={} decrypted-records={} decrypted-application-records={} src-port={} first-line=\"",
+                PCIE_CONTROLLERS[index].name,
+                host,
+                sni,
+                result.tls.tcp.dst_ip[0],
+                result.tls.tcp.dst_ip[1],
+                result.tls.tcp.dst_ip[2],
+                result.tls.tcp.dst_ip[3],
+                result.tls.tcp.dst_port,
+                optional_u16_dec(result.status_code),
+                body.as_slice().len(),
+                prompt_len,
+                result.encrypted_response_bytes,
+                result.encrypted_response_payload,
+                result.encrypted_response_segments,
+                yes_no(result.encrypted_response_fin),
+                yes_no(result.encrypted_response_truncated),
+                result.decrypted_payload_bytes,
+                result.decrypted_records,
+                result.decrypted_application_records,
+                result.tls.tcp.src_port
+            );
+            write_http_sample_line(out, &result.decrypted_sample[..result.decrypted_sample_len]);
+            let _ = write!(out, "\" body=\"");
+            write_http_body_raw_sample_line(
+                out,
+                &result.decrypted_sample[..result.decrypted_sample_len],
+            );
+            let _ = write!(out, "\"");
+        }
+        Err(error) => {
+            let _ = write!(out, "XJQ ERR ai-https-chat {}", error.as_str());
+        }
+    }
+}
+
+fn build_ai_chat_body(
+    model: &str,
+    prompt_hex: &str,
+) -> Result<(HttpRequestBuf, usize), &'static str> {
+    if !valid_ai_model_name(model) {
+        return Err("bad-model");
+    }
+    let mut prompt_bytes = [0u8; AI_CHAT_PROMPT_BYTES];
+    let Some(prompt_len) = decode_hex_to_buf(prompt_hex.as_bytes(), &mut prompt_bytes) else {
+        return Err("bad-prompt-hex");
+    };
+    if prompt_len == 0 {
+        return Err("empty-prompt");
+    }
+    let prompt =
+        core::str::from_utf8(&prompt_bytes[..prompt_len]).map_err(|_| "bad-prompt-utf8")?;
+    if !valid_ai_prompt(prompt.as_bytes()) {
+        return Err("bad-prompt");
+    }
+
+    let mut body = HttpRequestBuf::new();
+    write!(
+        body,
+        "{{\"model\":\"{}\",\"messages\":[{{\"role\":\"user\",\"content\":\"{}\"}}],\"stream\":false}}",
+        model, prompt
+    )
+    .map_err(|_| "body-too-long")?;
+    Ok((body, prompt_len))
+}
+
+fn valid_ai_model_name(value: &str) -> bool {
+    let bytes = value.as_bytes();
+    !bytes.is_empty()
+        && bytes.len() <= AI_CHAT_MODEL_BYTES
+        && bytes
+            .iter()
+            .all(|b| matches!(*b, b'0'..=b'9' | b'a'..=b'z' | b'A'..=b'Z' | b'.' | b'_' | b'-' | b':' | b'/'))
+}
+
+fn valid_ai_prompt(bytes: &[u8]) -> bool {
+    bytes
+        .iter()
+        .all(|b| *b >= 0x20 && *b != b'"' && *b != b'\\' && *b != 0x7f)
 }
 
 fn write_net_tls_pin_query_summary<W: Write>(default_index: usize, query: &str, out: &mut W) {
@@ -16969,6 +17203,13 @@ fn write_http_body_sample_line<W: Write>(out: &mut W, sample: &[u8]) {
     }
 }
 
+fn write_http_body_raw_sample_line<W: Write>(out: &mut W, sample: &[u8]) {
+    let Some(start) = find_http_body_start(sample) else {
+        return;
+    };
+    write_http_raw_sample_line(out, &sample[start..]);
+}
+
 fn find_http_body_start(sample: &[u8]) -> Option<usize> {
     let mut index = 0usize;
     while index + 3 < sample.len() {
@@ -22535,6 +22776,10 @@ fn net_handle_query_packet(
                 write_net_tls_query_summary(index, query, &mut reply);
             } else if query.starts_with("net http ") {
                 write_net_http_query_summary(index, query, &mut reply);
+            } else if query.starts_with("ai http-chat ") {
+                write_ai_http_chat_query_summary(index, query, &mut reply);
+            } else if query.starts_with("ai https-chat ") {
+                write_ai_https_chat_query_summary(index, query, &mut reply);
             } else if query.starts_with("maint poll ") {
                 write_maint_poll_query_summary(index, query, &mut reply);
             } else if query.starts_with("maint status ") {
