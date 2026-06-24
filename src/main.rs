@@ -513,6 +513,8 @@ impl ExceptionSnapshot {
 }
 
 static mut LAST_EXCEPTION: ExceptionSnapshot = ExceptionSnapshot::empty();
+static mut FATAL_EXCEPTION_ACTIVE: bool = false;
+static mut FATAL_EXCEPTION_COUNT: u32 = 0;
 static mut BOOT_CNTPCT: u64 = 0;
 static mut RNG_STATE: [u8; 32] = [0; 32];
 static mut RNG_COUNTER: u64 = 0;
@@ -27122,6 +27124,12 @@ pub extern "C" fn exception_handler(vector: u64, frame: *const ExceptionFrame) {
         return;
     }
 
+    if ec != ESR_EC_BRK_A64 && fatal_exception_reentered() {
+        loop {
+            core::hint::spin_loop();
+        }
+    }
+
     uart.put_str("\n");
     uart.put_str("========================================\n");
     uart.put_str("Xiaojin OS exception\n");
@@ -27135,10 +27143,24 @@ pub extern "C" fn exception_handler(vector: u64, frame: *const ExceptionFrame) {
         return;
     }
 
+    let fatal_count = unsafe { FATAL_EXCEPTION_COUNT };
+    let _ = writeln!(uart, "fatal count       {fatal_count}");
     uart.put_str("fatal exception: system halted.\n");
     uart.put_str("========================================\n");
     loop {
         core::hint::spin_loop();
+    }
+}
+
+fn fatal_exception_reentered() -> bool {
+    unsafe {
+        FATAL_EXCEPTION_COUNT = FATAL_EXCEPTION_COUNT.wrapping_add(1);
+        if FATAL_EXCEPTION_ACTIVE {
+            true
+        } else {
+            FATAL_EXCEPTION_ACTIVE = true;
+            false
+        }
     }
 }
 
