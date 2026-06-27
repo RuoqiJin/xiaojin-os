@@ -4780,6 +4780,10 @@ fn command_net<'a>(uart: &mut Uart, parts: &mut core::str::SplitWhitespace<'a>) 
             write_net_ifaces_summary(uart);
             uart.put_str("\n");
         }
+        Some("roles") => {
+            write_net_roles_summary(uart);
+            uart.put_str("\n");
+        }
         Some("ip") => command_net_ip(uart, parts.next(), parts.next(), parts.next()),
         Some("dhcp") => command_net_dhcp(uart, parts.next(), parts.next()),
         Some("dns") => command_net_dns(uart, parts.next(), parts.next(), parts.next()),
@@ -4855,6 +4859,7 @@ fn command_net<'a>(uart: &mut Uart, parts: &mut core::str::SplitWhitespace<'a>) 
             uart.put_str("  net facts\n");
             uart.put_str("  net ips\n");
             uart.put_str("  net ifaces\n");
+            uart.put_str("  net roles\n");
             uart.put_str("  net ip <pcie3x1|pcie3x2|auto|0|1> <a.b.c.d> confirm\n");
             uart.put_str("  net dhcp <pcie3x1|pcie3x2|auto|0|1> confirm\n");
             uart.put_str("  net dns <pcie3x1|pcie3x2|auto|0|1> <name> confirm\n");
@@ -5245,6 +5250,64 @@ fn write_net_ifaces_summary<W: Write>(out: &mut W) {
                 );
             }
         }
+    }
+}
+
+fn write_net_roles_summary<W: Write>(out: &mut W) {
+    let active = net_preferred_route_device();
+    let _ = write!(out, "net-roles active=");
+    match active {
+        Some(index) => {
+            let _ = write!(out, "{}", PCIE_CONTROLLERS[index].name);
+        }
+        None => {
+            let _ = write!(out, "none");
+        }
+    }
+    let _ = write!(out, " policy=best-linked-routed-dns");
+
+    for (index, controller) in PCIE_CONTROLLERS.iter().enumerate() {
+        let ip = net_device_ip(index);
+        let gateway = net_device_gateway(index);
+        let dns = net_device_dns(index);
+        let link_up = rtl_device_link_up(index);
+        let route_ready = net_device_route_ready(index);
+        let default_candidate = active == Some(index);
+
+        let (role, purpose, route_policy, routed) = if index == 0 {
+            ("lan", "static-control-rescue", "no-default-route", false)
+        } else {
+            (
+                "wan",
+                "dhcp-default-route-maintainer-ota",
+                "allow-default-route",
+                route_ready,
+            )
+        };
+
+        let _ = write!(
+            out,
+            " {} role={} purpose={} ip={}.{}.{}.{} gateway={}.{}.{}.{} dns={}.{}.{}.{} routed={} link={} default-candidate={} policy={} control=yes",
+            controller.name,
+            role,
+            purpose,
+            ip[0],
+            ip[1],
+            ip[2],
+            ip[3],
+            gateway[0],
+            gateway[1],
+            gateway[2],
+            gateway[3],
+            dns[0],
+            dns[1],
+            dns[2],
+            dns[3],
+            yes_no(routed),
+            yes_no(link_up),
+            yes_no(default_candidate),
+            route_policy
+        );
     }
 }
 
@@ -17038,6 +17101,7 @@ fn is_public_xj_query(query: &[u8]) -> bool {
         "identity facts",
         "net ips",
         "net ifaces",
+        "net roles",
         "db facts",
         "db status",
         "db status confirm",
@@ -17069,6 +17133,9 @@ fn write_public_xj_query_result<W: Write>(query: &str, out: &mut W) -> bool {
     } else if query.eq_ignore_ascii_case("net ifaces") {
         let _ = write!(out, "XJQ OK ");
         write_net_ifaces_summary(out);
+    } else if query.eq_ignore_ascii_case("net roles") {
+        let _ = write!(out, "XJQ OK ");
+        write_net_roles_summary(out);
     } else if query.eq_ignore_ascii_case("db facts") {
         let _ = write!(
             out,
@@ -22835,6 +22902,9 @@ fn net_handle_query_packet(
             } else if query.eq_ignore_ascii_case("net ifaces") {
                 let _ = write!(reply, "XJQ OK ");
                 write_net_ifaces_summary(&mut reply);
+            } else if query.eq_ignore_ascii_case("net roles") {
+                let _ = write!(reply, "XJQ OK ");
+                write_net_roles_summary(&mut reply);
             } else if query.starts_with("net dns ") {
                 write_net_dns_query_summary(index, query, &mut reply);
             } else if query.starts_with("net tcp ") {
