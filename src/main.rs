@@ -2844,14 +2844,14 @@ fn print_caps(uart: &mut Uart) {
 fn write_caps_query_summary<W: Write>(out: &mut W) {
     let _ = write!(
         out,
-        "XJQ OK caps net-dev=yes net-reload=immediate net-ifaces=yes iface-auto=yes dhcp=yes auto-dhcp=yes failover=best-routed-dns route=yes arp=yes dns=yes tcp-connect=yes http-get=yes http-post=yes https-get=experimental https-post=experimental tls-clienthello=yes tls-aes128gcm-decrypt=yes tls-chacha20poly1305-decrypt=yes tls-handshake-parse=yes tls-certificate-list-parse=yes tls-first-certificate-sha256=yes tls-first-certificate-pin=yes tls-server-finished-verify=yes tls-client-finished-send=yes tls-application-data=experimental ai-chat=http,https-experimental maint-poll=yes maint-status=yes maint-command-verify=yes maint-command-verify-hmac=yes maint-local-hmac-key=yes maint-pull-exec=yes maint-ota-stage-pull=http maint-loop=yes maint-config=yes maint-config-paths=yes maint-config-host-name=yes maint-config-https=yes maint-config-tls-pin=yes maint-cold-boot-tick=yes maint-ack-intent=yes maint-remote-event=yes maint-https-event=yes identity=yes query=yes reboot=yes wifi-firmware-sd=confirm wifi-firmware-crc=confirm wifi-firmware-load=confirm wifi-enum=confirm wifi-mmio-snapshot=confirm wifi-mmio-fingerprint=confirm sd-writer=yes ab-persist=yes boot-slot=extlinux db=page-store,catalog,wal,fixed-table,btree,event-log"
+        "XJQ OK caps net-dev=yes net-reload=immediate net-ifaces=yes net-roles=yes iface-auto=yes dhcp=yes auto-dhcp=yes failover=best-linked-routed-dns route=yes arp=yes dns=yes tcp-connect=yes http-get=yes http-post=yes https-get=experimental https-post=experimental tls-clienthello=yes tls-aes128gcm-decrypt=yes tls-handshake-parse=yes tls-certificate-list-parse=yes tls-first-certificate-sha256=yes tls-server-finished-verify=yes tls-application-data=experimental ai-chat=http,https-experimental maint-poll=yes maint-status=yes maint-event=yes maint-pending=yes maint-pending-summary=yes maint-command-digest=yes maint-command-verify=yes maint-command-verify-hmac=yes maint-local-hmac-key=yes maint-pull-exec=yes maint-ota-stage-pull=http maint-config=yes maint-config-paths=yes maint-config-host-name=yes maint-config-https=yes maint-config-tls-pin=yes maint-https-event=yes identity=yes query=yes reboot=yes sd-writer=yes ab-persist=yes boot-slot=extlinux db=page-store,catalog,wal,fixed-table,btree,event-log"
     );
 }
 
 fn write_caps_full_query_summary<W: Write>(out: &mut W) {
     let _ = write!(
         out,
-        "XJQ OK caps-full net=dev,reload-immediate,ifaces,iface-auto,dhcp,auto-dhcp,failover-best-routed-dns,route,arp,dns,tcp,http-get,http-post,https-get-experimental,https-post-experimental,http-trace,http-debug tls=clienthello,aes128gcm,chacha20poly1305,handshake,cert-list,first-cert-sha256,first-cert-pin,server-finished,client-finished-material,client-finished-send,application-data-experimental ai=chat-http,chat-https-experimental maint=poll,status,pending,digest,verify,verify-hmac,local-key,pull-exec,ota-stage-pull-http,loop,config,paths,host-name,https,tls-pin,cold-boot,ack-intent,remote-event,https-event,local-audit wifi=pcie,firmware,firmware-crc,firmware-load,mmio-snapshot,mmio-fingerprint,driver-gate,rtw88-profile,trace,pcie-init,pcie-init-high,pcie-init-linux,pcie-init-dt,enum,station-planned,ap-planned sd=probe,writer,ab-persist,extlinux db=page-store,catalog,wal,fixed-table,btree,btree-delete,table-namespace,event-log,blob-backup,blob-restore"
+        "XJQ OK caps-full net=dev,reload-immediate,ifaces,iface-auto,dhcp,auto-dhcp,failover-best-linked-routed-dns,route,arp,dns,tcp,http-get,http-post,https-get-experimental,https-post-experimental,http-trace,http-debug tls=clienthello,aes128gcm,chacha20poly1305,handshake,cert-list,first-cert-sha256,first-cert-pin,server-finished,client-finished-material,client-finished-send,application-data-experimental ai=chat-http,chat-https-experimental maint=poll,status,pending,digest,verify,verify-hmac,local-key,pull-exec,ota-stage-pull-http,loop,config,paths,host-name,https,tls-pin,cold-boot,ack-intent,remote-event,https-event,local-audit wifi=pcie,firmware,firmware-crc,firmware-load,mmio-snapshot,mmio-fingerprint,driver-gate,rtw88-profile,trace,pcie-init,pcie-init-high,pcie-init-linux,pcie-init-dt,enum,station-planned,ap-planned sd=probe,writer,ab-persist,extlinux db=page-store,catalog,wal,fixed-table,btree,btree-delete,table-namespace,event-log,blob-backup,blob-restore"
     );
 }
 
@@ -5097,8 +5097,17 @@ fn write_net_ips_summary<W: Write>(out: &mut W) {
 fn net_device_route_ready(index: usize) -> bool {
     valid_unicast_ipv4(net_device_ip(index))
         && valid_ipv4_netmask(net_device_netmask(index))
-        && net_device_gateway(index) != IPV4_ANY_IP
-        && net_device_dns(index) != IPV4_ANY_IP
+        && net_device_has_routed_dns(index)
+        && rtl_device_link_up(index)
+}
+
+fn net_any_device_route_ready() -> bool {
+    for index in 0..RTL_DEVICE_COUNT {
+        if net_device_route_ready(index) {
+            return true;
+        }
+    }
+    false
 }
 
 fn net_preferred_route_device() -> Option<usize> {
@@ -5116,6 +5125,12 @@ fn rtl_phy_status(index: usize) -> Result<u32, ExceptionSnapshot> {
 
 fn rtl_phy_link_up_from_status(phy_status: u32) -> bool {
     phy_status & RTL_PHY_LINK_STATUS != 0
+}
+
+fn rtl_device_link_up(index: usize) -> bool {
+    rtl_phy_status(index)
+        .map(rtl_phy_link_up_from_status)
+        .unwrap_or(false)
 }
 
 fn rtl_phy_speed_name(phy_status: u32) -> &'static str {
@@ -5137,7 +5152,7 @@ fn write_net_ifaces_summary<W: Write>(out: &mut W) {
         .unwrap_or("none");
     let _ = write!(
         out,
-        "net-ifaces active={active_name} policy=best-routed-dns auto-dhcp={} failover-order=pcie3x2,pcie3x1",
+        "net-ifaces active={active_name} policy=best-linked-routed-dns auto-dhcp={} failover-order=pcie3x2,pcie3x1",
         yes_no(NET_AUTO_DHCP)
     );
 
@@ -5147,13 +5162,14 @@ fn write_net_ifaces_summary<W: Write>(out: &mut W) {
         let netmask = net_device_netmask(index);
         let gateway = net_device_gateway(index);
         let dns = net_device_dns(index);
+        let routed_dns = net_device_has_routed_dns(index);
         let route_ready = net_device_route_ready(index);
         let ltssm = probe_read32(controller.apb_base + PCIE_CLIENT_LTSSM_STATUS);
         let phy = rtl_phy_status(index);
 
         let _ = write!(
             out,
-            " {}.mac={:02x}:{:02x}:{:02x}:{:02x}:{:02x}:{:02x} {}.ip={}.{}.{}.{} {}.mask={}.{}.{}.{} {}.gateway={}.{}.{}.{} {}.dns={}.{}.{}.{} {}.route-ready={} {}.default-candidate={}",
+            " {}.mac={:02x}:{:02x}:{:02x}:{:02x}:{:02x}:{:02x} {}.ip={}.{}.{}.{} {}.mask={}.{}.{}.{} {}.gateway={}.{}.{}.{} {}.dns={}.{}.{}.{} {}.routed-dns={} {}.route-ready={} {}.default-candidate={}",
             controller.name,
             mac[0],
             mac[1],
@@ -5181,6 +5197,8 @@ fn write_net_ifaces_summary<W: Write>(out: &mut W) {
             dns[1],
             dns[2],
             dns[3],
+            controller.name,
+            yes_no(routed_dns),
             controller.name,
             yes_no(route_ready),
             controller.name,
@@ -6030,7 +6048,14 @@ fn write_ai_http_chat_query_summary<W: Write>(default_index: usize, query: &str,
         }
     };
 
-    match net_http_post(index, host, port, path, body.as_slice(), AI_HTTP_CHAT_TIMEOUT_MS) {
+    match net_http_post(
+        index,
+        host,
+        port,
+        path,
+        body.as_slice(),
+        AI_HTTP_CHAT_TIMEOUT_MS,
+    ) {
         Ok(result) => {
             let _ = write!(
                 out,
@@ -17453,7 +17478,7 @@ fn command_net_polling(uart: &mut Uart, label: &str, duration_ms: Option<u64>) {
             next_watchdog_elapsed = next_watchdog_elapsed.wrapping_add(watchdog_ticks);
         }
         if NET_AUTO_DHCP && elapsed >= next_auto_dhcp_elapsed {
-            if !net_any_device_has_routed_dns() {
+            if !net_any_device_route_ready() {
                 auto_dhcp_retries = auto_dhcp_retries.wrapping_add(1);
                 net_auto_dhcp_if_needed(uart);
             }
@@ -17475,13 +17500,21 @@ fn net_auto_dhcp_if_needed(uart: &mut Uart) {
     if !NET_AUTO_DHCP {
         return;
     }
-    if net_any_device_has_routed_dns() {
+    if net_any_device_route_ready() {
         return;
     }
 
     let order = [1usize, 0usize];
     for index in order {
-        if net_device_has_routed_dns(index) {
+        if net_device_route_ready(index) {
+            continue;
+        }
+        if !rtl_device_link_up(index) {
+            let _ = writeln!(
+                uart,
+                "  dhcp-auto      {} skipped link-down",
+                PCIE_CONTROLLERS[index].name
+            );
             continue;
         }
         let mac = rtl_local_mac(index);
@@ -18294,15 +18327,6 @@ fn net_device_dns(index: usize) -> [u8; 4] {
 
 fn net_device_has_routed_dns(index: usize) -> bool {
     net_device_gateway(index) != IPV4_ANY_IP && net_device_dns(index) != IPV4_ANY_IP
-}
-
-fn net_any_device_has_routed_dns() -> bool {
-    for index in 0..RTL_DEVICE_COUNT {
-        if net_device_has_routed_dns(index) {
-            return true;
-        }
-    }
-    false
 }
 
 fn set_net_device_ip(index: usize, ip: [u8; 4]) {
@@ -21329,8 +21353,7 @@ fn net_wait_tcp_response_from(
                     );
                     if copy_len > 0 {
                         unsafe {
-                            let dst =
-                                core::ptr::addr_of_mut!(TLS_RESPONSE_SCRATCH.0) as *mut u8;
+                            let dst = core::ptr::addr_of_mut!(TLS_RESPONSE_SCRATCH.0) as *mut u8;
                             core::ptr::copy_nonoverlapping(
                                 segment.sample.as_ptr(),
                                 dst.add(response.full_sample_len),
