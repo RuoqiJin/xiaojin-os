@@ -105,6 +105,8 @@ const PCIE_ATU_TYPE_CFG0: u32 = 0x4;
 const PCIE_ATU_TYPE_CFG1: u32 = 0x5;
 const PCIE_ATU_TYPE_MEM: u32 = 0x0;
 const PCIE_ATU_ENABLE: u32 = 1 << 31;
+const PCIE_ATU_REGION_DIR_IB: u32 = 1 << 31;
+const PCIE_ATU_UNROLL_INBOUND_OFFSET: u64 = 0x100;
 const PCIE_CFG_WINDOW_SIZE: u64 = 0x0010_0000;
 const PCIE_ATU_PROBE_UNROLLED: u32 = 0xffff_ffff;
 const RTL8125_BAR2_SIZE: u64 = 0x0001_0000;
@@ -530,6 +532,8 @@ static mut RTL_TX_BUFFERS: RtlTxBuffers = RtlTxBuffers([[0; RTL_TX_BUFFER_SIZE];
 static mut RTL_RX_BUFFERS: RtlRxBuffers =
     RtlRxBuffers([[[0; RTL_RX_BUFFER_SIZE]; RTL_RX_DESC_COUNT]; RTL_DEVICE_COUNT]);
 static mut RTL_TX_NEXT: [usize; RTL_DEVICE_COUNT] = [0; RTL_DEVICE_COUNT];
+static mut NET_POLL_TOTALS: [NetPollStats; RTL_DEVICE_COUNT] =
+    [NetPollStats::empty(); RTL_DEVICE_COUNT];
 static mut NETLOAD_STATE: NetLoadState = NetLoadState::empty();
 static mut DB_BLOB_IMPORT_STATE: DbBlobImportState = DbBlobImportState::empty();
 static mut LAST_NET_IMAGE: NetImageState = NetImageState::empty();
@@ -961,6 +965,20 @@ impl NetPollStats {
             control_replies: 0,
         }
     }
+
+    fn add(&mut self, other: NetPollStats) {
+        self.rx_packets = self.rx_packets.wrapping_add(other.rx_packets);
+        self.arp_replies = self.arp_replies.wrapping_add(other.arp_replies);
+        self.udp_replies = self.udp_replies.wrapping_add(other.udp_replies);
+        self.control_replies = self.control_replies.wrapping_add(other.control_replies);
+    }
+}
+
+fn net_poll_stats_snapshot(index: usize) -> NetPollStats {
+    if index >= RTL_DEVICE_COUNT {
+        return NetPollStats::empty();
+    }
+    unsafe { NET_POLL_TOTALS[index] }
 }
 
 #[derive(Clone, Copy)]
@@ -4784,6 +4802,10 @@ fn command_net<'a>(uart: &mut Uart, parts: &mut core::str::SplitWhitespace<'a>) 
             write_net_roles_summary(uart);
             uart.put_str("\n");
         }
+        Some("stats") => {
+            write_net_stats_summary(uart);
+            uart.put_str("\n");
+        }
         Some("ip") => command_net_ip(uart, parts.next(), parts.next(), parts.next()),
         Some("dhcp") => command_net_dhcp(uart, parts.next(), parts.next()),
         Some("dns") => command_net_dns(uart, parts.next(), parts.next(), parts.next()),
@@ -4860,6 +4882,7 @@ fn command_net<'a>(uart: &mut Uart, parts: &mut core::str::SplitWhitespace<'a>) 
             uart.put_str("  net ips\n");
             uart.put_str("  net ifaces\n");
             uart.put_str("  net roles\n");
+            uart.put_str("  net stats\n");
             uart.put_str("  net ip <pcie3x1|pcie3x2|auto|0|1> <a.b.c.d> confirm\n");
             uart.put_str("  net dhcp <pcie3x1|pcie3x2|auto|0|1> confirm\n");
             uart.put_str("  net dns <pcie3x1|pcie3x2|auto|0|1> <name> confirm\n");
@@ -5169,12 +5192,19 @@ fn write_net_ifaces_summary<W: Write>(out: &mut W) {
         let dns = net_device_dns(index);
         let routed_dns = net_device_has_routed_dns(index);
         let route_ready = net_device_route_ready(index);
+        let poll_stats = net_poll_stats_snapshot(index);
         let ltssm = probe_read32(controller.apb_base + PCIE_CLIENT_LTSSM_STATUS);
         let phy = rtl_phy_status(index);
+        let chip_cmd = probe_read32(controller.mem32_base + RTL_REG_CHIP_CMD_WORD).unwrap_or(0);
+        let tx_enabled = ((chip_cmd >> 24) as u8) & RTL_CHIP_CMD_TX_ENABLE != 0;
+        let rx_enabled = ((chip_cmd >> 24) as u8) & RTL_CHIP_CMD_RX_ENABLE != 0;
+        let tx0 = rtl_tx_desc_opts1(index, 0);
+        let rx_ready = rtl_rx_ready_count(index);
+        let tx_busy = rtl_tx_busy_count(index);
 
         let _ = write!(
             out,
-            " {}.mac={:02x}:{:02x}:{:02x}:{:02x}:{:02x}:{:02x} {}.ip={}.{}.{}.{} {}.mask={}.{}.{}.{} {}.gateway={}.{}.{}.{} {}.dns={}.{}.{}.{} {}.routed-dns={} {}.route-ready={} {}.default-candidate={}",
+            " {}.mac={:02x}:{:02x}:{:02x}:{:02x}:{:02x}:{:02x} {}.ip={}.{}.{}.{} {}.mask={}.{}.{}.{} {}.gateway={}.{}.{}.{} {}.dns={}.{}.{}.{} {}.routed-dns={} {}.route-ready={} {}.default-candidate={} {}.tx-enabled={} {}.rx-enabled={} {}.rx={} {}.arp-replies={} {}.udp-replies={} {}.control-replies={} {}.tx0=0x{tx0:08x} {}.rx-ready={} {}.tx-busy={}",
             controller.name,
             mac[0],
             mac[1],
@@ -5207,7 +5237,24 @@ fn write_net_ifaces_summary<W: Write>(out: &mut W) {
             controller.name,
             yes_no(route_ready),
             controller.name,
-            yes_no(active == Some(index))
+            yes_no(active == Some(index)),
+            controller.name,
+            yes_no(tx_enabled),
+            controller.name,
+            yes_no(rx_enabled),
+            controller.name,
+            poll_stats.rx_packets,
+            controller.name,
+            poll_stats.arp_replies,
+            controller.name,
+            poll_stats.udp_replies,
+            controller.name,
+            poll_stats.control_replies,
+            controller.name,
+            controller.name,
+            rx_ready,
+            controller.name,
+            tx_busy
         );
 
         match ltssm {
@@ -5250,6 +5297,25 @@ fn write_net_ifaces_summary<W: Write>(out: &mut W) {
                 );
             }
         }
+    }
+}
+
+fn write_net_stats_summary<W: Write>(out: &mut W) {
+    let _ = write!(out, "net-stats");
+    for (index, controller) in PCIE_CONTROLLERS.iter().enumerate() {
+        let stats = net_poll_stats_snapshot(index);
+        let _ = write!(
+            out,
+            " {}.rx={} {}.arp-replies={} {}.udp-replies={} {}.control-replies={}",
+            controller.name,
+            stats.rx_packets,
+            controller.name,
+            stats.arp_replies,
+            controller.name,
+            stats.udp_replies,
+            controller.name,
+            stats.control_replies
+        );
     }
 }
 
@@ -17102,6 +17168,7 @@ fn is_public_xj_query(query: &[u8]) -> bool {
         "net ips",
         "net ifaces",
         "net roles",
+        "net stats",
         "db facts",
         "db status",
         "db status confirm",
@@ -17136,6 +17203,9 @@ fn write_public_xj_query_result<W: Write>(query: &str, out: &mut W) -> bool {
     } else if query.eq_ignore_ascii_case("net roles") {
         let _ = write!(out, "XJQ OK ");
         write_net_roles_summary(out);
+    } else if query.eq_ignore_ascii_case("net stats") {
+        let _ = write!(out, "XJQ OK ");
+        write_net_stats_summary(out);
     } else if query.eq_ignore_ascii_case("db facts") {
         let _ = write!(
             out,
@@ -17685,8 +17755,12 @@ fn command_pcie(uart: &mut Uart, action: Option<&str>, arg1: Option<&str>) {
         Some("rtl-probe") => command_pcie_rtl_probe(uart, arg1),
         Some("rtl-facts") => command_pcie_rtl_facts(uart, arg1),
         Some("rtl-init") => command_pcie_rtl_init(uart, arg1),
+        Some("rtl-recover") => command_pcie_rtl_recover(uart, arg1),
         Some("rtl-tx-test") => command_pcie_rtl_tx_test(uart, arg1),
         Some("rtl-rx-poll") => command_pcie_rtl_rx_poll(uart, arg1),
+        Some("dma-diag") => command_pcie_dma_diag(uart, arg1),
+        Some("dma-inbound-zero") => command_pcie_dma_inbound_zero(uart, arg1),
+        Some("root-master") => command_pcie_root_master(uart, arg1),
         Some("cru-status") => print_pcie_cru_status(uart),
         Some("cru-enable") => command_pcie_cru_enable(uart, arg1),
         Some("rc-init") => command_pcie_rc_init(uart, arg1),
@@ -17712,8 +17786,12 @@ fn command_pcie(uart: &mut Uart, action: Option<&str>, arg1: Option<&str>) {
             uart.put_str("  pcie rtl-probe confirm\n");
             uart.put_str("  pcie rtl-facts confirm\n");
             uart.put_str("  pcie rtl-init confirm\n");
+            uart.put_str("  pcie rtl-recover confirm\n");
             uart.put_str("  pcie rtl-tx-test confirm\n");
             uart.put_str("  pcie rtl-rx-poll confirm\n");
+            uart.put_str("  pcie dma-diag confirm\n");
+            uart.put_str("  pcie dma-inbound-zero confirm\n");
+            uart.put_str("  pcie root-master confirm\n");
             uart.put_str("  pcie cru-status\n");
             uart.put_str("  pcie cru-enable confirm\n");
             uart.put_str("  pcie rc-init confirm\n");
@@ -18313,6 +18391,75 @@ fn command_pcie_rtl_tx_test(uart: &mut Uart, confirm: Option<&str>) {
     }
 
     uart.put_str("pcie rtl tx test:\n");
+    write_pcie_rtl_tx_test_summary(uart);
+    uart.put_str("\n");
+}
+
+fn command_pcie_rtl_recover(uart: &mut Uart, confirm: Option<&str>) {
+    if confirm != Some("confirm") {
+        uart.put_str("usage: pcie rtl-recover confirm\n");
+        uart.put_str("scope: reset RTL8125 DMA rings without rerunning full PCIe link start\n");
+        return;
+    }
+
+    uart.put_str("pcie rtl recover:\n");
+    write_pcie_rtl_recover_summary(uart);
+    uart.put_str("\n");
+}
+
+fn command_pcie_dma_diag(uart: &mut Uart, confirm: Option<&str>) {
+    if confirm != Some("confirm") {
+        uart.put_str("usage: pcie dma-diag confirm\n");
+        uart.put_str("scope: print PCIe outbound/inbound iATU and RTL DMA registers\n");
+        return;
+    }
+
+    write_pcie_dma_diag_summary(uart);
+    uart.put_str("\n");
+}
+
+fn command_pcie_dma_inbound_zero(uart: &mut Uart, confirm: Option<&str>) {
+    if confirm != Some("confirm") {
+        uart.put_str("usage: pcie dma-inbound-zero confirm\n");
+        uart.put_str("scope: RAM-only experiment; map pcie3x1 inbound DMA 0..256MiB identity\n");
+        return;
+    }
+
+    write_pcie_dma_inbound_zero_summary(uart);
+    uart.put_str("\n");
+}
+
+fn command_pcie_root_master(uart: &mut Uart, confirm: Option<&str>) {
+    if confirm != Some("confirm") {
+        uart.put_str("usage: pcie root-master confirm\n");
+        uart.put_str("scope: RAM-only experiment; enable pcie3x1 RC memory/master command bits\n");
+        return;
+    }
+
+    write_pcie_root_master_summary(uart);
+    uart.put_str("\n");
+}
+
+fn write_pcie_rtl_recover_summary<W: Write>(out: &mut W) {
+    let _ = write!(out, "pcie-rtl-recover");
+    for index in 0..RTL_DEVICE_COUNT {
+        let controller = PCIE_CONTROLLERS[index];
+        let before_busy = rtl_tx_busy_count(index);
+        let before_tx0 = rtl_tx_desc_opts1(index, 0);
+        rtl_refresh_dma(index);
+        let after_busy = rtl_tx_busy_count(index);
+        let after_tx0 = rtl_tx_desc_opts1(index, 0);
+        let intr = probe_read32(controller.mem32_base + RTL_REG_INTR_STATUS_8125).unwrap_or(0);
+        let chip_cmd = probe_read32(controller.mem32_base + RTL_REG_CHIP_CMD_WORD).unwrap_or(0);
+        let _ = write!(
+            out,
+            " {} busy={before_busy}->{after_busy} tx0=0x{before_tx0:08x}->0x{after_tx0:08x} intr=0x{intr:08x} chip=0x{chip_cmd:08x}",
+            controller.name
+        );
+    }
+}
+
+fn write_pcie_rtl_tx_test_summary<W: Write>(out: &mut W) {
     for (index, controller) in PCIE_CONTROLLERS.iter().enumerate() {
         let base = controller.mem32_base;
         let mac = rtl_local_mac(index);
@@ -18323,12 +18470,125 @@ fn command_pcie_rtl_tx_test(uart: &mut Uart, confirm: Option<&str>) {
         let intr = probe_read32(base + RTL_REG_INTR_STATUS_8125).unwrap_or(0);
         let status = unsafe { RTL_TX_RINGS.0[index][entry].opts1 };
         let _ = writeln!(
-            uart,
-            "  {} len={} buffer=0x{buffer_addr:016x} desc={}@0x{desc_addr:016x} complete={} opts1=0x{status:08x} intr=0x{intr:08x}",
+            out,
+            " {} len={} buffer=0x{buffer_addr:016x} desc={}@0x{desc_addr:016x} complete={} opts1=0x{status:08x} intr=0x{intr:08x}",
             controller.name,
             len,
             entry,
             yes_no(completed)
+        );
+    }
+}
+
+fn write_pcie_root_master_summary<W: Write>(out: &mut W) {
+    let index = 0usize;
+    let controller = PCIE_CONTROLLERS[index];
+    let before = probe_read32(controller.dbi_base + 0x04).unwrap_or(0xffff_ffff);
+
+    pcie_enable_root_memory_master(controller);
+    let after = probe_read32(controller.dbi_base + 0x04).unwrap_or(0xffff_ffff);
+
+    pcie_select_rtl_endpoint(controller);
+    write_mmio16(controller.cfg_base + 0x06, 0xffff);
+    rtl_refresh_dma(index);
+
+    let mac = rtl_local_mac(index);
+    let len = rtl_build_tx_test_packet(index, mac);
+    let (entry, completed) = rtl_send_prepared_frame_with_entry(index, len, 250);
+    let base = controller.mem32_base;
+    let desc_addr = rtl_tx_desc_addr(index, entry);
+    invalidate_dcache_range(desc_addr, core::mem::size_of::<RtlDesc>() as u64);
+    let opts1 = unsafe { RTL_TX_RINGS.0[index][entry].opts1 };
+    let endpoint_cmd = probe_read32(controller.cfg_base + 0x04).unwrap_or(0xffff_ffff);
+    let intr = probe_read32(base + RTL_REG_INTR_STATUS_8125).unwrap_or(0xffff_ffff);
+
+    let _ = write!(
+        out,
+        "pcie-root-master iface=pcie3x1 root=0x{before:08x}->0x{after:08x} ep-cmd=0x{endpoint_cmd:08x} tx-desc={} complete={} opts1=0x{opts1:08x} intr=0x{intr:08x}",
+        entry,
+        yes_no(completed)
+    );
+}
+
+fn write_pcie_dma_inbound_zero_summary<W: Write>(out: &mut W) {
+    let index = 0usize;
+    let controller = PCIE_CONTROLLERS[index];
+
+    pcie_select_rtl_endpoint(controller);
+    let status_before = probe_read32(controller.cfg_base + 0x04).unwrap_or(0xffff_ffff);
+    let ib0_before =
+        probe_read32(pcie_atu_addr_inbound(controller, 0, PCIE_ATU_REGION_CTRL2)).unwrap_or(0);
+
+    pcie_program_inbound_mem_atu(controller, 0, 0, 0, 0x1000_0000);
+    pcie_select_rtl_endpoint(controller);
+    write_mmio16(controller.cfg_base + 0x06, 0xffff);
+    mmio_write_barrier();
+    rtl_refresh_dma(index);
+
+    let mac = rtl_local_mac(index);
+    let len = rtl_build_tx_test_packet(index, mac);
+    let (entry, completed) = rtl_send_prepared_frame_with_entry(index, len, 250);
+    let base = controller.mem32_base;
+    let desc_addr = rtl_tx_desc_addr(index, entry);
+    invalidate_dcache_range(desc_addr, core::mem::size_of::<RtlDesc>() as u64);
+    let opts1 = unsafe { RTL_TX_RINGS.0[index][entry].opts1 };
+    let status_after = probe_read32(controller.cfg_base + 0x04).unwrap_or(0xffff_ffff);
+    let intr = probe_read32(base + RTL_REG_INTR_STATUS_8125).unwrap_or(0xffff_ffff);
+    let ib0_ctrl2 =
+        probe_read32(pcie_atu_addr_inbound(controller, 0, PCIE_ATU_REGION_CTRL2)).unwrap_or(0);
+    let ib0_base =
+        probe_read32(pcie_atu_addr_inbound(controller, 0, PCIE_ATU_LOWER_BASE)).unwrap_or(0);
+    let ib0_limit = probe_read32(pcie_atu_addr_inbound(controller, 0, PCIE_ATU_LIMIT)).unwrap_or(0);
+    let ib0_target =
+        probe_read32(pcie_atu_addr_inbound(controller, 0, PCIE_ATU_LOWER_TARGET)).unwrap_or(0);
+
+    let _ = write!(
+        out,
+        "pcie-dma-inbound-zero iface=pcie3x1 ib0-before=0x{ib0_before:08x} ib0=0x{ib0_ctrl2:08x}/0x{ib0_base:08x}..0x{ib0_limit:08x}->0x{ib0_target:08x} status=0x{status_before:08x}->0x{status_after:08x} tx-desc={} complete={} opts1=0x{opts1:08x} intr=0x{intr:08x}",
+        entry,
+        yes_no(completed)
+    );
+}
+
+fn write_pcie_dma_diag_summary<W: Write>(out: &mut W) {
+    let _ = write!(out, "pcie-dma-diag");
+    for (index, controller) in PCIE_CONTROLLERS.iter().enumerate() {
+        pcie_select_rtl_endpoint(*controller);
+        let base = controller.mem32_base;
+        let root_cmd = probe_read32(controller.dbi_base + 0x04).unwrap_or(0xffff_ffff);
+        let endpoint_cmd = probe_read32(controller.cfg_base + 0x04).unwrap_or(0xffff_ffff);
+        let bar2_low = probe_read32(controller.cfg_base + 0x18).unwrap_or(0xffff_ffff);
+        let bar2_high = probe_read32(controller.cfg_base + 0x1c).unwrap_or(0xffff_ffff);
+        let tx_low = probe_read32(base + RTL_REG_TX_DESC_ADDR_LOW).unwrap_or(0xffff_ffff);
+        let tx_high = probe_read32(base + RTL_REG_TX_DESC_ADDR_HIGH).unwrap_or(0xffff_ffff);
+        let rx_low = probe_read32(base + RTL_REG_RX_DESC_ADDR_LOW).unwrap_or(0xffff_ffff);
+        let rx_high = probe_read32(base + RTL_REG_RX_DESC_ADDR_HIGH).unwrap_or(0xffff_ffff);
+        let intr = probe_read32(base + RTL_REG_INTR_STATUS_8125).unwrap_or(0xffff_ffff);
+        let chip_cmd = probe_read32(base + RTL_REG_CHIP_CMD_WORD).unwrap_or(0xffff_ffff);
+        let rx_cfg = probe_read32(base + RTL_REG_RX_CONFIG).unwrap_or(0xffff_ffff);
+        let tx_cfg = probe_read32(base + RTL_REG_TX_CONFIG).unwrap_or(0xffff_ffff);
+        let ob1_ctrl2 =
+            probe_read32(pcie_atu_addr(*controller, 1, PCIE_ATU_REGION_CTRL2)).unwrap_or(0);
+        let ob1_base =
+            probe_read32(pcie_atu_addr(*controller, 1, PCIE_ATU_LOWER_BASE)).unwrap_or(0);
+        let ob1_target =
+            probe_read32(pcie_atu_addr(*controller, 1, PCIE_ATU_LOWER_TARGET)).unwrap_or(0);
+        let ib0_ctrl2 =
+            probe_read32(pcie_atu_addr_inbound(*controller, 0, PCIE_ATU_REGION_CTRL2)).unwrap_or(0);
+        let ib0_base =
+            probe_read32(pcie_atu_addr_inbound(*controller, 0, PCIE_ATU_LOWER_BASE)).unwrap_or(0);
+        let ib0_target =
+            probe_read32(pcie_atu_addr_inbound(*controller, 0, PCIE_ATU_LOWER_TARGET)).unwrap_or(0);
+        let tx_ring = rtl_tx_ring_addr(index);
+        let rx_ring = rtl_rx_ring_addr(index);
+        let tx0_addr = rtl_tx_desc_addr(index, 0);
+        invalidate_dcache_range(tx0_addr, core::mem::size_of::<RtlDesc>() as u64);
+        let tx0 = unsafe { RTL_TX_RINGS.0[index][0].opts1 };
+
+        let _ = write!(
+            out,
+            " {} root-cmd=0x{root_cmd:08x} ep-cmd=0x{endpoint_cmd:08x} bar2={bar2_high:08x}:{bar2_low:08x} txreg={tx_high:08x}:{tx_low:08x} rxreg={rx_high:08x}:{rx_low:08x} tx=0x{tx_ring:016x} rx=0x{rx_ring:016x} tx0=0x{tx0:08x} intr=0x{intr:08x} chip=0x{chip_cmd:08x} txcfg=0x{tx_cfg:08x} rxcfg=0x{rx_cfg:08x} ob1=0x{ob1_ctrl2:08x}/0x{ob1_base:08x}->0x{ob1_target:08x} ib0=0x{ib0_ctrl2:08x}/0x{ib0_base:08x}->0x{ib0_target:08x}",
+            controller.name
         );
     }
 }
@@ -18592,6 +18852,10 @@ fn net_poll_device(index: usize) -> NetPollStats {
             None => {}
         }
         rtl_rearm_rx_desc(index, entry);
+    }
+
+    unsafe {
+        NET_POLL_TOTALS[index].add(stats);
     }
 
     stats
@@ -22905,6 +23169,28 @@ fn net_handle_query_packet(
             } else if query.eq_ignore_ascii_case("net roles") {
                 let _ = write!(reply, "XJQ OK ");
                 write_net_roles_summary(&mut reply);
+            } else if query.eq_ignore_ascii_case("net stats") {
+                let _ = write!(reply, "XJQ OK ");
+                write_net_stats_summary(&mut reply);
+            } else if query.eq_ignore_ascii_case("pcie rtl-recover confirm") {
+                let _ = write!(reply, "XJQ OK ");
+                write_pcie_rtl_recover_summary(&mut reply);
+            } else if query.eq_ignore_ascii_case("pcie rtl-tx-test confirm") {
+                let _ = write!(reply, "XJQ OK pcie-rtl-tx-test");
+                write_pcie_rtl_tx_test_summary(&mut reply);
+            } else if query.eq_ignore_ascii_case("pcie dma-diag confirm") {
+                let _ = write!(reply, "XJQ OK ");
+                write_pcie_dma_diag_summary(&mut reply);
+            } else if query.eq_ignore_ascii_case("pcie dma-inbound-zero pcie3x1 confirm")
+                || query.eq_ignore_ascii_case("pcie dma-inbound-zero confirm")
+            {
+                let _ = write!(reply, "XJQ OK ");
+                write_pcie_dma_inbound_zero_summary(&mut reply);
+            } else if query.eq_ignore_ascii_case("pcie root-master pcie3x1 confirm")
+                || query.eq_ignore_ascii_case("pcie root-master confirm")
+            {
+                let _ = write!(reply, "XJQ OK ");
+                write_pcie_root_master_summary(&mut reply);
             } else if query.starts_with("net dns ") {
                 write_net_dns_query_summary(index, query, &mut reply);
             } else if query.starts_with("net tcp ") {
@@ -25159,6 +25445,7 @@ fn pcie_map_rtl_bars(controller: PcieController) {
     let bar2 = controller.mem32_base;
     let bar4 = controller.mem32_base + RTL8125_BAR2_SIZE;
 
+    pcie_enable_root_memory_master(controller);
     pcie_select_rtl_endpoint(controller);
     pcie_program_mem_atu(
         controller,
@@ -25175,6 +25462,13 @@ fn pcie_map_rtl_bars(controller: PcieController) {
         controller.cfg_base + 0x04,
         PCI_COMMAND_MEMORY | PCI_COMMAND_MASTER,
     );
+    mmio_write_barrier();
+}
+
+fn pcie_enable_root_memory_master(controller: PcieController) {
+    let before = probe_read32(controller.dbi_base + 0x04).unwrap_or(0);
+    let command = (before | PCI_COMMAND_MEMORY | PCI_COMMAND_MASTER) & 0xffff;
+    write_mmio16(controller.dbi_base + 0x04, command as u16);
     mmio_write_barrier();
 }
 
@@ -25231,18 +25525,69 @@ fn pcie_program_mem_atu(
     pcie_atu_write(controller, index, PCIE_ATU_REGION_CTRL2, PCIE_ATU_ENABLE);
 }
 
+fn pcie_program_inbound_mem_atu(
+    controller: PcieController,
+    index: u32,
+    pci_base: u64,
+    cpu_base: u64,
+    size: u64,
+) {
+    let limit = pci_base + size - 1;
+
+    pcie_atu_write_inbound(controller, index, PCIE_ATU_REGION_CTRL2, 0);
+    pcie_atu_write_inbound(controller, index, PCIE_ATU_LOWER_BASE, pci_base as u32);
+    pcie_atu_write_inbound(
+        controller,
+        index,
+        PCIE_ATU_UPPER_BASE,
+        (pci_base >> 32) as u32,
+    );
+    pcie_atu_write_inbound(controller, index, PCIE_ATU_LIMIT, limit as u32);
+    pcie_atu_write_inbound(controller, index, PCIE_ATU_LOWER_TARGET, cpu_base as u32);
+    pcie_atu_write_inbound(
+        controller,
+        index,
+        PCIE_ATU_UPPER_TARGET,
+        (cpu_base >> 32) as u32,
+    );
+    pcie_atu_write_inbound(controller, index, PCIE_ATU_REGION_CTRL1, PCIE_ATU_TYPE_MEM);
+    pcie_atu_write_inbound(controller, index, PCIE_ATU_REGION_CTRL2, PCIE_ATU_ENABLE);
+}
+
 fn pcie_atu_write(controller: PcieController, index: u32, reg: u64, value: u32) {
     write_mmio32(pcie_atu_addr(controller, index, reg), value);
 }
 
+fn pcie_atu_write_inbound(controller: PcieController, index: u32, reg: u64, value: u32) {
+    write_mmio32(pcie_atu_addr_inbound(controller, index, reg), value);
+}
+
 fn pcie_atu_addr(controller: PcieController, index: u32, reg: u64) -> u64 {
+    pcie_atu_addr_dir(controller, index, reg, false)
+}
+
+fn pcie_atu_addr_inbound(controller: PcieController, index: u32, reg: u64) -> u64 {
+    pcie_atu_addr_dir(controller, index, reg, true)
+}
+
+fn pcie_atu_addr_dir(controller: PcieController, index: u32, reg: u64, inbound: bool) -> u64 {
     if iatu_is_unrolled(controller) {
+        let dir_offset = if inbound {
+            PCIE_ATU_UNROLL_INBOUND_OFFSET
+        } else {
+            0
+        };
         controller.dbi_base
             + PCIE_ATU_UNROLL_BASE
             + (index as u64) * PCIE_ATU_UNROLL_REGION_SIZE
+            + dir_offset
             + reg
     } else {
-        write_mmio32(controller.dbi_base + PCIE_ATU_VIEWPORT, index & 0xff);
+        let direction = if inbound { PCIE_ATU_REGION_DIR_IB } else { 0 };
+        write_mmio32(
+            controller.dbi_base + PCIE_ATU_VIEWPORT,
+            direction | (index & 0xff),
+        );
         controller.dbi_base + PCIE_ATU_VIEWPORT_BASE + reg
     }
 }
@@ -25512,6 +25857,44 @@ fn rtl_wait_tx_complete(index: usize, entry: usize, timeout_ms: u64) -> bool {
         }
         core::hint::spin_loop();
     }
+}
+
+fn rtl_tx_desc_opts1(index: usize, entry: usize) -> u32 {
+    if index >= RTL_DEVICE_COUNT || entry >= RTL_TX_DESC_COUNT {
+        return 0;
+    }
+    let desc_addr = rtl_tx_desc_addr(index, entry);
+    invalidate_dcache_range(desc_addr, core::mem::size_of::<RtlDesc>() as u64);
+    unsafe { RTL_TX_RINGS.0[index][entry].opts1 }
+}
+
+fn rtl_tx_busy_count(index: usize) -> u32 {
+    if index >= RTL_DEVICE_COUNT {
+        return 0;
+    }
+    let mut busy = 0u32;
+    for entry in 0..RTL_TX_DESC_COUNT {
+        if rtl_tx_desc_opts1(index, entry) & RTL_DESC_OWN != 0 {
+            busy = busy.wrapping_add(1);
+        }
+    }
+    busy
+}
+
+fn rtl_rx_ready_count(index: usize) -> u32 {
+    if index >= RTL_DEVICE_COUNT {
+        return 0;
+    }
+    let mut ready = 0u32;
+    for entry in 0..RTL_RX_DESC_COUNT {
+        let desc_addr = rtl_rx_desc_addr(index, entry);
+        invalidate_dcache_range(desc_addr, core::mem::size_of::<RtlDesc>() as u64);
+        let status = unsafe { RTL_RX_RINGS.0[index][entry].opts1 };
+        if status & RTL_DESC_OWN == 0 {
+            ready = ready.wrapping_add(1);
+        }
+    }
+    ready
 }
 
 fn rtl_rearm_rx_desc(index: usize, entry: usize) {
