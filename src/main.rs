@@ -16903,21 +16903,30 @@ fn write_maint_pull_exec_ota_stage_summary<W: Write>(
         let _ = write!(out, "XJQ ERR maint-pull-exec ota-no-safe-slot");
         return;
     };
-    let download = match net_http_download_artifact(
-        index,
-        plan.artifact_host,
-        plan.artifact_port,
-        plan.artifact_path,
-        addr,
-        plan.image_bytes,
-        HTTP_ARTIFACT_TIMEOUT_MS,
-    ) {
-        Ok(download) => download,
-        Err(error) => {
+    let download = match plan.artifact_scheme {
+        MaintOtaArtifactScheme::Http => match net_http_download_artifact(
+            index,
+            plan.artifact_host,
+            plan.artifact_port,
+            plan.artifact_path,
+            addr,
+            plan.image_bytes,
+            HTTP_ARTIFACT_TIMEOUT_MS,
+        ) {
+            Ok(download) => download,
+            Err(error) => {
+                let _ = write!(
+                    out,
+                    "XJQ ERR maint-pull-exec ota-download {}",
+                    error.as_str()
+                );
+                return;
+            }
+        },
+        MaintOtaArtifactScheme::Https => {
             let _ = write!(
                 out,
-                "XJQ ERR maint-pull-exec ota-download {}",
-                error.as_str()
+                "XJQ ERR maint-pull-exec ota-https-artifact-streaming-not-ready"
             );
             return;
         }
@@ -16993,8 +17002,9 @@ fn write_maint_pull_exec_ota_stage_summary<W: Write>(
     let mut event = NetReplyBuf::new();
     let _ = write!(
         event,
-        "maint-pull-exec-ota-stage-v1 iface={} host=",
-        PCIE_CONTROLLERS[index].name
+        "maint-pull-exec-ota-stage-v1 iface={} artifact-scheme={} host=",
+        PCIE_CONTROLLERS[index].name,
+        plan.artifact_scheme.as_str()
     );
     write_ascii_token(&mut event, host.as_bytes());
     let _ = write!(
@@ -17127,8 +17137,24 @@ fn maint_public_query_payload_digest(query: &[u8]) -> Option<[u8; 32]> {
     Some(sha256_digest(canonical.as_slice()))
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum MaintOtaArtifactScheme {
+    Http,
+    Https,
+}
+
+impl MaintOtaArtifactScheme {
+    fn as_str(self) -> &'static str {
+        match self {
+            MaintOtaArtifactScheme::Http => "http",
+            MaintOtaArtifactScheme::Https => "https",
+        }
+    }
+}
+
 struct MaintOtaStagePlan<'a> {
     slot: u8,
+    artifact_scheme: MaintOtaArtifactScheme,
     artifact_host: &'a str,
     artifact_port: u16,
     artifact_path: &'a str,
@@ -17175,9 +17201,11 @@ fn parse_maint_ota_stage_payload(payload: &[u8]) -> Option<MaintOtaStagePlan<'_>
     let image_sha256 = parse_sha256_hex_array(json_get_string(json, "image_sha256")?)?;
     let image_crc32 = parse_u64(json_get_string(json, "image_crc32")?)? as u32;
     let artifact_url = json_get_string(json, "artifact_url")?;
-    let (artifact_host, artifact_port, artifact_path) = parse_http_artifact_url(artifact_url)?;
+    let (artifact_scheme, artifact_host, artifact_port, artifact_path) =
+        parse_maint_artifact_url(artifact_url)?;
     Some(MaintOtaStagePlan {
         slot,
+        artifact_scheme,
         artifact_host,
         artifact_port,
         artifact_path,
@@ -17239,11 +17267,17 @@ fn json_key_value_offset(bytes: &[u8], key: &str, start: usize) -> Option<usize>
     None
 }
 
-fn parse_http_artifact_url(url: &str) -> Option<(&str, u16, &str)> {
-    if url.len() > MAINT_OTA_ARTIFACT_URL_BYTES || !url.starts_with("http://") {
+fn parse_maint_artifact_url(url: &str) -> Option<(MaintOtaArtifactScheme, &str, u16, &str)> {
+    if url.len() > MAINT_OTA_ARTIFACT_URL_BYTES {
         return None;
     }
-    let rest = &url[7..];
+    let (scheme, default_port, rest) = if let Some(rest) = url.strip_prefix("http://") {
+        (MaintOtaArtifactScheme::Http, 80, rest)
+    } else if let Some(rest) = url.strip_prefix("https://") {
+        (MaintOtaArtifactScheme::Https, 443, rest)
+    } else {
+        return None;
+    };
     let slash = rest.find('/')?;
     let host_port = &rest[..slash];
     let path = &rest[slash..];
@@ -17266,9 +17300,9 @@ fn parse_http_artifact_url(url: &str) -> Option<(&str, u16, &str)> {
         if host.is_empty() {
             return None;
         }
-        Some((host, port, path))
+        Some((scheme, host, port, path))
     } else {
-        Some((host_port, 80, path))
+        Some((scheme, host_port, default_port, path))
     }
 }
 
