@@ -1371,6 +1371,7 @@ enum TlsDecryptStatus {
     NotAttempted,
     UnsupportedCipher,
     NoEncryptedRecord,
+    IncompleteEncryptedRecord,
     TooLarge,
     AuthFailed,
     Ok,
@@ -1382,6 +1383,7 @@ impl TlsDecryptStatus {
             Self::NotAttempted => "not-attempted",
             Self::UnsupportedCipher => "unsupported-cipher",
             Self::NoEncryptedRecord => "no-encrypted-record",
+            Self::IncompleteEncryptedRecord => "incomplete-encrypted-record",
             Self::TooLarge => "too-large",
             Self::AuthFailed => "auth-failed",
             Self::Ok => "ok",
@@ -2789,9 +2791,10 @@ fn print_caps(uart: &mut Uart) {
     uart.put_str("  net udp-query-control yes\n");
     uart.put_str("  net routed-udp-loader yes\n");
     uart.put_str("  net http-post yes\n");
-    uart.put_str("  net https-get yes\n");
-    uart.put_str("  net https-post yes\n");
-    uart.put_str("  net tls-application-data yes\n");
+    uart.put_str("  net routed-udp-loader-immediate yes\n");
+    uart.put_str("  net https-get experimental\n");
+    uart.put_str("  net https-post experimental\n");
+    uart.put_str("  net tls-application-data experimental\n");
     uart.put_str("  maint http-poll yes\n");
     uart.put_str("  maint pending-summary yes\n");
     uart.put_str("  maint command-digest yes\n");
@@ -2838,14 +2841,14 @@ fn print_caps(uart: &mut Uart) {
 fn write_caps_query_summary<W: Write>(out: &mut W) {
     let _ = write!(
         out,
-        "XJQ OK caps net-dev=yes net-ifaces=yes iface-auto=yes dhcp=yes auto-dhcp=yes failover=best-routed-dns route=yes arp=yes dns=yes tcp-connect=yes http-get=yes http-post=yes https-get=yes https-post=yes tls-clienthello=yes tls-aes128gcm-decrypt=yes tls-chacha20poly1305-decrypt=yes tls-handshake-parse=yes tls-certificate-list-parse=yes tls-first-certificate-sha256=yes tls-first-certificate-pin=yes tls-server-finished-verify=yes tls-client-finished-send=yes tls-application-data=yes ai-chat=http,https-experimental maint-poll=yes maint-status=yes maint-command-verify=yes maint-command-verify-hmac=yes maint-local-hmac-key=yes maint-pull-exec=yes maint-ota-stage-pull=http maint-loop=yes maint-config=yes maint-config-paths=yes maint-config-host-name=yes maint-config-https=yes maint-config-tls-pin=yes maint-cold-boot-tick=yes maint-ack-intent=yes maint-remote-event=yes maint-https-event=yes identity=yes query=yes reboot=yes wifi-firmware-sd=confirm wifi-firmware-crc=confirm wifi-firmware-load=confirm wifi-enum=confirm wifi-mmio-snapshot=confirm wifi-mmio-fingerprint=confirm sd-writer=yes ab-persist=yes boot-slot=extlinux db=page-store,catalog,wal,fixed-table,btree,event-log"
+        "XJQ OK caps net-dev=yes net-reload=immediate net-ifaces=yes iface-auto=yes dhcp=yes auto-dhcp=yes failover=best-routed-dns route=yes arp=yes dns=yes tcp-connect=yes http-get=yes http-post=yes https-get=experimental https-post=experimental tls-clienthello=yes tls-aes128gcm-decrypt=yes tls-chacha20poly1305-decrypt=yes tls-handshake-parse=yes tls-certificate-list-parse=yes tls-first-certificate-sha256=yes tls-first-certificate-pin=yes tls-server-finished-verify=yes tls-client-finished-send=yes tls-application-data=experimental ai-chat=http,https-experimental maint-poll=yes maint-status=yes maint-command-verify=yes maint-command-verify-hmac=yes maint-local-hmac-key=yes maint-pull-exec=yes maint-ota-stage-pull=http maint-loop=yes maint-config=yes maint-config-paths=yes maint-config-host-name=yes maint-config-https=yes maint-config-tls-pin=yes maint-cold-boot-tick=yes maint-ack-intent=yes maint-remote-event=yes maint-https-event=yes identity=yes query=yes reboot=yes wifi-firmware-sd=confirm wifi-firmware-crc=confirm wifi-firmware-load=confirm wifi-enum=confirm wifi-mmio-snapshot=confirm wifi-mmio-fingerprint=confirm sd-writer=yes ab-persist=yes boot-slot=extlinux db=page-store,catalog,wal,fixed-table,btree,event-log"
     );
 }
 
 fn write_caps_full_query_summary<W: Write>(out: &mut W) {
     let _ = write!(
         out,
-        "XJQ OK caps-full net=dev,ifaces,iface-auto,dhcp,auto-dhcp,failover-best-routed-dns,route,arp,dns,tcp,http-get,http-post,https-get,https-post,http-trace,http-debug tls=clienthello,aes128gcm,chacha20poly1305,handshake,cert-list,first-cert-sha256,first-cert-pin,server-finished,client-finished-material,client-finished-send,application-data ai=chat-http,chat-https-experimental maint=poll,status,pending,digest,verify,verify-hmac,local-key,pull-exec,ota-stage-pull-http,loop,config,paths,host-name,https,tls-pin,cold-boot,ack-intent,remote-event,https-event,local-audit wifi=pcie,firmware,firmware-crc,firmware-load,mmio-snapshot,mmio-fingerprint,driver-gate,rtw88-profile,trace,pcie-init,pcie-init-high,pcie-init-linux,pcie-init-dt,enum,station-planned,ap-planned sd=probe,writer,ab-persist,extlinux db=page-store,catalog,wal,fixed-table,btree,btree-delete,table-namespace,event-log,blob-backup,blob-restore"
+        "XJQ OK caps-full net=dev,reload-immediate,ifaces,iface-auto,dhcp,auto-dhcp,failover-best-routed-dns,route,arp,dns,tcp,http-get,http-post,https-get-experimental,https-post-experimental,http-trace,http-debug tls=clienthello,aes128gcm,chacha20poly1305,handshake,cert-list,first-cert-sha256,first-cert-pin,server-finished,client-finished-material,client-finished-send,application-data-experimental ai=chat-http,chat-https-experimental maint=poll,status,pending,digest,verify,verify-hmac,local-key,pull-exec,ota-stage-pull-http,loop,config,paths,host-name,https,tls-pin,cold-boot,ack-intent,remote-event,https-event,local-audit wifi=pcie,firmware,firmware-crc,firmware-load,mmio-snapshot,mmio-fingerprint,driver-gate,rtw88-profile,trace,pcie-init,pcie-init-high,pcie-init-linux,pcie-init-dt,enum,station-planned,ap-planned sd=probe,writer,ab-persist,extlinux db=page-store,catalog,wal,fixed-table,btree,btree-delete,table-namespace,event-log,blob-backup,blob-restore"
     );
 }
 
@@ -20453,6 +20456,9 @@ fn tls13_decrypt_first_server_handshake_record(
             return tls_decrypt_summary(TlsDecryptStatus::TooLarge);
         };
         if record_end > sample.len() {
+            if record_type == TLS_RECORD_APPLICATION_DATA {
+                return tls_decrypt_summary(TlsDecryptStatus::IncompleteEncryptedRecord);
+            }
             break;
         }
         let record = &sample[offset..record_end];
