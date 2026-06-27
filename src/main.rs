@@ -221,6 +221,7 @@ const HTTP_IDLE_TIMEOUT_MS: u64 = 500;
 const HTTP_REQUEST_BYTES: usize = 768;
 const HTTP_RESPONSE_MAX_BYTES: usize = 8 * 1024;
 const HTTP_RESPONSE_SAMPLE_BYTES: usize = 2048;
+const TLS_RESPONSE_SCRATCH_BYTES: usize = HTTP_RESPONSE_MAX_BYTES;
 const MAINT_OTA_PAYLOAD_BYTES: usize = 768;
 const MAINT_OTA_ARTIFACT_URL_BYTES: usize = 160;
 const AI_CHAT_PROMPT_BYTES: usize = 160;
@@ -535,6 +536,8 @@ static mut LAST_NET_IMAGE: NetImageState = NetImageState::empty();
 static mut SD_IDMAC_DESC: SdDmaDescStorage = SdDmaDescStorage(SdIdmacDesc::zero());
 static mut SD_BLOCK_BUFFER: SdBlockStorage = SdBlockStorage([0; SD_BLOCK_BYTES]);
 static mut SD_WRITE_BUFFER: SdBlockStorage = SdBlockStorage([0; SD_BLOCK_BYTES]);
+static mut TLS_RESPONSE_SCRATCH: TlsResponseScratch =
+    TlsResponseScratch([0; TLS_RESPONSE_SCRATCH_BYTES]);
 static mut PROBE_ACTIVE: u8 = 0;
 static mut PROBE_FAULTED: u8 = 0;
 
@@ -19188,8 +19191,8 @@ fn net_tls_client_hello(
             return Err(TlsError::Response(error));
         }
     };
-    let record = parse_tls_first_record(&response.sample[..response.sample_len])
-        .ok_or(TlsError::MalformedRecord)?;
+    let response_sample = http_response_full_sample(&response);
+    let record = parse_tls_first_record(response_sample).ok_or(TlsError::MalformedRecord)?;
     let mut shared_secret_sha256 = None;
     let mut transcript_sha256 = None;
     let mut client_handshake_traffic_sha256 = None;
@@ -19215,7 +19218,7 @@ fn net_tls_client_hello(
             record.cipher_suite,
             tls_handshake_transcript_prefix(
                 &client_hello[..client_hello_len],
-                &response.sample[..response.sample_len],
+                response_sample,
                 &mut transcript_prefix,
             ),
         ) {
@@ -19233,7 +19236,7 @@ fn net_tls_client_hello(
                 client_handshake_iv_sha256 = Some(traffic.client_iv_sha256);
                 server_handshake_iv_sha256 = Some(traffic.server_iv_sha256);
                 decrypt = tls13_decrypt_first_server_handshake_record(
-                    &response.sample[..response.sample_len],
+                    response_sample,
                     cipher_suite,
                     &traffic.server_key,
                     &traffic.server_iv,
@@ -19368,8 +19371,8 @@ fn net_tls_client_finish(
             return Err(TlsError::Response(error));
         }
     };
-    let record = parse_tls_first_record(&response.sample[..response.sample_len])
-        .ok_or(TlsError::MalformedRecord)?;
+    let response_sample = http_response_full_sample(&response);
+    let record = parse_tls_first_record(response_sample).ok_or(TlsError::MalformedRecord)?;
     let mut shared_secret_sha256 = None;
     let mut transcript_sha256 = None;
     let mut client_handshake_traffic_sha256 = None;
@@ -19396,7 +19399,7 @@ fn net_tls_client_finish(
             record.cipher_suite,
             tls_handshake_transcript_prefix(
                 &client_hello[..client_hello_len],
-                &response.sample[..response.sample_len],
+                response_sample,
                 &mut transcript_prefix,
             ),
         ) {
@@ -19414,7 +19417,7 @@ fn net_tls_client_finish(
                 client_handshake_iv_sha256 = Some(schedule.client_iv_sha256);
                 server_handshake_iv_sha256 = Some(schedule.server_iv_sha256);
                 decrypt = tls13_decrypt_first_server_handshake_record(
-                    &response.sample[..response.sample_len],
+                    response_sample,
                     cipher_suite,
                     &schedule.server_key,
                     &schedule.server_iv,
@@ -19669,8 +19672,8 @@ fn net_https_request(
             return Err(TlsError::Response(error));
         }
     };
-    let record = parse_tls_first_record(&response.sample[..response.sample_len])
-        .ok_or(TlsError::MalformedRecord)?;
+    let response_sample = http_response_full_sample(&response);
+    let record = parse_tls_first_record(response_sample).ok_or(TlsError::MalformedRecord)?;
 
     let mut shared_secret_sha256 = None;
     let mut shared_secret_bytes: Option<[u8; 32]> = None;
@@ -19700,7 +19703,7 @@ fn net_https_request(
             record.cipher_suite,
             tls_handshake_transcript_prefix(
                 &client_hello[..client_hello_len],
-                &response.sample[..response.sample_len],
+                response_sample,
                 &mut transcript_prefix,
             ),
         ) {
@@ -19718,7 +19721,7 @@ fn net_https_request(
                 client_handshake_iv_sha256 = Some(schedule.client_iv_sha256);
                 server_handshake_iv_sha256 = Some(schedule.server_iv_sha256);
                 decrypt = tls13_decrypt_first_server_handshake_record(
-                    &response.sample[..response.sample_len],
+                    response_sample,
                     cipher_suite,
                     &schedule.server_key,
                     &schedule.server_iv,
@@ -19921,11 +19924,12 @@ fn net_https_request(
         }
     };
 
+    let encrypted_response_sample = http_response_full_sample(&encrypted_response);
     let Some(decrypted) = tls13_decrypt_application_data_sample(
         cipher_suite,
         &application_schedule.server_key,
         &application_schedule.server_iv,
-        &encrypted_response.sample[..encrypted_response.sample_len],
+        encrypted_response_sample,
     ) else {
         let _ = net_send_tcp_packet(
             index,
@@ -21232,9 +21236,14 @@ struct HttpResponseAccum {
     segments: u32,
     sample_len: usize,
     sample: [u8; HTTP_RESPONSE_SAMPLE_BYTES],
+    full_sample_len: usize,
+    full_sample_truncated: bool,
     fin: bool,
     truncated: bool,
 }
+
+#[repr(align(64))]
+struct TlsResponseScratch([u8; TLS_RESPONSE_SCRATCH_BYTES]);
 
 fn net_wait_http_response(
     index: usize,
@@ -21271,6 +21280,8 @@ fn net_wait_tcp_response_from(
         segments: 0,
         sample_len: 0,
         sample: [0; HTTP_RESPONSE_SAMPLE_BYTES],
+        full_sample_len: 0,
+        full_sample_truncated: false,
         fin: false,
         truncated: false,
     };
@@ -21307,6 +21318,32 @@ fn net_wait_tcp_response_from(
                     response.sample[start..start + copy_len]
                         .copy_from_slice(&segment.sample[..copy_len]);
                     response.sample_len += copy_len;
+                }
+
+                let full_remaining =
+                    TLS_RESPONSE_SCRATCH_BYTES.saturating_sub(response.full_sample_len);
+                if full_remaining > 0 && accepted > 0 {
+                    let copy_len = core::cmp::min(
+                        core::cmp::min(segment.sample_len, full_remaining),
+                        accepted,
+                    );
+                    if copy_len > 0 {
+                        unsafe {
+                            let dst =
+                                core::ptr::addr_of_mut!(TLS_RESPONSE_SCRATCH.0) as *mut u8;
+                            core::ptr::copy_nonoverlapping(
+                                segment.sample.as_ptr(),
+                                dst.add(response.full_sample_len),
+                                copy_len,
+                            );
+                        }
+                        response.full_sample_len += copy_len;
+                    }
+                    if copy_len < accepted {
+                        response.full_sample_truncated = true;
+                    }
+                } else if accepted > 0 {
+                    response.full_sample_truncated = true;
                 }
 
                 response.next_remote_seq = response
@@ -21367,6 +21404,18 @@ fn net_wait_tcp_response_from(
             return Some(Ok(response));
         }
         core::hint::spin_loop();
+    }
+}
+
+fn http_response_full_sample(response: &HttpResponseAccum) -> &[u8] {
+    if response.full_sample_len == 0 {
+        return &response.sample[..response.sample_len];
+    }
+    unsafe {
+        core::slice::from_raw_parts(
+            core::ptr::addr_of!(TLS_RESPONSE_SCRATCH.0) as *const u8,
+            response.full_sample_len,
+        )
     }
 }
 
