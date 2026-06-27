@@ -216,6 +216,7 @@ const TCP_CLIENT_PORT_BASE: u16 = 49152;
 const TCP_CONNECT_TIMEOUT_MS: u64 = 4_000;
 const HTTP_TIMEOUT_MS: u64 = 5_000;
 const HTTP_ARTIFACT_TIMEOUT_MS: u64 = 120_000;
+const AI_HTTP_CHAT_TIMEOUT_MS: u64 = 120_000;
 const HTTP_IDLE_TIMEOUT_MS: u64 = 500;
 const HTTP_REQUEST_BYTES: usize = 768;
 const HTTP_RESPONSE_MAX_BYTES: usize = 8 * 1024;
@@ -6023,7 +6024,7 @@ fn write_ai_http_chat_query_summary<W: Write>(default_index: usize, query: &str,
         }
     };
 
-    match net_http_post(index, host, port, path, body.as_slice(), HTTP_TIMEOUT_MS) {
+    match net_http_post(index, host, port, path, body.as_slice(), AI_HTTP_CHAT_TIMEOUT_MS) {
         Ok(result) => {
             let _ = write!(
                 out,
