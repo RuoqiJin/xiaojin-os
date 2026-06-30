@@ -2680,6 +2680,8 @@ fn handle_command(uart: &mut Uart, input: &str) {
         print_about(uart);
     } else if command.eq_ignore_ascii_case("identity") {
         print_identity(uart);
+    } else if command.eq_ignore_ascii_case("ai") {
+        command_ai(uart, parts.next());
     } else if command.eq_ignore_ascii_case("svc") || command.eq_ignore_ascii_case("service") {
         command_service(uart, parts.next());
     } else if command.eq_ignore_ascii_case("mem") {
@@ -2738,6 +2740,7 @@ fn print_help(uart: &mut Uart) {
     uart.put_str("  caps                 show machine-readable feature flags\n");
     uart.put_str("  about                show kernel and board identity\n");
     uart.put_str("  identity             show stable device identity and fingerprint\n");
+    uart.put_str("  ai facts             show board AI runtime/control facts\n");
     uart.put_str("  svc facts            show AI-native service manifest facts\n");
     uart.put_str("  svc health           show AI-native service health read model\n");
     uart.put_str("  svc apps             show AI-native app manifest facts\n");
@@ -2986,6 +2989,10 @@ fn print_caps(uart: &mut Uart) {
     uart.put_str("  maint config-tls-pin yes\n");
     uart.put_str("  maint remote-event yes\n");
     uart.put_str("  maint local-audit yes\n");
+    uart.put_str("  ai facts-readonly yes\n");
+    uart.put_str("  ai http-chat yes\n");
+    uart.put_str("  ai https-chat experimental\n");
+    uart.put_str("  ai https-chat-bearer experimental\n");
     uart.put_str("  svc manifest-readonly yes\n");
     uart.put_str("  svc health-readonly yes\n");
     uart.put_str("  svc app-manifest-readonly yes\n");
@@ -3021,14 +3028,14 @@ fn print_caps(uart: &mut Uart) {
 fn write_caps_query_summary<W: Write>(out: &mut W) {
     let _ = write!(
         out,
-        "XJQ OK caps net-dev=yes net-reload=immediate net-ifaces=yes net-roles=yes iface-auto=yes dhcp=yes auto-dhcp=yes failover=best-linked-routed-dns route=yes arp=yes dns=yes tcp-connect=yes http-get=yes http-post=yes https-get=experimental https-post=experimental tls-clienthello=yes tls-aes128gcm-decrypt=yes tls-handshake-parse=yes tls-certificate-list-parse=yes tls-first-certificate-sha256=yes tls-server-finished-verify=yes tls-application-data=experimental ai-chat=http,https-experimental,https-bearer-experimental maint-poll=yes maint-status=yes maint-event=yes maint-pending=yes maint-pending-summary=yes maint-command-digest=yes maint-command-verify=yes maint-command-verify-hmac=yes maint-local-hmac-key=yes maint-pull-exec=yes maint-ota-stage-pull=http,https-experimental maint-config=yes maint-config-paths=yes maint-config-host-name=yes maint-config-https=yes maint-config-tls-pin=yes maint-https-event=yes identity=yes svc=manifest-readonly,health-readonly,app-manifest-readonly query=yes reboot=yes sd-writer=yes ab-persist=yes boot-slot=extlinux db=page-store,catalog,wal,fixed-table,btree,event-log"
+        "XJQ OK caps net-dev=yes net-reload=immediate net-ifaces=yes net-roles=yes iface-auto=yes dhcp=yes auto-dhcp=yes failover=best-linked-routed-dns route=yes arp=yes dns=yes tcp-connect=yes http-get=yes http-post=yes https-get=experimental https-post=experimental tls-clienthello=yes tls-aes128gcm-decrypt=yes tls-handshake-parse=yes tls-certificate-list-parse=yes tls-first-certificate-sha256=yes tls-server-finished-verify=yes tls-application-data=experimental ai-chat=http,https-experimental,https-bearer-experimental ai-facts=runtime-readonly maint-poll=yes maint-status=yes maint-event=yes maint-pending=yes maint-pending-summary=yes maint-command-digest=yes maint-command-verify=yes maint-command-verify-hmac=yes maint-local-hmac-key=yes maint-pull-exec=yes maint-ota-stage-pull=http,https-experimental maint-config=yes maint-config-paths=yes maint-config-host-name=yes maint-config-https=yes maint-config-tls-pin=yes maint-https-event=yes identity=yes svc=manifest-readonly,health-readonly,app-manifest-readonly query=yes reboot=yes sd-writer=yes ab-persist=yes boot-slot=extlinux db=page-store,catalog,wal,fixed-table,btree,event-log"
     );
 }
 
 fn write_caps_full_query_summary<W: Write>(out: &mut W) {
     let _ = write!(
         out,
-        "XJQ OK caps-full net=dev,reload-immediate,ifaces,iface-auto,dhcp,auto-dhcp,failover-best-linked-routed-dns,route,arp,dns,tcp,http-get,http-post,https-get-experimental,https-post-experimental,http-trace,http-debug tls=clienthello,aes128gcm,chacha20poly1305,handshake,cert-list,first-cert-sha256,first-cert-pin,server-finished,client-finished-material,client-finished-send,application-data-experimental ai=chat-http,chat-https-experimental,chat-https-bearer-experimental maint=poll,status,pending,digest,verify,verify-hmac,local-key,pull-exec,ota-stage-pull-http,ota-stage-pull-https-experimental,loop,config,paths,host-name,https,tls-pin,manual-config-run,ack-intent,remote-event,https-event,local-audit svc=manifest-readonly,service-facts,service-health,app-manifest wifi=pcie,firmware,firmware-crc,firmware-load,mmio-snapshot,mmio-fingerprint,driver-gate,rtw88-profile,trace,pcie-init,pcie-init-high,pcie-init-linux,pcie-init-dt,enum,station-planned,ap-planned sd=probe,writer,ab-persist,extlinux db=page-store,catalog,wal,fixed-table,btree,btree-delete,table-namespace,event-log,blob-backup,blob-restore"
+        "XJQ OK caps-full net=dev,reload-immediate,ifaces,iface-auto,dhcp,auto-dhcp,failover-best-linked-routed-dns,route,arp,dns,tcp,http-get,http-post,https-get-experimental,https-post-experimental,http-trace,http-debug tls=clienthello,aes128gcm,chacha20poly1305,handshake,cert-list,first-cert-sha256,first-cert-pin,server-finished,client-finished-material,client-finished-send,application-data-experimental ai=chat-http,chat-https-experimental,chat-https-bearer-experimental ai-facts=runtime-readonly maint=poll,status,pending,digest,verify,verify-hmac,local-key,pull-exec,ota-stage-pull-http,ota-stage-pull-https-experimental,loop,config,paths,host-name,https,tls-pin,manual-config-run,ack-intent,remote-event,https-event,local-audit svc=manifest-readonly,service-facts,service-health,app-manifest wifi=pcie,firmware,firmware-crc,firmware-load,mmio-snapshot,mmio-fingerprint,driver-gate,rtw88-profile,trace,pcie-init,pcie-init-high,pcie-init-linux,pcie-init-dt,enum,station-planned,ap-planned sd=probe,writer,ab-persist,extlinux db=page-store,catalog,wal,fixed-table,btree,btree-delete,table-namespace,event-log,blob-backup,blob-restore"
     );
 }
 
@@ -3305,6 +3312,38 @@ fn write_app_manifest_summary<W: Write>(out: &mut W) {
             entry.policy
         );
     }
+}
+
+fn command_ai(uart: &mut Uart, action: Option<&str>) {
+    match action {
+        None | Some("facts") | Some("status") => print_ai_facts(uart),
+        _ => uart.put_str("usage: ai facts\n"),
+    }
+}
+
+fn print_ai_facts(uart: &mut Uart) {
+    uart.put_str("AI runtime facts:\n");
+    uart.put_str("  version xiaojin-ai-runtime-v1\n");
+    uart.put_str("  mode remote-first\n");
+    uart.put_str("  local-runtime planned\n");
+    uart.put_str("  bridge http-maintainer\n");
+    uart.put_str("  remote https-openai-compatible\n");
+    uart.put_str("  native-https experimental\n");
+    uart.put_str("  native-https-bearer experimental\n");
+    uart.put_str("  output serial,udp-xjq\n");
+    let _ = writeln!(uart, "  prompt-bytes {AI_CHAT_PROMPT_BYTES}");
+    let _ = writeln!(uart, "  model-bytes {AI_CHAT_MODEL_BYTES}");
+    let _ = writeln!(uart, "  bearer-bytes {AI_CHAT_BEARER_BYTES}");
+    let _ = writeln!(uart, "  timeout-ms {AI_HTTP_CHAT_TIMEOUT_MS}");
+    uart.put_str("  guardrails execution-layer,tool-policy,memory-write-veto\n");
+    uart.put_str("  endpoints maintainer-bridge,xjp-router\n");
+}
+
+fn write_ai_facts_summary<W: Write>(out: &mut W) {
+    let _ = write!(
+        out,
+        "ai-facts version=xiaojin-ai-runtime-v1 mode=remote-first local-runtime=planned bridge=http-maintainer remote=https-openai-compatible native-https=experimental native-https-bearer=experimental output=serial,udp-xjq prompt-bytes={AI_CHAT_PROMPT_BYTES} model-bytes={AI_CHAT_MODEL_BYTES} bearer-bytes={AI_CHAT_BEARER_BYTES} timeout-ms={AI_HTTP_CHAT_TIMEOUT_MS} guardrails=execution-layer,tool-policy,memory-write-veto endpoints=maintainer-bridge,xjp-router"
+    );
 }
 
 fn print_about(uart: &mut Uart) {
@@ -18888,6 +18927,8 @@ fn is_public_xj_query(query: &[u8]) -> bool {
         "caps",
         "identity",
         "identity facts",
+        "ai facts",
+        "ai status",
         "svc facts",
         "svc health",
         "svc apps",
@@ -18927,6 +18968,9 @@ fn write_public_xj_query_result<W: Write>(query: &str, out: &mut W) -> bool {
     {
         let _ = write!(out, "XJQ OK ");
         write_identity_summary(out);
+    } else if query.eq_ignore_ascii_case("ai facts") || query.eq_ignore_ascii_case("ai status") {
+        let _ = write!(out, "XJQ OK ");
+        write_ai_facts_summary(out);
     } else if query.eq_ignore_ascii_case("svc facts")
         || query.eq_ignore_ascii_case("service facts")
         || query.eq_ignore_ascii_case("service manifest")
@@ -26410,6 +26454,11 @@ fn net_handle_query_packet(
             {
                 let _ = write!(reply, "XJQ OK ");
                 write_identity_summary(&mut reply);
+            } else if query.eq_ignore_ascii_case("ai facts")
+                || query.eq_ignore_ascii_case("ai status")
+            {
+                let _ = write!(reply, "XJQ OK ");
+                write_ai_facts_summary(&mut reply);
             } else if query.eq_ignore_ascii_case("svc facts")
                 || query.eq_ignore_ascii_case("service facts")
                 || query.eq_ignore_ascii_case("service manifest")
