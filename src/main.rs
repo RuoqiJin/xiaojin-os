@@ -2740,6 +2740,7 @@ fn print_help(uart: &mut Uart) {
     uart.put_str("  identity             show stable device identity and fingerprint\n");
     uart.put_str("  svc facts            show AI-native service manifest facts\n");
     uart.put_str("  svc health           show AI-native service health read model\n");
+    uart.put_str("  svc apps             show AI-native app manifest facts\n");
     uart.put_str("  mem                  show current memory map facts\n");
     uart.put_str("  regs                 show selected CPU registers\n");
     uart.put_str("  time                 show generic timer registers and uptime\n");
@@ -2987,6 +2988,7 @@ fn print_caps(uart: &mut Uart) {
     uart.put_str("  maint local-audit yes\n");
     uart.put_str("  svc manifest-readonly yes\n");
     uart.put_str("  svc health-readonly yes\n");
+    uart.put_str("  svc app-manifest-readonly yes\n");
     uart.put_str("  identity facts yes\n");
     uart.put_str("  rng development-hmac-drbg yes\n");
     uart.put_str("  wifi facts yes\n");
@@ -3019,14 +3021,14 @@ fn print_caps(uart: &mut Uart) {
 fn write_caps_query_summary<W: Write>(out: &mut W) {
     let _ = write!(
         out,
-        "XJQ OK caps net-dev=yes net-reload=immediate net-ifaces=yes net-roles=yes iface-auto=yes dhcp=yes auto-dhcp=yes failover=best-linked-routed-dns route=yes arp=yes dns=yes tcp-connect=yes http-get=yes http-post=yes https-get=experimental https-post=experimental tls-clienthello=yes tls-aes128gcm-decrypt=yes tls-handshake-parse=yes tls-certificate-list-parse=yes tls-first-certificate-sha256=yes tls-server-finished-verify=yes tls-application-data=experimental ai-chat=http,https-experimental,https-bearer-experimental maint-poll=yes maint-status=yes maint-event=yes maint-pending=yes maint-pending-summary=yes maint-command-digest=yes maint-command-verify=yes maint-command-verify-hmac=yes maint-local-hmac-key=yes maint-pull-exec=yes maint-ota-stage-pull=http,https-experimental maint-config=yes maint-config-paths=yes maint-config-host-name=yes maint-config-https=yes maint-config-tls-pin=yes maint-https-event=yes identity=yes svc=manifest-readonly,health-readonly query=yes reboot=yes sd-writer=yes ab-persist=yes boot-slot=extlinux db=page-store,catalog,wal,fixed-table,btree,event-log"
+        "XJQ OK caps net-dev=yes net-reload=immediate net-ifaces=yes net-roles=yes iface-auto=yes dhcp=yes auto-dhcp=yes failover=best-linked-routed-dns route=yes arp=yes dns=yes tcp-connect=yes http-get=yes http-post=yes https-get=experimental https-post=experimental tls-clienthello=yes tls-aes128gcm-decrypt=yes tls-handshake-parse=yes tls-certificate-list-parse=yes tls-first-certificate-sha256=yes tls-server-finished-verify=yes tls-application-data=experimental ai-chat=http,https-experimental,https-bearer-experimental maint-poll=yes maint-status=yes maint-event=yes maint-pending=yes maint-pending-summary=yes maint-command-digest=yes maint-command-verify=yes maint-command-verify-hmac=yes maint-local-hmac-key=yes maint-pull-exec=yes maint-ota-stage-pull=http,https-experimental maint-config=yes maint-config-paths=yes maint-config-host-name=yes maint-config-https=yes maint-config-tls-pin=yes maint-https-event=yes identity=yes svc=manifest-readonly,health-readonly,app-manifest-readonly query=yes reboot=yes sd-writer=yes ab-persist=yes boot-slot=extlinux db=page-store,catalog,wal,fixed-table,btree,event-log"
     );
 }
 
 fn write_caps_full_query_summary<W: Write>(out: &mut W) {
     let _ = write!(
         out,
-        "XJQ OK caps-full net=dev,reload-immediate,ifaces,iface-auto,dhcp,auto-dhcp,failover-best-linked-routed-dns,route,arp,dns,tcp,http-get,http-post,https-get-experimental,https-post-experimental,http-trace,http-debug tls=clienthello,aes128gcm,chacha20poly1305,handshake,cert-list,first-cert-sha256,first-cert-pin,server-finished,client-finished-material,client-finished-send,application-data-experimental ai=chat-http,chat-https-experimental,chat-https-bearer-experimental maint=poll,status,pending,digest,verify,verify-hmac,local-key,pull-exec,ota-stage-pull-http,ota-stage-pull-https-experimental,loop,config,paths,host-name,https,tls-pin,manual-config-run,ack-intent,remote-event,https-event,local-audit svc=manifest-readonly,service-facts,service-health wifi=pcie,firmware,firmware-crc,firmware-load,mmio-snapshot,mmio-fingerprint,driver-gate,rtw88-profile,trace,pcie-init,pcie-init-high,pcie-init-linux,pcie-init-dt,enum,station-planned,ap-planned sd=probe,writer,ab-persist,extlinux db=page-store,catalog,wal,fixed-table,btree,btree-delete,table-namespace,event-log,blob-backup,blob-restore"
+        "XJQ OK caps-full net=dev,reload-immediate,ifaces,iface-auto,dhcp,auto-dhcp,failover-best-linked-routed-dns,route,arp,dns,tcp,http-get,http-post,https-get-experimental,https-post-experimental,http-trace,http-debug tls=clienthello,aes128gcm,chacha20poly1305,handshake,cert-list,first-cert-sha256,first-cert-pin,server-finished,client-finished-material,client-finished-send,application-data-experimental ai=chat-http,chat-https-experimental,chat-https-bearer-experimental maint=poll,status,pending,digest,verify,verify-hmac,local-key,pull-exec,ota-stage-pull-http,ota-stage-pull-https-experimental,loop,config,paths,host-name,https,tls-pin,manual-config-run,ack-intent,remote-event,https-event,local-audit svc=manifest-readonly,service-facts,service-health,app-manifest wifi=pcie,firmware,firmware-crc,firmware-load,mmio-snapshot,mmio-fingerprint,driver-gate,rtw88-profile,trace,pcie-init,pcie-init-high,pcie-init-linux,pcie-init-dt,enum,station-planned,ap-planned sd=probe,writer,ab-persist,extlinux db=page-store,catalog,wal,fixed-table,btree,btree-delete,table-namespace,event-log,blob-backup,blob-restore"
     );
 }
 
@@ -3040,7 +3042,18 @@ struct ServiceManifestEntry {
     policy: &'static str,
 }
 
+struct AppManifestEntry {
+    id: &'static str,
+    service: &'static str,
+    runtime: &'static str,
+    endpoint: &'static str,
+    storage: &'static str,
+    network: &'static str,
+    policy: &'static str,
+}
+
 const SERVICE_MANIFEST_VERSION: &str = "xiaojin-service-manifest-v1";
+const APP_MANIFEST_VERSION: &str = "xiaojin-app-manifest-v1";
 const SERVICE_MANIFEST: [ServiceManifestEntry; 4] = [
     ServiceManifestEntry {
         name: "maint-agent",
@@ -3079,6 +3092,44 @@ const SERVICE_MANIFEST: [ServiceManifestEntry; 4] = [
         policy: "health-check-required",
     },
 ];
+const APP_MANIFEST: [AppManifestEntry; 4] = [
+    AppManifestEntry {
+        id: "maint-agent",
+        service: "maint-agent",
+        runtime: "kernel-integrated",
+        endpoint: "gcp-maintainer",
+        storage: "xiaojindb-event-log,bootstate,sd-ab",
+        network: "wan-dhcp-default-route",
+        policy: "signed-command-only",
+    },
+    AppManifestEntry {
+        id: "xiaojindb",
+        service: "xiaojindb",
+        runtime: "kernel-integrated",
+        endpoint: "page-store",
+        storage: "xiaojin-db.dat",
+        network: "none",
+        policy: "kernel-owned-wal",
+    },
+    AppManifestEntry {
+        id: "edge-cognition-core",
+        service: "edge-cognition-server",
+        runtime: "user-service",
+        endpoint: "127.0.0.1:8765",
+        storage: "materials,knowledge.sqlite3,chat-history,user-memory.md",
+        network: "localhost-http-stream",
+        policy: "memory-write-veto,tool-guardrail",
+    },
+    AppManifestEntry {
+        id: "model-runtime",
+        service: "model-runtime",
+        runtime: "external-adapter",
+        endpoint: "127.0.0.1:11434-or-openai-compatible",
+        storage: "model-cache",
+        network: "localhost-or-remote-https",
+        policy: "health-check,resource-aware-routing",
+    },
+];
 
 fn command_service(uart: &mut Uart, action: Option<&str>) {
     match action {
@@ -3088,8 +3139,11 @@ fn command_service(uart: &mut Uart, action: Option<&str>) {
         Some("health") => {
             print_service_health(uart);
         }
+        Some("apps") | Some("app-manifest") => {
+            print_app_manifest(uart);
+        }
         _ => {
-            uart.put_str("usage: svc facts|health\n");
+            uart.put_str("usage: svc facts|health|apps\n");
         }
     }
 }
@@ -3198,6 +3252,57 @@ fn write_service_health_summary<W: Write>(out: &mut W) {
             entry.state,
             index,
             entry.deps
+        );
+    }
+}
+
+fn print_app_manifest(uart: &mut Uart) {
+    let _ = writeln!(
+        uart,
+        "app manifest: version={} mode=readonly count={}",
+        APP_MANIFEST_VERSION,
+        APP_MANIFEST.len()
+    );
+    for entry in APP_MANIFEST.iter() {
+        let _ = writeln!(
+            uart,
+            "  {} service={} runtime={} endpoint={} storage={} network={} policy={}",
+            entry.id,
+            entry.service,
+            entry.runtime,
+            entry.endpoint,
+            entry.storage,
+            entry.network,
+            entry.policy
+        );
+    }
+}
+
+fn write_app_manifest_summary<W: Write>(out: &mut W) {
+    let _ = write!(
+        out,
+        "app-manifest version={} mode=readonly count={}",
+        APP_MANIFEST_VERSION,
+        APP_MANIFEST.len()
+    );
+    for (index, entry) in APP_MANIFEST.iter().enumerate() {
+        let _ = write!(
+            out,
+            " app{}={} service{}={} runtime{}={} endpoint{}={} storage{}={} network{}={} policy{}={}",
+            index,
+            entry.id,
+            index,
+            entry.service,
+            index,
+            entry.runtime,
+            index,
+            entry.endpoint,
+            index,
+            entry.storage,
+            index,
+            entry.network,
+            index,
+            entry.policy
         );
     }
 }
@@ -18785,8 +18890,12 @@ fn is_public_xj_query(query: &[u8]) -> bool {
         "identity facts",
         "svc facts",
         "svc health",
+        "svc apps",
+        "svc app-manifest",
         "service facts",
         "service health",
+        "service apps",
+        "service app-manifest",
         "service manifest",
         "net ips",
         "net ifaces",
@@ -18829,6 +18938,13 @@ fn write_public_xj_query_result<W: Write>(query: &str, out: &mut W) -> bool {
     {
         let _ = write!(out, "XJQ OK ");
         write_service_health_summary(out);
+    } else if query.eq_ignore_ascii_case("svc apps")
+        || query.eq_ignore_ascii_case("svc app-manifest")
+        || query.eq_ignore_ascii_case("service apps")
+        || query.eq_ignore_ascii_case("service app-manifest")
+    {
+        let _ = write!(out, "XJQ OK ");
+        write_app_manifest_summary(out);
     } else if query.eq_ignore_ascii_case("net ips") {
         let _ = write!(out, "XJQ OK ");
         write_net_ips_summary(out);
@@ -26305,6 +26421,13 @@ fn net_handle_query_packet(
             {
                 let _ = write!(reply, "XJQ OK ");
                 write_service_health_summary(&mut reply);
+            } else if query.eq_ignore_ascii_case("svc apps")
+                || query.eq_ignore_ascii_case("svc app-manifest")
+                || query.eq_ignore_ascii_case("service apps")
+                || query.eq_ignore_ascii_case("service app-manifest")
+            {
+                let _ = write!(reply, "XJQ OK ");
+                write_app_manifest_summary(&mut reply);
             } else if query.eq_ignore_ascii_case("rng status") {
                 let _ = write!(reply, "XJQ OK ");
                 write_rng_status_summary(&mut reply);
