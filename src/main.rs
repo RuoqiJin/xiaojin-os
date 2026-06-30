@@ -5069,6 +5069,10 @@ fn command_net<'a>(uart: &mut Uart, parts: &mut core::str::SplitWhitespace<'a>) 
             write_net_roles_summary(uart);
             uart.put_str("\n");
         }
+        Some("failover") => {
+            write_net_failover_summary(uart);
+            uart.put_str("\n");
+        }
         Some("stats") => {
             write_net_stats_summary(uart);
             uart.put_str("\n");
@@ -5149,6 +5153,7 @@ fn command_net<'a>(uart: &mut Uart, parts: &mut core::str::SplitWhitespace<'a>) 
             uart.put_str("  net ips\n");
             uart.put_str("  net ifaces\n");
             uart.put_str("  net roles\n");
+            uart.put_str("  net failover\n");
             uart.put_str("  net stats\n");
             uart.put_str("  net ip <pcie3x1|pcie3x2|auto|0|1> <a.b.c.d> confirm\n");
             uart.put_str("  net dhcp <pcie3x1|pcie3x2|auto|0|1> confirm\n");
@@ -5427,6 +5432,15 @@ fn net_preferred_route_device() -> Option<usize> {
     None
 }
 
+fn net_preferred_dhcp_device() -> Option<usize> {
+    if let Some(index) = net_preferred_route_device() {
+        return Some(index);
+    }
+    [1usize, 0usize]
+        .into_iter()
+        .find(|index| rtl_device_link_up(*index))
+}
+
 fn rtl_phy_status(index: usize) -> Result<u32, ExceptionSnapshot> {
     probe_read32(PCIE_CONTROLLERS[index].mem32_base + RTL_REG_PHY_STATUS)
 }
@@ -5653,6 +5667,59 @@ fn write_net_roles_summary<W: Write>(out: &mut W) {
             yes_no(link_up),
             yes_no(default_candidate),
             route_policy
+        );
+    }
+}
+
+fn write_net_failover_summary<W: Write>(out: &mut W) {
+    let active = net_preferred_route_device();
+    let dhcp_auto = net_preferred_dhcp_device();
+    let active_name = active
+        .map(|index| PCIE_CONTROLLERS[index].name)
+        .unwrap_or("none");
+    let dhcp_auto_name = dhcp_auto
+        .map(|index| PCIE_CONTROLLERS[index].name)
+        .unwrap_or("none");
+    let _ = write!(
+        out,
+        "net-failover active={active_name} dhcp-auto={dhcp_auto_name} order=pcie3x2,pcie3x1 policy=best-linked-routed-dns"
+    );
+
+    for (index, controller) in PCIE_CONTROLLERS.iter().enumerate() {
+        let link_up = rtl_device_link_up(index);
+        let routed_dns = net_device_has_routed_dns(index);
+        let route_ready = net_device_route_ready(index);
+        let ip = net_device_ip(index);
+        let gateway = net_device_gateway(index);
+        let dns = net_device_dns(index);
+        let _ = write!(
+            out,
+            " {}.link={} {}.routed-dns={} {}.route-ready={} {}.default-candidate={} {}.dhcp-candidate={} {}.ip={}.{}.{}.{} {}.gateway={}.{}.{}.{} {}.dns={}.{}.{}.{}",
+            controller.name,
+            yes_no(link_up),
+            controller.name,
+            yes_no(routed_dns),
+            controller.name,
+            yes_no(route_ready),
+            controller.name,
+            yes_no(active == Some(index)),
+            controller.name,
+            yes_no(dhcp_auto == Some(index)),
+            controller.name,
+            ip[0],
+            ip[1],
+            ip[2],
+            ip[3],
+            controller.name,
+            gateway[0],
+            gateway[1],
+            gateway[2],
+            gateway[3],
+            controller.name,
+            dns[0],
+            dns[1],
+            dns[2],
+            dns[3]
         );
     }
 }
@@ -14700,10 +14767,41 @@ fn command_net_dhcp(uart: &mut Uart, iface: Option<&str>, confirm: Option<&str>)
         uart.put_str("missing interface\n");
         return;
     };
-    let Some(index) = parse_net_interface(iface) else {
+
+    let auto_iface = iface.eq_ignore_ascii_case("auto") || iface.eq_ignore_ascii_case("default");
+    if auto_iface {
+        command_pcie_link_start(uart, Some("confirm"));
+        command_pcie_rtl_init(uart, Some("confirm"));
+    }
+
+    let index = if auto_iface {
+        match net_preferred_dhcp_device() {
+            Some(index) => index,
+            None => {
+                uart.put_str("no linked interface available for DHCP auto\n");
+                return;
+            }
+        }
+    } else {
+        let Some(index) = parse_net_interface(iface) else {
+            uart.put_str("unknown interface; use pcie3x1, pcie3x2, auto, 0, or 1\n");
+            return;
+        };
+        index
+    };
+
+    if auto_iface {
+        let _ = writeln!(
+            uart,
+            "  auto-selected   {} for DHCP",
+            PCIE_CONTROLLERS[index].name
+        );
+    }
+
+    if index >= RTL_DEVICE_COUNT {
         uart.put_str("unknown interface; use pcie3x1, pcie3x2, auto, 0, or 1\n");
         return;
-    };
+    }
 
     let controller = PCIE_CONTROLLERS[index];
     let mac = rtl_local_mac(index);
@@ -14714,8 +14812,10 @@ fn command_net_dhcp(uart: &mut Uart, iface: Option<&str>, confirm: Option<&str>)
         controller.name, mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]
     );
 
-    command_pcie_link_start(uart, Some("confirm"));
-    command_pcie_rtl_init(uart, Some("confirm"));
+    if !auto_iface {
+        command_pcie_link_start(uart, Some("confirm"));
+        command_pcie_rtl_init(uart, Some("confirm"));
+    }
 
     uart.put_str("  discover        broadcast DHCPDISCOVER\n");
     match net_dhcp_exchange(index, xid) {
@@ -17773,9 +17873,9 @@ fn valid_maint_artifact_path(path: &str) -> bool {
     let artifact_id = &path[PREFIX.len()..path.len() - SUFFIX.len()];
     !artifact_id.is_empty()
         && artifact_id.len() <= 96
-        && artifact_id.bytes().all(|byte| {
-            byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.')
-        })
+        && artifact_id
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.'))
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -18627,6 +18727,7 @@ fn is_public_xj_query(query: &[u8]) -> bool {
         "net ips",
         "net ifaces",
         "net roles",
+        "net failover",
         "net stats",
         "db facts",
         "db status",
@@ -18668,6 +18769,9 @@ fn write_public_xj_query_result<W: Write>(query: &str, out: &mut W) -> bool {
     } else if query.eq_ignore_ascii_case("net roles") {
         let _ = write!(out, "XJQ OK ");
         write_net_roles_summary(out);
+    } else if query.eq_ignore_ascii_case("net failover") {
+        let _ = write!(out, "XJQ OK ");
+        write_net_failover_summary(out);
     } else if query.eq_ignore_ascii_case("net stats") {
         let _ = write!(out, "XJQ OK ");
         write_net_stats_summary(out);
@@ -26144,6 +26248,9 @@ fn net_handle_query_packet(
             } else if query.eq_ignore_ascii_case("net roles") {
                 let _ = write!(reply, "XJQ OK ");
                 write_net_roles_summary(&mut reply);
+            } else if query.eq_ignore_ascii_case("net failover") {
+                let _ = write!(reply, "XJQ OK ");
+                write_net_failover_summary(&mut reply);
             } else if query.eq_ignore_ascii_case("net stats") {
                 let _ = write!(reply, "XJQ OK ");
                 write_net_stats_summary(&mut reply);

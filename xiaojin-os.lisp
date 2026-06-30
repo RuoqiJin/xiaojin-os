@@ -121,9 +121,9 @@
       :purpose "Receive Xiaojin OS images over Ethernet from xjctl and reload through the copy-down trampoline.")
     (stage dhcp-client
       :status implemented-manual
-      :implemented [dhcp-discover dhcp-offer-parse dhcp-request dhcp-ack-parse runtime-lease-apply udp-xjdh-control]
+      :implemented [dhcp-discover dhcp-offer-parse dhcp-request dhcp-ack-parse runtime-lease-apply udp-xjdh-control linked-auto-interface-select net-failover-query]
       :next [cold-boot-dhcp-fallback]
-      :purpose "Learn runtime IP, subnet mask, gateway, and DNS facts from a LAN DHCP server without making DHCP mandatory for cold boot; allow xjctl to trigger DHCP without UART.")
+      :purpose "Learn runtime IP, subnet mask, gateway, and DNS facts from a LAN DHCP server without making DHCP mandatory for cold boot; allow xjctl to trigger DHCP without UART; make `net dhcp auto confirm` choose the best linked RJ45 port in failover order.")
     (stage dns-client
       :status implemented-probe
       :implemented [runtime-dns-server route-next-hop arp-resolve dns-a-query dns-a-response-parse udp-xjq-control]
