@@ -2787,6 +2787,7 @@ fn print_help(uart: &mut Uart) {
     uart.put_str("                       verify pending command digest and audit the result\n");
     uart.put_str("  maint pull-exec <if> <host|ip> <port> <poll-path> [event-path] confirm\n");
     uart.put_str("                       verify and execute one signed read-only xj_query\n");
+    uart.put_str("  maint ota-facts      show signed OTA stage/persist facts\n");
     uart.put_str("  maint loop <if> <host|ip> <port> <poll-path> <event-path> <count> <interval-ms> confirm\n");
     uart.put_str("                       bounded device-side maintenance polling loop\n");
     uart.put_str("  maint key-status confirm\n");
@@ -2982,6 +2983,8 @@ fn print_caps(uart: &mut Uart) {
     uart.put_str("  maint local-hmac-key yes\n");
     uart.put_str("  maint pull-exec yes\n");
     uart.put_str("  maint ota-stage-pull http,https-experimental\n");
+    uart.put_str("  maint ota-stage-persist yes\n");
+    uart.put_str("  maint ota-extlinux-switch yes\n");
     uart.put_str("  maint loop yes\n");
     uart.put_str("  maint ack-intent yes\n");
     uart.put_str("  maint config-host-name yes\n");
@@ -3028,14 +3031,14 @@ fn print_caps(uart: &mut Uart) {
 fn write_caps_query_summary<W: Write>(out: &mut W) {
     let _ = write!(
         out,
-        "XJQ OK caps net-dev=yes net-reload=immediate net-ifaces=yes net-roles=yes iface-auto=yes dhcp=yes auto-dhcp=yes failover=best-linked-routed-dns route=yes arp=yes dns=yes tcp-connect=yes http-get=yes http-post=yes https-get=experimental https-post=experimental tls-clienthello=yes tls-aes128gcm-decrypt=yes tls-handshake-parse=yes tls-certificate-list-parse=yes tls-first-certificate-sha256=yes tls-server-finished-verify=yes tls-application-data=experimental ai-chat=http,https-experimental,https-bearer-experimental ai-facts=runtime-readonly maint-poll=yes maint-status=yes maint-event=yes maint-pending=yes maint-pending-summary=yes maint-command-digest=yes maint-command-verify=yes maint-command-verify-hmac=yes maint-local-hmac-key=yes maint-pull-exec=yes maint-ota-stage-pull=http,https-experimental maint-config=yes maint-config-paths=yes maint-config-host-name=yes maint-config-https=yes maint-config-tls-pin=yes maint-https-event=yes identity=yes svc=manifest-readonly,health-readonly,app-manifest-readonly query=yes reboot=yes sd-writer=yes ab-persist=yes boot-slot=extlinux db=page-store,catalog,wal,fixed-table,btree,event-log"
+        "XJQ OK caps net-dev=yes net-reload=immediate net-ifaces=yes net-roles=yes iface-auto=yes dhcp=yes auto-dhcp=yes failover=best-linked-routed-dns route=yes arp=yes dns=yes tcp-connect=yes http-get=yes http-post=yes https-get=experimental https-post=experimental tls-clienthello=yes tls-aes128gcm-decrypt=yes tls-handshake-parse=yes tls-certificate-list-parse=yes tls-first-certificate-sha256=yes tls-server-finished-verify=yes tls-application-data=experimental ai-chat=http,https-experimental,https-bearer-experimental ai-facts=runtime-readonly maint-poll=yes maint-status=yes maint-event=yes maint-pending=yes maint-pending-summary=yes maint-command-digest=yes maint-command-verify=yes maint-command-verify-hmac=yes maint-local-hmac-key=yes maint-pull-exec=yes maint-ota-stage-pull=http,https-experimental maint-ota-stage-persist=yes maint-ota-extlinux-switch=yes maint-config=yes maint-config-paths=yes maint-config-host-name=yes maint-config-https=yes maint-config-tls-pin=yes maint-https-event=yes identity=yes svc=manifest-readonly,health-readonly,app-manifest-readonly query=yes reboot=yes sd-writer=yes ab-persist=yes boot-slot=extlinux db=page-store,catalog,wal,fixed-table,btree,event-log"
     );
 }
 
 fn write_caps_full_query_summary<W: Write>(out: &mut W) {
     let _ = write!(
         out,
-        "XJQ OK caps-full net=dev,reload-immediate,ifaces,iface-auto,dhcp,auto-dhcp,failover-best-linked-routed-dns,route,arp,dns,tcp,http-get,http-post,https-get-experimental,https-post-experimental,http-trace,http-debug tls=clienthello,aes128gcm,chacha20poly1305,handshake,cert-list,first-cert-sha256,first-cert-pin,server-finished,client-finished-material,client-finished-send,application-data-experimental ai=chat-http,chat-https-experimental,chat-https-bearer-experimental ai-facts=runtime-readonly maint=poll,status,pending,digest,verify,verify-hmac,local-key,pull-exec,ota-stage-pull-http,ota-stage-pull-https-experimental,loop,config,paths,host-name,https,tls-pin,manual-config-run,ack-intent,remote-event,https-event,local-audit svc=manifest-readonly,service-facts,service-health,app-manifest wifi=pcie,firmware,firmware-crc,firmware-load,mmio-snapshot,mmio-fingerprint,driver-gate,rtw88-profile,trace,pcie-init,pcie-init-high,pcie-init-linux,pcie-init-dt,enum,station-planned,ap-planned sd=probe,writer,ab-persist,extlinux db=page-store,catalog,wal,fixed-table,btree,btree-delete,table-namespace,event-log,blob-backup,blob-restore"
+        "XJQ OK caps-full net=dev,reload-immediate,ifaces,iface-auto,dhcp,auto-dhcp,failover-best-linked-routed-dns,route,arp,dns,tcp,http-get,http-post,https-get-experimental,https-post-experimental,http-trace,http-debug tls=clienthello,aes128gcm,chacha20poly1305,handshake,cert-list,first-cert-sha256,first-cert-pin,server-finished,client-finished-material,client-finished-send,application-data-experimental ai=chat-http,chat-https-experimental,chat-https-bearer-experimental ai-facts=runtime-readonly maint=poll,status,pending,digest,verify,verify-hmac,local-key,pull-exec,ota-stage-pull-http,ota-stage-pull-https-experimental,ota-stage-persist,ota-extlinux-switch,loop,config,paths,host-name,https,tls-pin,manual-config-run,ack-intent,remote-event,https-event,local-audit svc=manifest-readonly,service-facts,service-health,app-manifest wifi=pcie,firmware,firmware-crc,firmware-load,mmio-snapshot,mmio-fingerprint,driver-gate,rtw88-profile,trace,pcie-init,pcie-init-high,pcie-init-linux,pcie-init-dt,enum,station-planned,ap-planned sd=probe,writer,ab-persist,extlinux db=page-store,catalog,wal,fixed-table,btree,btree-delete,table-namespace,event-log,blob-backup,blob-restore"
     );
 }
 
@@ -5458,6 +5461,7 @@ fn command_maint<'a>(uart: &mut Uart, parts: &mut core::str::SplitWhitespace<'a>
             parts.next(),
             parts.next(),
         ),
+        Some("ota-facts") | Some("ota-status") => command_maint_ota_facts(uart, parts.next()),
         Some("config-pull-exec") => command_maint_config_pull_exec(uart, parts.next()),
         Some("loop") => command_maint_loop(
             uart,
@@ -5529,6 +5533,8 @@ fn command_maint<'a>(uart: &mut Uart, parts: &mut core::str::SplitWhitespace<'a>
             uart.put_str(
                 "  maint pull-exec <pcie3x1|pcie3x2|auto|0|1> <host|ip> <port> <poll-path> [event-path] confirm\n",
             );
+            uart.put_str("  maint ota-facts [confirm]\n");
+            uart.put_str("  maint ota-status [confirm]\n");
             uart.put_str("  maint config-pull-exec confirm\n");
             uart.put_str(
                 "  maint loop <pcie3x1|pcie3x2|auto|0|1> <host|ip> <port> <poll-path> <event-path> <count> <interval-ms> confirm\n",
@@ -8041,6 +8047,34 @@ fn write_maint_config_status_summary<W: Write>(out: &mut W) {
             let _ = write!(out, "XJQ ERR maint-config-status {}", error.as_str());
         }
     }
+}
+
+fn command_maint_ota_facts(uart: &mut Uart, confirm: Option<&str>) {
+    if !matches!(confirm, None | Some("confirm")) {
+        uart.put_str("usage: maint ota-facts [confirm]\n");
+        return;
+    }
+    uart.put_str("maintainer OTA facts:\n");
+    uart.put_str("  version xiaojin-maint-ota-v1\n");
+    uart.put_str("  manifest required\n");
+    uart.put_str("  manifest-transport http,https-experimental\n");
+    uart.put_str("  artifact-path /artifact-pull/<artifact-id>/xiaojin-os.bin\n");
+    uart.put_str("  artifact-transport http,https-experimental\n");
+    uart.put_str("  signature hmac-local-key\n");
+    uart.put_str("  command-digest sha256\n");
+    uart.put_str("  payload-digest sha256\n");
+    uart.put_str("  artifact-verify size,crc32,sha256\n");
+    uart.put_str("  persist inactive-ab-slot\n");
+    uart.put_str("  extlinux-switch yes\n");
+    uart.put_str("  event-log xiaojindb\n");
+    uart.put_str("  rollback host-net-ota\n");
+}
+
+fn write_maint_ota_facts_summary<W: Write>(out: &mut W) {
+    let _ = write!(
+        out,
+        "maint-ota version=xiaojin-maint-ota-v1 manifest=required manifest-transport=http,https-experimental artifact-path=/artifact-pull/<artifact-id>/xiaojin-os.bin artifact-transport=http,https-experimental signature=hmac-local-key command-digest=sha256 payload-digest=sha256 artifact-verify=size,crc32,sha256 persist=inactive-ab-slot extlinux-switch=yes event-log=xiaojindb rollback=host-net-ota"
+    );
 }
 
 fn write_maint_config_run_summary<W: Write>(out: &mut W) {
@@ -18952,6 +18986,10 @@ fn is_public_xj_query(query: &[u8]) -> bool {
         "db event-status confirm",
         "maint key-status",
         "maint key-status confirm",
+        "maint ota-facts",
+        "maint ota-facts confirm",
+        "maint ota-status",
+        "maint ota-status confirm",
         "sd extlinux",
         "sd extlinux confirm",
     ]
@@ -19029,6 +19067,13 @@ fn write_public_xj_query_result<W: Write>(query: &str, out: &mut W) -> bool {
         || query.eq_ignore_ascii_case("maint key-status confirm")
     {
         write_maint_key_status_summary(out);
+    } else if query.eq_ignore_ascii_case("maint ota-facts")
+        || query.eq_ignore_ascii_case("maint ota-facts confirm")
+        || query.eq_ignore_ascii_case("maint ota-status")
+        || query.eq_ignore_ascii_case("maint ota-status confirm")
+    {
+        let _ = write!(out, "XJQ OK ");
+        write_maint_ota_facts_summary(out);
     } else if query.eq_ignore_ascii_case("sd extlinux")
         || query.eq_ignore_ascii_case("sd extlinux confirm")
     {
@@ -26589,6 +26634,13 @@ fn net_handle_query_packet(
                 || query.eq_ignore_ascii_case("maint key-status confirm")
             {
                 write_maint_key_status_summary(&mut reply);
+            } else if query.eq_ignore_ascii_case("maint ota-facts")
+                || query.eq_ignore_ascii_case("maint ota-facts confirm")
+                || query.eq_ignore_ascii_case("maint ota-status")
+                || query.eq_ignore_ascii_case("maint ota-status confirm")
+            {
+                let _ = write!(reply, "XJQ OK ");
+                write_maint_ota_facts_summary(&mut reply);
             } else if query.starts_with("maint key-set ") {
                 write_maint_key_set_query_summary(query, &mut reply);
             } else if query.eq_ignore_ascii_case("maint key-clear")
