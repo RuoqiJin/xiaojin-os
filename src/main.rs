@@ -17764,6 +17764,20 @@ fn valid_maint_manifest_path(path: &str) -> bool {
             .all(|byte| byte.is_ascii_graphic() && !matches!(byte, b'"' | b'\\'))
 }
 
+fn valid_maint_artifact_path(path: &str) -> bool {
+    const PREFIX: &str = "/artifact-pull/";
+    const SUFFIX: &str = "/xiaojin-os.bin";
+    if !path.starts_with(PREFIX) || !path.ends_with(SUFFIX) || path.len() > 192 {
+        return false;
+    }
+    let artifact_id = &path[PREFIX.len()..path.len() - SUFFIX.len()];
+    !artifact_id.is_empty()
+        && artifact_id.len() <= 96
+        && artifact_id.bytes().all(|byte| {
+            byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.')
+        })
+}
+
 #[allow(clippy::too_many_arguments)]
 fn parse_maint_ota_manifest_payload_body(
     body: &[u8],
@@ -18572,6 +18586,7 @@ fn parse_maint_artifact_url(url: &str) -> Option<(MaintOtaArtifactScheme, &str, 
         || path
             .bytes()
             .any(|byte| byte <= 0x20 || matches!(byte, b'\\' | b'"'))
+        || !valid_maint_artifact_path(path)
     {
         return None;
     }
