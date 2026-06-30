@@ -244,6 +244,7 @@ const MAINT_OTA_ARTIFACT_URL_BYTES: usize = 160;
 const AI_CHAT_PROMPT_BYTES: usize = 160;
 const AI_CHAT_MODEL_BYTES: usize = 64;
 const AI_CHAT_BEARER_BYTES: usize = 96;
+const AI_CHAT_RESPONSE_PREVIEW_BYTES: usize = HTTP_RESPONSE_SAMPLE_BYTES;
 const TLS_CLIENT_HELLO_BYTES: usize = 512;
 const TLS_TRANSCRIPT_MAX_BYTES: usize = 2048;
 const TLS_ENCRYPT_MAX_BYTES: usize = 1024;
@@ -3033,14 +3034,14 @@ fn print_caps(uart: &mut Uart) {
 fn write_caps_query_summary<W: Write>(out: &mut W) {
     let _ = write!(
         out,
-        "XJQ OK caps net-dev=yes net-reload=immediate net-ifaces=yes net-roles=yes iface-auto=yes dhcp=yes auto-dhcp=yes failover=best-linked-routed-dns route=yes arp=yes dns=yes tcp-connect=yes http-get=yes http-post=yes https-get=experimental https-post=experimental tls-clienthello=yes tls-aes128gcm-decrypt=yes tls-handshake-parse=yes tls-certificate-list-parse=yes tls-first-certificate-sha256=yes tls-server-finished-verify=yes tls-application-data=experimental ai-chat=http,https-experimental,https-bearer-experimental ai-facts=runtime-readonly maint-poll=yes maint-status=yes maint-event=yes maint-pending=yes maint-pending-summary=yes maint-command-digest=yes maint-command-verify=yes maint-command-verify-hmac=yes maint-local-hmac-key=yes maint-pull-exec=yes maint-ota-stage-pull=http,https-experimental maint-ota-stage-persist=yes maint-ota-extlinux-switch=yes maint-config=yes maint-config-paths=yes maint-config-host-name=yes maint-config-https=yes maint-config-tls-pin=yes maint-https-event=yes identity=yes svc=manifest-readonly,health-readonly,app-manifest-readonly,supervisor-contract-readonly query=yes reboot=yes sd-writer=yes ab-persist=yes boot-slot=extlinux db=page-store,catalog,wal,fixed-table,btree,event-log"
+        "XJQ OK caps net-dev=yes net-reload=immediate net-ifaces=yes net-roles=yes iface-auto=yes dhcp=yes auto-dhcp=yes failover=best-linked-routed-dns route=yes arp=yes dns=yes tcp-connect=yes http-get=yes http-post=yes https-get=experimental https-post=experimental tls-clienthello=yes tls-aes128gcm-decrypt=yes tls-handshake-parse=yes tls-certificate-list-parse=yes tls-first-certificate-sha256=yes tls-server-finished-verify=yes tls-application-data=experimental ai-chat=http,https-experimental,https-bearer-experimental,response-preview ai-facts=runtime-readonly maint-poll=yes maint-status=yes maint-event=yes maint-pending=yes maint-pending-summary=yes maint-command-digest=yes maint-command-verify=yes maint-command-verify-hmac=yes maint-local-hmac-key=yes maint-pull-exec=yes maint-ota-stage-pull=http,https-experimental maint-ota-stage-persist=yes maint-ota-extlinux-switch=yes maint-config=yes maint-config-paths=yes maint-config-host-name=yes maint-config-https=yes maint-config-tls-pin=yes maint-https-event=yes identity=yes svc=manifest-readonly,health-readonly,app-manifest-readonly,supervisor-contract-readonly query=yes reboot=yes sd-writer=yes ab-persist=yes boot-slot=extlinux db=page-store,catalog,wal,fixed-table,btree,event-log"
     );
 }
 
 fn write_caps_full_query_summary<W: Write>(out: &mut W) {
     let _ = write!(
         out,
-        "XJQ OK caps-full net=dev,reload-immediate,ifaces,iface-auto,dhcp,auto-dhcp,failover-best-linked-routed-dns,route,arp,dns,tcp,http-get,http-post,https-get-experimental,https-post-experimental,http-trace,http-debug tls=clienthello,aes128gcm,chacha20poly1305,handshake,cert-list,first-cert-sha256,first-cert-pin,server-finished,client-finished-material,client-finished-send,application-data-experimental ai=chat-http,chat-https-experimental,chat-https-bearer-experimental ai-facts=runtime-readonly maint=poll,status,pending,digest,verify,verify-hmac,local-key,pull-exec,ota-stage-pull-http,ota-stage-pull-https-experimental,ota-stage-persist,ota-extlinux-switch,loop,config,paths,host-name,https,tls-pin,manual-config-run,ack-intent,remote-event,https-event,local-audit svc=manifest-readonly,service-facts,service-health,app-manifest,service-supervisor-contract wifi=pcie,firmware,firmware-crc,firmware-load,mmio-snapshot,mmio-fingerprint,driver-gate,rtw88-profile,trace,pcie-init,pcie-init-high,pcie-init-linux,pcie-init-dt,enum,station-planned,ap-planned sd=probe,writer,ab-persist,extlinux db=page-store,catalog,wal,fixed-table,btree,btree-delete,table-namespace,event-log,blob-backup,blob-restore"
+        "XJQ OK caps-full net=dev,reload-immediate,ifaces,iface-auto,dhcp,auto-dhcp,failover-best-linked-routed-dns,route,arp,dns,tcp,http-get,http-post,https-get-experimental,https-post-experimental,http-trace,http-debug tls=clienthello,aes128gcm,chacha20poly1305,handshake,cert-list,first-cert-sha256,first-cert-pin,server-finished,client-finished-material,client-finished-send,application-data-experimental ai=chat-http,chat-https-experimental,chat-https-bearer-experimental,response-preview ai-facts=runtime-readonly maint=poll,status,pending,digest,verify,verify-hmac,local-key,pull-exec,ota-stage-pull-http,ota-stage-pull-https-experimental,ota-stage-persist,ota-extlinux-switch,loop,config,paths,host-name,https,tls-pin,manual-config-run,ack-intent,remote-event,https-event,local-audit svc=manifest-readonly,service-facts,service-health,app-manifest,service-supervisor-contract wifi=pcie,firmware,firmware-crc,firmware-load,mmio-snapshot,mmio-fingerprint,driver-gate,rtw88-profile,trace,pcie-init,pcie-init-high,pcie-init-linux,pcie-init-dt,enum,station-planned,ap-planned sd=probe,writer,ab-persist,extlinux db=page-store,catalog,wal,fixed-table,btree,btree-delete,table-namespace,event-log,blob-backup,blob-restore"
     );
 }
 
@@ -3368,9 +3369,14 @@ fn print_ai_facts(uart: &mut Uart) {
     uart.put_str("  native-https experimental\n");
     uart.put_str("  native-https-bearer experimental\n");
     uart.put_str("  output serial,udp-xjq\n");
+    uart.put_str("  response-preview body-prefix\n");
     let _ = writeln!(uart, "  prompt-bytes {AI_CHAT_PROMPT_BYTES}");
     let _ = writeln!(uart, "  model-bytes {AI_CHAT_MODEL_BYTES}");
     let _ = writeln!(uart, "  bearer-bytes {AI_CHAT_BEARER_BYTES}");
+    let _ = writeln!(
+        uart,
+        "  response-preview-bytes {AI_CHAT_RESPONSE_PREVIEW_BYTES}"
+    );
     let _ = writeln!(uart, "  timeout-ms {AI_HTTP_CHAT_TIMEOUT_MS}");
     uart.put_str("  guardrails execution-layer,tool-policy,memory-write-veto\n");
     uart.put_str("  endpoints maintainer-bridge,xjp-router\n");
@@ -3379,7 +3385,7 @@ fn print_ai_facts(uart: &mut Uart) {
 fn write_ai_facts_summary<W: Write>(out: &mut W) {
     let _ = write!(
         out,
-        "ai-facts version=xiaojin-ai-runtime-v1 mode=remote-first local-runtime=planned bridge=http-maintainer remote=https-openai-compatible native-https=experimental native-https-bearer=experimental output=serial,udp-xjq prompt-bytes={AI_CHAT_PROMPT_BYTES} model-bytes={AI_CHAT_MODEL_BYTES} bearer-bytes={AI_CHAT_BEARER_BYTES} timeout-ms={AI_HTTP_CHAT_TIMEOUT_MS} guardrails=execution-layer,tool-policy,memory-write-veto endpoints=maintainer-bridge,xjp-router"
+        "ai-facts version=xiaojin-ai-runtime-v1 mode=remote-first local-runtime=planned bridge=http-maintainer remote=https-openai-compatible native-https=experimental native-https-bearer=experimental output=serial,udp-xjq response-preview=body-prefix prompt-bytes={AI_CHAT_PROMPT_BYTES} model-bytes={AI_CHAT_MODEL_BYTES} bearer-bytes={AI_CHAT_BEARER_BYTES} response-preview-bytes={AI_CHAT_RESPONSE_PREVIEW_BYTES} timeout-ms={AI_HTTP_CHAT_TIMEOUT_MS} guardrails=execution-layer,tool-policy,memory-write-veto endpoints=maintainer-bridge,xjp-router"
     );
 }
 
