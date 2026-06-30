@@ -111,8 +111,8 @@
     (stage rtl8125-driver
       :status in-progress
       :implemented [bar-map rtl-mmio-probe rtl-facts rx-tx-ring-init tx-ring-cursor promiscuous-rx raw-tx-test rx-poll arp-announcement ipv4-udp-hello ipv4-udp-ping-handler macos-bpf-raw-sender]
-      :observed [pcie3x2-raw-tx-descriptor-complete macos-receives-xjhello-via-nc macos-raw-xjping-receives-xjpong]
-      :next [polling-stability interrupt-mode]
+      :observed [pcie3x2-raw-tx-descriptor-complete macos-receives-xjhello-via-nc macos-raw-xjping-receives-xjpong dual-rj45-smoke-ok pcie3x1-and-pcie3x2-udp-control-ok]
+      :next [polling-stability interrupt-mode link-change-recovery]
       :purpose "Map BAR, initialize RX/TX rings, poll packets, send board-to-host UDP hello, and answer ARP/UDP smoke-test probes.")
     (stage udp-xload
       :status implemented
@@ -146,8 +146,8 @@
       :purpose "Prove Xiaojin OS can move from DNS/TCP to the TLS key-agreement, record-key schedule, and first encrypted handshake record layer without claiming full TLS yet.")
     (stage maintainer-poll-client
       :status implemented-narrow-signed-exec
-      :implemented [maint-poll maint-status maint-audit maint-verify maint-verify-hmac maint-local-hmac-key maint-pull-exec maint-loop-bounded maint-loop-xjq-compact maint-config-persistent maint-config-run maint-config-tls-pin-persistent maint-cold-boot-tick maint-ack-intent public-poll-text-parse command-digest-check hmac-command-signature-check xiaojindb-audit-event http-post-event]
-      :next [scheduled-cold-boot-maint-loop signed-artifact-fetch https-poll tls-client]
+      :implemented [maint-poll maint-status maint-audit maint-verify maint-verify-hmac maint-local-hmac-key maint-pull-exec maint-loop-bounded maint-loop-xjq-compact maint-config-persistent maint-config-run maint-config-tls-pin-persistent maint-cold-boot-tick maint-ack-intent public-poll-text-parse command-digest-check hmac-command-signature-check xiaojindb-audit-event http-post-event maintainer-ota-manifest-smoke]
+      :next [scheduled-cold-boot-maint-loop signed-artifact-fetch https-poll tls-client board-side-manifest-artifact-write-confirm]
       :purpose "Let Xiaojin OS poll the GCP maintainer, verify a narrow signed public xj_query command, execute it locally, write XiaojinDB audit events, persist a bounded maintainer endpoint config, and run bounded device-side loops from UART, compact Ethernet XJQ control, saved config, or one listener-start maintenance tick before scheduled autonomous maintenance is enabled.")
     (stage udp-query-control
       :status implemented-readonly
@@ -258,6 +258,19 @@
       :requires [identity-and-access signed-command-authz tcp-stream-state tls-or-ssh-crypto command-authorizer pty-or-command-session xiaojindb-audit-log]
       :compatibility-targets [openssh-client native-xjctl-secure-shell]
       :purpose "Provide an SSH-like or SSH-compatible secure management surface for operators, while keeping the local LAN hot-update and recovery path available.")
+    (stage maintainer-ai-bridge
+      :status host-verified
+      :implemented [maintainer-ai-smoke net-ai-bridge-smoke net-ai-chat net-ai-router-smoke]
+      :verified [gcp-maintainer-ai-chat-openai-compatible gpt-5.5-smoke-ok]
+      :policy "Use the maintainer bridge as the first board-output model path; native board HTTPS router calls remain experimental until TLS is safe-mode isolated."
+      :purpose "Let Xiaojin OS ask an OpenAI-compatible model through the maintainer/XJP Router bridge and return a short model response over serial or UDP control."))
+
+  (boot-media
+    :status host-tooling-implemented
+    :invariant "The SD pre-partition Rockchip boot region is part of the cold boot chain and must be checked before diagnosing extlinux or OS image faults."
+    :implemented [sd-rockchip-plan sd-rockchip-status sd-rockchip-extract sd-rockchip-format-plan]
+    :verified [rockchip-marker u-boot-marker rk3568-marker nanopi-r5c-marker friendlyarm-marker nonzero-region-check]
+    :purpose "Distinguish FAT/extlinux image problems from missing or stale Rockchip SPL/U-Boot boot-region state.")
     (stage local-lan-hot-update
       :status implemented
       :tools [xjctl-net-dev xjctl-net-ota xjctl-net-command xjctl-net-event xjctl-net-db-smoke]
