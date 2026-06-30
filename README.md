@@ -48,6 +48,10 @@ Available commands:
 - `net http <if> <host|ip> <port> <path> confirm`
 - `net tls <if> <host|ip> <port> [sni] confirm`
 - `net tls-pin <if> <host|ip> <port> [sni|-] <sha256> confirm`
+- `svc facts`
+- `svc health`
+- `svc apps`
+- `svc supervisor`
 - `net loop confirm`
 - `net listen confirm`
 - `net sniff confirm`
@@ -257,6 +261,16 @@ lane has a host-side PostgreSQL-compatible bridge with password auth, system
 `psql` smoke, read-only health checks, and a VM-local systemd template. Native
 row-level import, logical replay, query planning, transactions, and kernel-side
 PostgreSQL serving remain follow-on stages.
+
+The AI-native service layer currently exposes a read-only service-manager
+contract through `svc facts`, `svc health`, `svc apps`, and `svc supervisor`.
+The supervisor contract fixes the intended boot order, launch mode, restart
+policy, health checks, logging/audit targets, network/storage boundaries, and
+guardrails for `edge-cognition-core`, `model-runtime`, `maint-agent`, and
+XiaojinDB. It is intentionally not a process supervisor yet; the next stage is
+turning this contract into a runtime that can launch, monitor, and restart
+declared services.
+
 Persistent inactive-slot image staging is exposed through the UDP `XJPS` control
 packet, used by `xjctl net-dev --persist --slot b`. This writes the last
 uploaded image into the selected preallocated A/B slot and verifies it by
