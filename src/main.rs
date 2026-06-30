@@ -9,7 +9,11 @@ use core::fmt::{self, Write};
 use core::panic::PanicInfo;
 use core::ptr::{addr_of, addr_of_mut, read_volatile, write_volatile};
 use core::str;
+use hmac::{Hmac, Mac};
+use sha2::{Digest, Sha256};
 use x25519_dalek::{PublicKey as X25519PublicKey, StaticSecret as X25519StaticSecret};
+
+type HmacSha256 = Hmac<Sha256>;
 
 global_asm!(include_str!("boot.S"));
 
@@ -169,6 +173,7 @@ const NET_AUTO_DHCP_TIMEOUT_MS: u64 = 2_500;
 const NET_AUTO_DHCP_RETRY_MS: u64 = 15_000;
 const NET_MAINT_COLD_BOOT_DELAY_MS: u64 = 20_000;
 const NET_MAINT_PERIODIC_MS: u64 = 60_000;
+const NET_MAINT_COLD_BOOT_AUTO_RUN: bool = false;
 const DEFAULT_NET_DEVICE_IPS: [[u8; 4]; RTL_DEVICE_COUNT] =
     [[192, 168, 80, 251], [192, 168, 80, 250]];
 const DEFAULT_NET_NETMASKS: [[u8; 4]; RTL_DEVICE_COUNT] = [[255, 255, 255, 0], [255, 255, 255, 0]];
@@ -215,11 +220,21 @@ const DNS_PACKET_BYTES: usize = 512;
 const DNS_TIMEOUT_MS: u64 = 4_000;
 const DNS_MAX_NAME_LEN: usize = 96;
 const TCP_CLIENT_PORT_BASE: u16 = 49152;
+const TCP_CLIENT_PORT_MASK: u16 = 0x3fff;
 const TCP_CONNECT_TIMEOUT_MS: u64 = 4_000;
 const HTTP_TIMEOUT_MS: u64 = 5_000;
+const TLS_TIMEOUT_MS: u64 = 20_000;
 const HTTP_ARTIFACT_TIMEOUT_MS: u64 = 120_000;
+const HTTPS_ARTIFACT_CHUNK_TIMEOUT_MS: u64 = 10_000;
+const HTTPS_ARTIFACT_CHUNKED_TOTAL_TIMEOUT_MS: u64 = 90_000;
+const HTTPS_ARTIFACT_CHUNKED_MAX_TOTAL_TIMEOUT_MS: u64 = 30 * 60 * 1000;
+const TLS_CLIENT_HELLO_RETRIES: u32 = 4;
+const TLS_CLIENT_HELLO_RETRY_TIMEOUT_MS: u64 = 2_500;
+const TLS_CLIENT_HELLO_RETRY_DELAY_MS: u64 = 50;
 const AI_HTTP_CHAT_TIMEOUT_MS: u64 = 120_000;
 const HTTP_IDLE_TIMEOUT_MS: u64 = 500;
+const HTTP_ARTIFACT_IDLE_TIMEOUT_MS: u64 = 15_000;
+const TLS_HANDSHAKE_IDLE_TIMEOUT_MS: u64 = 2_000;
 const HTTP_REQUEST_BYTES: usize = 768;
 const HTTP_RESPONSE_MAX_BYTES: usize = 8 * 1024;
 const HTTP_RESPONSE_SAMPLE_BYTES: usize = 2048;
@@ -231,8 +246,11 @@ const AI_CHAT_MODEL_BYTES: usize = 64;
 const AI_CHAT_BEARER_BYTES: usize = 96;
 const TLS_CLIENT_HELLO_BYTES: usize = 512;
 const TLS_TRANSCRIPT_MAX_BYTES: usize = 2048;
-const TLS_DECRYPT_MAX_BYTES: usize = 2048;
 const TLS_ENCRYPT_MAX_BYTES: usize = 1024;
+const TLS_STREAM_RECORD_BYTES: usize = 18 * 1024;
+const TLS_STREAM_PLAINTEXT_BYTES: usize = 17 * 1024;
+const TLS_DECRYPTED_HANDSHAKE_BYTES: usize = TLS_STREAM_RECORD_BYTES;
+const TLS_HANDSHAKE_TRANSCRIPT_BYTES: usize = 32 * 1024;
 const TLS_RECORD_HANDSHAKE: u8 = 0x16;
 const TLS_RECORD_ALERT: u8 = 0x15;
 const TLS_RECORD_CHANGE_CIPHER_SPEC: u8 = 0x14;
@@ -535,14 +553,26 @@ static mut RTL_RX_BUFFERS: RtlRxBuffers =
 static mut RTL_TX_NEXT: [usize; RTL_DEVICE_COUNT] = [0; RTL_DEVICE_COUNT];
 static mut NET_POLL_TOTALS: [NetPollStats; RTL_DEVICE_COUNT] =
     [NetPollStats::empty(); RTL_DEVICE_COUNT];
+static mut NET_ARP_CACHE: [ArpCacheEntry; RTL_DEVICE_COUNT] =
+    [ArpCacheEntry::empty(); RTL_DEVICE_COUNT];
+static mut TCP_CLIENT_PORT_OFFSETS: [u16; RTL_DEVICE_COUNT] = [0, 0x2000];
 static mut NETLOAD_STATE: NetLoadState = NetLoadState::empty();
 static mut DB_BLOB_IMPORT_STATE: DbBlobImportState = DbBlobImportState::empty();
 static mut LAST_NET_IMAGE: NetImageState = NetImageState::empty();
+static mut LAST_HTTPS_ARTIFACT_DIAG: HttpsArtifactDiag = HttpsArtifactDiag::empty();
 static mut SD_IDMAC_DESC: SdDmaDescStorage = SdDmaDescStorage(SdIdmacDesc::zero());
 static mut SD_BLOCK_BUFFER: SdBlockStorage = SdBlockStorage([0; SD_BLOCK_BYTES]);
 static mut SD_WRITE_BUFFER: SdBlockStorage = SdBlockStorage([0; SD_BLOCK_BYTES]);
 static mut TLS_RESPONSE_SCRATCH: TlsResponseScratch =
     TlsResponseScratch([0; TLS_RESPONSE_SCRATCH_BYTES]);
+static mut TLS_STREAM_RECORD_SCRATCH: TlsStreamRecordScratch =
+    TlsStreamRecordScratch([0; TLS_STREAM_RECORD_BYTES]);
+static mut TLS_STREAM_PLAINTEXT_SCRATCH: TlsStreamPlaintextScratch =
+    TlsStreamPlaintextScratch([0; TLS_STREAM_PLAINTEXT_BYTES]);
+static mut TLS_DECRYPTED_HANDSHAKE_SCRATCH: TlsDecryptedHandshakeScratch =
+    TlsDecryptedHandshakeScratch([0; TLS_DECRYPTED_HANDSHAKE_BYTES]);
+static mut TLS_HANDSHAKE_TRANSCRIPT_SCRATCH: TlsHandshakeTranscriptScratch =
+    TlsHandshakeTranscriptScratch([0; TLS_HANDSHAKE_TRANSCRIPT_BYTES]);
 static mut PROBE_ACTIVE: u8 = 0;
 static mut PROBE_FAULTED: u8 = 0;
 
@@ -1076,6 +1106,108 @@ impl NetImageState {
 }
 
 #[derive(Clone, Copy)]
+struct HttpsArtifactDiag {
+    error: &'static str,
+    chunk_offset: u32,
+    chunk_size: u32,
+    chunk_attempt: u32,
+    expected_size: u32,
+    received: u32,
+    status_code: u16,
+    response_bytes: usize,
+    encrypted_payload_bytes: usize,
+    segments: u32,
+    records: u32,
+    server_sequence: u64,
+    next_remote_seq: u32,
+    record_len: usize,
+    record_expected: usize,
+    header_done: bool,
+    fin: bool,
+}
+
+impl HttpsArtifactDiag {
+    const fn empty() -> Self {
+        Self {
+            error: "",
+            chunk_offset: 0,
+            chunk_size: 0,
+            chunk_attempt: 0,
+            expected_size: 0,
+            received: 0,
+            status_code: 0,
+            response_bytes: 0,
+            encrypted_payload_bytes: 0,
+            segments: 0,
+            records: 0,
+            server_sequence: 0,
+            next_remote_seq: 0,
+            record_len: 0,
+            record_expected: 0,
+            header_done: false,
+            fin: false,
+        }
+    }
+}
+
+fn https_artifact_diag_set_chunk(offset: u32, size: u32, attempt: u32) {
+    unsafe {
+        LAST_HTTPS_ARTIFACT_DIAG.chunk_offset = offset;
+        LAST_HTTPS_ARTIFACT_DIAG.chunk_size = size;
+        LAST_HTTPS_ARTIFACT_DIAG.chunk_attempt = attempt;
+    }
+}
+
+fn https_artifact_diag_reset_for_chunk_attempt(expected_size: u32) {
+    unsafe {
+        let previous = LAST_HTTPS_ARTIFACT_DIAG;
+        LAST_HTTPS_ARTIFACT_DIAG = HttpsArtifactDiag {
+            chunk_offset: previous.chunk_offset,
+            chunk_size: previous.chunk_size,
+            chunk_attempt: previous.chunk_attempt,
+            expected_size,
+            ..HttpsArtifactDiag::empty()
+        };
+    }
+}
+
+fn https_artifact_diag_mark_chunk_error(error: &'static str, expected_size: u32) {
+    unsafe {
+        let previous = LAST_HTTPS_ARTIFACT_DIAG;
+        LAST_HTTPS_ARTIFACT_DIAG = HttpsArtifactDiag {
+            error,
+            chunk_offset: previous.chunk_offset,
+            chunk_size: previous.chunk_size,
+            chunk_attempt: previous.chunk_attempt,
+            expected_size,
+            ..HttpsArtifactDiag::empty()
+        };
+    }
+}
+
+fn https_artifact_diag_error_is_empty() -> bool {
+    let diag = unsafe { LAST_HTTPS_ARTIFACT_DIAG };
+    diag.error.is_empty()
+}
+
+#[derive(Clone, Copy)]
+struct ArpCacheEntry {
+    valid: bool,
+    ip: [u8; 4],
+    mac: [u8; 6],
+}
+
+impl ArpCacheEntry {
+    const fn empty() -> Self {
+        Self {
+            valid: false,
+            ip: [0; 4],
+            mac: [0; 6],
+        }
+    }
+}
+
+#[derive(Clone, Copy)]
 struct DhcpLease {
     message_type: u8,
     ip: [u8; 4],
@@ -1274,6 +1406,9 @@ struct HttpDebugResult {
 struct TlsClientHelloResult {
     tcp: TcpSession,
     sent_payload_len: u32,
+    client_random: Option<[u8; 32]>,
+    client_x25519_public: Option<[u8; 32]>,
+    server_x25519_public: Option<[u8; 32]>,
     record_type: u8,
     record_version: u16,
     record_len: u16,
@@ -1468,6 +1603,13 @@ enum TlsError {
     Response(HttpError),
     MalformedRecord,
     MalformedResponse,
+    HttpsArtifactSegmentSampleOverflow,
+    HttpsArtifactRecordAppend,
+    HttpsArtifactDecrypt,
+    HttpsArtifactBody,
+    HttpsArtifactAlert,
+    HttpsArtifactFinIncomplete,
+    HttpsArtifactIdleIncomplete,
 }
 
 impl TlsError {
@@ -1490,6 +1632,13 @@ impl TlsError {
             Self::Response(error) => error.as_str(),
             Self::MalformedRecord => "malformed-record",
             Self::MalformedResponse => "malformed-response",
+            Self::HttpsArtifactSegmentSampleOverflow => "https-artifact-segment-sample-overflow",
+            Self::HttpsArtifactRecordAppend => "https-artifact-record-append",
+            Self::HttpsArtifactDecrypt => "https-artifact-decrypt",
+            Self::HttpsArtifactBody => "https-artifact-body",
+            Self::HttpsArtifactAlert => "https-artifact-alert",
+            Self::HttpsArtifactFinIncomplete => "https-artifact-fin-incomplete",
+            Self::HttpsArtifactIdleIncomplete => "https-artifact-idle-incomplete",
         }
     }
 }
@@ -2531,6 +2680,8 @@ fn handle_command(uart: &mut Uart, input: &str) {
         print_about(uart);
     } else if command.eq_ignore_ascii_case("identity") {
         print_identity(uart);
+    } else if command.eq_ignore_ascii_case("svc") || command.eq_ignore_ascii_case("service") {
+        command_service(uart, parts.next());
     } else if command.eq_ignore_ascii_case("mem") {
         print_memory_map(uart);
     } else if command.eq_ignore_ascii_case("regs") {
@@ -2587,6 +2738,7 @@ fn print_help(uart: &mut Uart) {
     uart.put_str("  caps                 show machine-readable feature flags\n");
     uart.put_str("  about                show kernel and board identity\n");
     uart.put_str("  identity             show stable device identity and fingerprint\n");
+    uart.put_str("  svc facts            show AI-native service manifest facts\n");
     uart.put_str("  mem                  show current memory map facts\n");
     uart.put_str("  regs                 show selected CPU registers\n");
     uart.put_str("  time                 show generic timer registers and uptime\n");
@@ -2824,6 +2976,7 @@ fn print_caps(uart: &mut Uart) {
     uart.put_str("  maint command-verify-hmac yes\n");
     uart.put_str("  maint local-hmac-key yes\n");
     uart.put_str("  maint pull-exec yes\n");
+    uart.put_str("  maint ota-stage-pull http,https-experimental\n");
     uart.put_str("  maint loop yes\n");
     uart.put_str("  maint ack-intent yes\n");
     uart.put_str("  maint config-host-name yes\n");
@@ -2831,6 +2984,7 @@ fn print_caps(uart: &mut Uart) {
     uart.put_str("  maint config-tls-pin yes\n");
     uart.put_str("  maint remote-event yes\n");
     uart.put_str("  maint local-audit yes\n");
+    uart.put_str("  svc manifest-readonly yes\n");
     uart.put_str("  identity facts yes\n");
     uart.put_str("  rng development-hmac-drbg yes\n");
     uart.put_str("  wifi facts yes\n");
@@ -2863,15 +3017,127 @@ fn print_caps(uart: &mut Uart) {
 fn write_caps_query_summary<W: Write>(out: &mut W) {
     let _ = write!(
         out,
-        "XJQ OK caps net-dev=yes net-reload=immediate net-ifaces=yes net-roles=yes iface-auto=yes dhcp=yes auto-dhcp=yes failover=best-linked-routed-dns route=yes arp=yes dns=yes tcp-connect=yes http-get=yes http-post=yes https-get=experimental https-post=experimental tls-clienthello=yes tls-aes128gcm-decrypt=yes tls-handshake-parse=yes tls-certificate-list-parse=yes tls-first-certificate-sha256=yes tls-server-finished-verify=yes tls-application-data=experimental ai-chat=http,https-experimental,https-bearer-experimental maint-poll=yes maint-status=yes maint-event=yes maint-pending=yes maint-pending-summary=yes maint-command-digest=yes maint-command-verify=yes maint-command-verify-hmac=yes maint-local-hmac-key=yes maint-pull-exec=yes maint-ota-stage-pull=http maint-config=yes maint-config-paths=yes maint-config-host-name=yes maint-config-https=yes maint-config-tls-pin=yes maint-https-event=yes identity=yes query=yes reboot=yes sd-writer=yes ab-persist=yes boot-slot=extlinux db=page-store,catalog,wal,fixed-table,btree,event-log"
+        "XJQ OK caps net-dev=yes net-reload=immediate net-ifaces=yes net-roles=yes iface-auto=yes dhcp=yes auto-dhcp=yes failover=best-linked-routed-dns route=yes arp=yes dns=yes tcp-connect=yes http-get=yes http-post=yes https-get=experimental https-post=experimental tls-clienthello=yes tls-aes128gcm-decrypt=yes tls-handshake-parse=yes tls-certificate-list-parse=yes tls-first-certificate-sha256=yes tls-server-finished-verify=yes tls-application-data=experimental ai-chat=http,https-experimental,https-bearer-experimental maint-poll=yes maint-status=yes maint-event=yes maint-pending=yes maint-pending-summary=yes maint-command-digest=yes maint-command-verify=yes maint-command-verify-hmac=yes maint-local-hmac-key=yes maint-pull-exec=yes maint-ota-stage-pull=http,https-experimental maint-config=yes maint-config-paths=yes maint-config-host-name=yes maint-config-https=yes maint-config-tls-pin=yes maint-https-event=yes identity=yes svc=manifest-readonly query=yes reboot=yes sd-writer=yes ab-persist=yes boot-slot=extlinux db=page-store,catalog,wal,fixed-table,btree,event-log"
     );
 }
 
 fn write_caps_full_query_summary<W: Write>(out: &mut W) {
     let _ = write!(
         out,
-        "XJQ OK caps-full net=dev,reload-immediate,ifaces,iface-auto,dhcp,auto-dhcp,failover-best-linked-routed-dns,route,arp,dns,tcp,http-get,http-post,https-get-experimental,https-post-experimental,http-trace,http-debug tls=clienthello,aes128gcm,chacha20poly1305,handshake,cert-list,first-cert-sha256,first-cert-pin,server-finished,client-finished-material,client-finished-send,application-data-experimental ai=chat-http,chat-https-experimental,chat-https-bearer-experimental maint=poll,status,pending,digest,verify,verify-hmac,local-key,pull-exec,ota-stage-pull-http,loop,config,paths,host-name,https,tls-pin,cold-boot,ack-intent,remote-event,https-event,local-audit wifi=pcie,firmware,firmware-crc,firmware-load,mmio-snapshot,mmio-fingerprint,driver-gate,rtw88-profile,trace,pcie-init,pcie-init-high,pcie-init-linux,pcie-init-dt,enum,station-planned,ap-planned sd=probe,writer,ab-persist,extlinux db=page-store,catalog,wal,fixed-table,btree,btree-delete,table-namespace,event-log,blob-backup,blob-restore"
+        "XJQ OK caps-full net=dev,reload-immediate,ifaces,iface-auto,dhcp,auto-dhcp,failover-best-linked-routed-dns,route,arp,dns,tcp,http-get,http-post,https-get-experimental,https-post-experimental,http-trace,http-debug tls=clienthello,aes128gcm,chacha20poly1305,handshake,cert-list,first-cert-sha256,first-cert-pin,server-finished,client-finished-material,client-finished-send,application-data-experimental ai=chat-http,chat-https-experimental,chat-https-bearer-experimental maint=poll,status,pending,digest,verify,verify-hmac,local-key,pull-exec,ota-stage-pull-http,ota-stage-pull-https-experimental,loop,config,paths,host-name,https,tls-pin,manual-config-run,ack-intent,remote-event,https-event,local-audit svc=manifest-readonly,service-facts wifi=pcie,firmware,firmware-crc,firmware-load,mmio-snapshot,mmio-fingerprint,driver-gate,rtw88-profile,trace,pcie-init,pcie-init-high,pcie-init-linux,pcie-init-dt,enum,station-planned,ap-planned sd=probe,writer,ab-persist,extlinux db=page-store,catalog,wal,fixed-table,btree,btree-delete,table-namespace,event-log,blob-backup,blob-restore"
     );
+}
+
+struct ServiceManifestEntry {
+    name: &'static str,
+    kind: &'static str,
+    state: &'static str,
+    endpoint: &'static str,
+    storage: &'static str,
+    deps: &'static str,
+    policy: &'static str,
+}
+
+const SERVICE_MANIFEST_VERSION: &str = "xiaojin-service-manifest-v1";
+const SERVICE_MANIFEST: [ServiceManifestEntry; 4] = [
+    ServiceManifestEntry {
+        name: "maint-agent",
+        kind: "kernel-control-plane",
+        state: "integrated",
+        endpoint: "gcp-maintainer",
+        storage: "xiaojindb-event-log",
+        deps: "net,identity,db,ota",
+        policy: "signed-command-only",
+    },
+    ServiceManifestEntry {
+        name: "xiaojindb",
+        kind: "local-storage",
+        state: "integrated",
+        endpoint: "page-store",
+        storage: "sd-fat32-preallocated",
+        deps: "sd,wal,btree,event-log",
+        policy: "kernel-owned",
+    },
+    ServiceManifestEntry {
+        name: "edge-cognition-server",
+        kind: "user-ai-service",
+        state: "planned",
+        endpoint: "127.0.0.1:8765",
+        storage: "materials,knowledge-sqlite,user-memory",
+        deps: "service-manager,ai-runtime,storage,network",
+        policy: "manifest-required",
+    },
+    ServiceManifestEntry {
+        name: "model-runtime",
+        kind: "llm-runtime-adapter",
+        state: "planned-external-first",
+        endpoint: "ollama-or-openai-compatible",
+        storage: "model-cache",
+        deps: "service-manager,http-client,resource-limits",
+        policy: "health-check-required",
+    },
+];
+
+fn command_service(uart: &mut Uart, action: Option<&str>) {
+    match action {
+        None | Some("facts") | Some("manifest") | Some("status") => {
+            print_service_manifest(uart);
+        }
+        _ => {
+            uart.put_str("usage: svc facts\n");
+        }
+    }
+}
+
+fn print_service_manifest(uart: &mut Uart) {
+    let _ = writeln!(
+        uart,
+        "service manifest: version={} mode=readonly supervisor=planned count={}",
+        SERVICE_MANIFEST_VERSION,
+        SERVICE_MANIFEST.len()
+    );
+    for entry in SERVICE_MANIFEST.iter() {
+        let _ = writeln!(
+            uart,
+            "  {} kind={} state={} endpoint={} storage={} deps={} policy={}",
+            entry.name,
+            entry.kind,
+            entry.state,
+            entry.endpoint,
+            entry.storage,
+            entry.deps,
+            entry.policy
+        );
+    }
+}
+
+fn write_service_manifest_summary<W: Write>(out: &mut W) {
+    let _ = write!(
+        out,
+        "svc-manifest version={} mode=readonly supervisor=planned count={}",
+        SERVICE_MANIFEST_VERSION,
+        SERVICE_MANIFEST.len()
+    );
+    for (index, entry) in SERVICE_MANIFEST.iter().enumerate() {
+        let _ = write!(
+            out,
+            " svc{}={} kind{}={} state{}={} endpoint{}={} storage{}={} deps{}={} policy{}={}",
+            index,
+            entry.name,
+            index,
+            entry.kind,
+            index,
+            entry.state,
+            index,
+            entry.endpoint,
+            index,
+            entry.storage,
+            index,
+            entry.deps,
+            index,
+            entry.policy
+        );
+    }
 }
 
 fn print_about(uart: &mut Uart) {
@@ -4931,6 +5197,14 @@ fn command_maint<'a>(uart: &mut Uart, parts: &mut core::str::SplitWhitespace<'a>
             parts.next(),
             parts.next(),
         ),
+        Some("pending") => command_maint_pending(
+            uart,
+            parts.next(),
+            parts.next(),
+            parts.next(),
+            parts.next(),
+            parts.next(),
+        ),
         Some("audit") => command_maint_audit(
             uart,
             parts.next(),
@@ -4973,6 +5247,7 @@ fn command_maint<'a>(uart: &mut Uart, parts: &mut core::str::SplitWhitespace<'a>
             parts.next(),
             parts.next(),
         ),
+        Some("config-pull-exec") => command_maint_config_pull_exec(uart, parts.next()),
         Some("loop") => command_maint_loop(
             uart,
             parts.next(),
@@ -5028,6 +5303,9 @@ fn command_maint<'a>(uart: &mut Uart, parts: &mut core::str::SplitWhitespace<'a>
                 "  maint status <pcie3x1|pcie3x2|auto|0|1> <host|ip> <port> <path> confirm\n",
             );
             uart.put_str(
+                "  maint pending <pcie3x1|pcie3x2|auto|0|1> <host|ip> <port> <path> confirm\n",
+            );
+            uart.put_str(
                 "  maint audit <pcie3x1|pcie3x2|auto|0|1> <host|ip> <port> <path> confirm\n",
             );
             uart.put_str(
@@ -5040,6 +5318,7 @@ fn command_maint<'a>(uart: &mut Uart, parts: &mut core::str::SplitWhitespace<'a>
             uart.put_str(
                 "  maint pull-exec <pcie3x1|pcie3x2|auto|0|1> <host|ip> <port> <poll-path> [event-path] confirm\n",
             );
+            uart.put_str("  maint config-pull-exec confirm\n");
             uart.put_str(
                 "  maint loop <pcie3x1|pcie3x2|auto|0|1> <host|ip> <port> <poll-path> <event-path> <count> <interval-ms> confirm\n",
             );
@@ -5775,7 +6054,7 @@ fn write_net_tls_query_summary<W: Write>(default_index: usize, query: &str, out:
         return;
     }
 
-    match net_tls_client_hello(index, host, port, sni, HTTP_TIMEOUT_MS) {
+    match net_tls_client_hello(index, host, port, sni, TLS_TIMEOUT_MS) {
         Ok(result) => {
             let _ = write!(
                 out,
@@ -5857,6 +6136,88 @@ fn write_net_tls_query_summary<W: Write>(default_index: usize, query: &str, out:
     }
 }
 
+fn write_net_tls_digest_query_summary<W: Write>(default_index: usize, query: &str, out: &mut W) {
+    let mut parts = query.split_whitespace();
+    let _net = parts.next();
+    let _tls_digest = parts.next();
+    let Some(first) = parts.next() else {
+        let _ = write!(out, "XJQ ERR tls-digest-usage");
+        return;
+    };
+    let (index, host) = if let Some(index) = parse_net_interface(first) {
+        let Some(host) = parts.next() else {
+            let _ = write!(out, "XJQ ERR tls-digest-usage");
+            return;
+        };
+        (index, host)
+    } else {
+        (default_index, first)
+    };
+    let Some(port) = parts.next().and_then(parse_u16) else {
+        let _ = write!(out, "XJQ ERR tls-digest-usage");
+        return;
+    };
+    let Some(next) = parts.next() else {
+        let _ = write!(out, "XJQ ERR tls-digest-usage");
+        return;
+    };
+    let (sni, confirm) = if next.eq_ignore_ascii_case("confirm") {
+        (host, next)
+    } else {
+        (next, parts.next().unwrap_or(""))
+    };
+    if !confirm.eq_ignore_ascii_case("confirm") || parts.next().is_some() {
+        let _ = write!(out, "XJQ ERR tls-digest-usage");
+        return;
+    }
+
+    match net_tls_client_hello(index, host, port, sni, TLS_TIMEOUT_MS) {
+        Ok(result) => {
+            let _ = write!(
+                out,
+                "XJQ OK tls-digest iface={} host={} sni={} ip={}.{}.{}.{} port={} cipher={} decrypt={} payload={} segments={}",
+                PCIE_CONTROLLERS[index].name,
+                host,
+                sni,
+                result.tcp.dst_ip[0],
+                result.tcp.dst_ip[1],
+                result.tcp.dst_ip[2],
+                result.tcp.dst_ip[3],
+                result.tcp.dst_port,
+                optional_u16_hex(result.cipher_suite),
+                result.decrypt_status.as_str(),
+                result.payload_bytes,
+                result.segments,
+            );
+            let _ = write!(out, " crand=");
+            write_optional_hex32(out, &result.client_random);
+            let _ = write!(out, " cpub=");
+            write_optional_hex32(out, &result.client_x25519_public);
+            let _ = write!(out, " spub=");
+            write_optional_hex32(out, &result.server_x25519_public);
+            let _ = write!(out, " shared=");
+            write_optional_sha256_hex(out, &result.shared_secret_sha256);
+            let _ = write!(out, " transcript=");
+            write_optional_sha256_hex(out, &result.transcript_sha256);
+            let _ = write!(out, " c-hs=");
+            write_optional_sha256_hex(out, &result.client_handshake_traffic_sha256);
+            let _ = write!(out, " s-hs=");
+            write_optional_sha256_hex(out, &result.server_handshake_traffic_sha256);
+            let _ = write!(out, " c-key=");
+            write_optional_sha256_hex(out, &result.client_handshake_key_sha256);
+            let _ = write!(out, " s-key=");
+            write_optional_sha256_hex(out, &result.server_handshake_key_sha256);
+            let _ = write!(out, " c-iv=");
+            write_optional_sha256_hex(out, &result.client_handshake_iv_sha256);
+            let _ = write!(out, " s-iv=");
+            write_optional_sha256_hex(out, &result.server_handshake_iv_sha256);
+        }
+        Err(error) => {
+            let _ = write!(out, "XJQ ERR tls-digest {}", error.as_str());
+        }
+    }
+}
+
 fn write_net_tls_finish_query_summary<W: Write>(default_index: usize, query: &str, out: &mut W) {
     let mut parts = query.split_whitespace();
     let _net = parts.next();
@@ -5892,7 +6253,7 @@ fn write_net_tls_finish_query_summary<W: Write>(default_index: usize, query: &st
         return;
     }
 
-    match net_tls_client_finish(index, host, port, sni, HTTP_TIMEOUT_MS) {
+    match net_tls_client_finish(index, host, port, sni, TLS_TIMEOUT_MS) {
         Ok(result) => {
             let _ = write!(
                 out,
@@ -5975,7 +6336,7 @@ fn write_net_https_query_summary<W: Write>(default_index: usize, query: &str, ou
         return;
     }
 
-    match net_https_get(index, host, port, path, sni, HTTP_TIMEOUT_MS) {
+    match net_https_get(index, host, port, path, sni, TLS_TIMEOUT_MS) {
         Ok(result) => {
             let _ = write!(
                 out,
@@ -6078,7 +6439,7 @@ fn write_net_https_post_query_summary<W: Write>(default_index: usize, query: &st
         path,
         body.as_bytes(),
         sni,
-        HTTP_TIMEOUT_MS,
+        TLS_TIMEOUT_MS,
     ) {
         Ok(result) => {
             let _ = write!(
@@ -6283,7 +6644,7 @@ fn write_ai_https_chat_query_summary<W: Write>(default_index: usize, query: &str
         path,
         body.as_slice(),
         sni,
-        HTTP_TIMEOUT_MS,
+        TLS_TIMEOUT_MS,
     ) {
         Ok(result) => {
             let _ = write!(
@@ -6402,7 +6763,7 @@ fn write_ai_https_chat_bearer_query_summary<W: Write>(
         body.as_slice(),
         sni,
         &bearer[..bearer_len],
-        HTTP_TIMEOUT_MS,
+        TLS_TIMEOUT_MS,
     ) {
         Ok(result) => {
             let _ = write!(
@@ -6541,7 +6902,7 @@ fn write_net_tls_pin_query_summary<W: Write>(default_index: usize, query: &str, 
         return;
     }
 
-    match net_tls_client_hello(index, host, port, sni, HTTP_TIMEOUT_MS) {
+    match net_tls_client_hello(index, host, port, sni, TLS_TIMEOUT_MS) {
         Ok(result) => {
             let pin_match = tls_first_certificate_pin_matches(&result, expected_sha.as_bytes());
             let _ = write!(
@@ -6653,6 +7014,46 @@ fn write_maint_status_query_summary<W: Write>(default_index: usize, query: &str,
     };
 
     write_maint_status_summary(out, index, host, port, path);
+}
+
+fn write_maint_pending_query_summary<W: Write>(default_index: usize, query: &str, out: &mut W) {
+    let mut parts = query.split_whitespace();
+    let _maint = parts.next();
+    if parts.next() != Some("pending") {
+        let _ = write!(out, "XJQ ERR maint-pending-usage");
+        return;
+    }
+    let Some(first) = parts.next() else {
+        let _ = write!(out, "XJQ ERR maint-pending-usage");
+        return;
+    };
+    let (index, host) = if let Some(index) = parse_net_interface(first) {
+        let Some(host) = parts.next() else {
+            let _ = write!(out, "XJQ ERR maint-pending-usage");
+            return;
+        };
+        (index, host)
+    } else {
+        (default_index, first)
+    };
+    let Some(port_text) = parts.next() else {
+        let _ = write!(out, "XJQ ERR maint-pending-usage");
+        return;
+    };
+    let Some(path) = parts.next() else {
+        let _ = write!(out, "XJQ ERR maint-pending-usage");
+        return;
+    };
+    if !matches!(parts.next(), None | Some("confirm")) {
+        let _ = write!(out, "XJQ ERR maint-pending-usage");
+        return;
+    }
+    let Some(port) = parse_u16(port_text) else {
+        let _ = write!(out, "XJQ ERR maint-pending-port");
+        return;
+    };
+
+    write_maint_pending_summary(out, index, host, port, path);
 }
 
 fn write_maint_audit_query_summary<W: Write>(default_index: usize, query: &str, out: &mut W) {
@@ -6907,6 +7308,70 @@ fn write_maint_pull_exec_query_summary<W: Write>(default_index: usize, query: &s
         event_path,
         MaintHmacKey::Raw(&row.value[..row.value_len]),
     );
+}
+
+fn write_maint_config_pull_exec_query_summary<W: Write>(out: &mut W) {
+    let Ok(config) = load_maint_config() else {
+        let _ = write!(out, "XJQ ERR maint-config-pull-exec maint-config-missing");
+        return;
+    };
+    let Ok(row) = get_maint_hmac_key_row() else {
+        let _ = write!(out, "XJQ ERR maint-config-pull-exec key-missing");
+        return;
+    };
+    let mut host_buf = HttpRequestBuf::new();
+    if write_maint_config_host(&config, &mut host_buf).is_err() {
+        let _ = write!(out, "XJQ ERR maint-config-pull-exec maint-config-bad-host");
+        return;
+    }
+    let Ok(host) = str::from_utf8(host_buf.as_slice()) else {
+        let _ = write!(out, "XJQ ERR maint-config-pull-exec maint-config-bad-host");
+        return;
+    };
+    let Ok(poll_path) = str::from_utf8(&config.poll_path[..config.poll_path_len]) else {
+        let _ = write!(out, "XJQ ERR maint-config-pull-exec maint-config-bad-path");
+        return;
+    };
+    let Ok(event_path) = str::from_utf8(&config.event_path[..config.event_path_len]) else {
+        let _ = write!(out, "XJQ ERR maint-config-pull-exec maint-config-bad-path");
+        return;
+    };
+    if config.https {
+        let mut sni_buf = HttpRequestBuf::new();
+        if write_maint_config_tls_sni(&config, &mut sni_buf).is_err() {
+            let _ = write!(out, "XJQ ERR maint-config-pull-exec maint-config-bad-host");
+            return;
+        }
+        let Ok(sni) = str::from_utf8(sni_buf.as_slice()) else {
+            let _ = write!(out, "XJQ ERR maint-config-pull-exec maint-config-bad-host");
+            return;
+        };
+        write_maint_pull_exec_https_summary(
+            out,
+            config.index,
+            host,
+            config.port,
+            poll_path,
+            Some(event_path),
+            sni,
+            if config.tls_pin_present {
+                Some(&config.tls_pin_sha256)
+            } else {
+                None
+            },
+            MaintHmacKey::Raw(&row.value[..row.value_len]),
+        );
+    } else {
+        write_maint_pull_exec_summary(
+            out,
+            config.index,
+            host,
+            config.port,
+            poll_path,
+            Some(event_path),
+            MaintHmacKey::Raw(&row.value[..row.value_len]),
+        );
+    }
 }
 
 fn write_maint_loop_execute_summary<W: Write>(
@@ -11054,13 +11519,25 @@ fn put_db_btree_row(
 
     if matches!(slot_result, Some((_, false)) | None) && leaf.record_count >= leaf.capacity {
         let (new_root, new_leaf, row) =
-            split_db_btree_leaf_insert(info, new_catalog, root, leaf, &block, key, value)?;
+            match split_db_btree_leaf_insert(info, new_catalog, root, leaf, &block, key, value) {
+                Ok(result) => result,
+                Err(DbError::BtreeFull) => {
+                    insert_db_btree_row_into_available_leaf(info, new_catalog, root, key, value)?
+                }
+                Err(error) => return Err(error),
+            };
         return Ok((info, new_catalog, new_root, new_leaf, row));
     }
 
     let Some((slot, existed)) = slot_result else {
         let (new_root, new_leaf, row) =
-            split_db_btree_leaf_insert(info, new_catalog, root, leaf, &block, key, value)?;
+            match split_db_btree_leaf_insert(info, new_catalog, root, leaf, &block, key, value) {
+                Ok(result) => result,
+                Err(DbError::BtreeFull) => {
+                    insert_db_btree_row_into_available_leaf(info, new_catalog, root, key, value)?
+                }
+                Err(error) => return Err(error),
+            };
         return Ok((info, new_catalog, new_root, new_leaf, row));
     };
 
@@ -11311,6 +11788,63 @@ fn split_db_btree_leaf_insert(
     let row =
         find_row_in_btree_leaf_block(&right_block, right_leaf, key).ok_or(DbError::KeyMissing)?;
     Ok((new_root, right_leaf, row))
+}
+
+fn insert_db_btree_row_into_available_leaf(
+    info: DbFileInfo,
+    catalog: DbCatalog,
+    root: DbBtreeRoot,
+    key: u32,
+    value: &[u8],
+) -> Result<(DbBtreeRoot, DbBtreeLeaf, DbRowValue), DbError> {
+    let end = root.leaf_start_page.saturating_add(root.leaf_count);
+    let mut page = root.leaf_start_page;
+    while page < end {
+        let (leaf, mut block) = read_db_btree_leaf_block(info, root, page)?;
+        if leaf.record_count >= leaf.capacity {
+            page += 1;
+            continue;
+        }
+
+        let Some((slot, existed)) = find_btree_leaf_slot(&block, leaf.record_count, key) else {
+            page += 1;
+            continue;
+        };
+        if existed {
+            let (_info, _catalog, new_root, new_leaf, row) =
+                update_existing_db_btree_row(info, catalog, root, leaf, block, slot, key, value)?;
+            return Ok((new_root, new_leaf, row));
+        }
+
+        shift_btree_leaf_records_right(&mut block, slot, leaf.record_count as usize);
+        let record_count = leaf.record_count.saturating_add(1);
+        write_table_record(&mut block, slot, key, value);
+        let (min_key, max_key) = btree_leaf_key_range(&block, record_count);
+        build_db_btree_leaf_header(
+            &mut block,
+            leaf.page,
+            record_count,
+            min_key,
+            max_key,
+            catalog.sequence,
+            leaf.next_leaf,
+        );
+        write_file_sector(info.facts, info.entry, leaf.page, &block)?;
+
+        let mut root_page = [0u8; SD_BLOCK_BYTES];
+        build_db_btree_root_page(
+            root.record_count.saturating_add(1),
+            catalog.sequence,
+            &mut root_page,
+        );
+        write_file_sector(info.facts, info.entry, DB_BTREE_ROOT_PAGE, &root_page)?;
+
+        let (_info2, _catalog2, new_root) = read_db_btree_root()?;
+        let new_leaf = read_db_btree_leaf(info, new_root, leaf.page)?;
+        let row = read_table_row(&block, slot).ok_or(DbError::KeyMissing)?;
+        return Ok((new_root, new_leaf, row));
+    }
+    Err(DbError::BtreeFull)
 }
 
 fn find_empty_btree_leaf_page(
@@ -14489,7 +15023,7 @@ fn command_net_tls(
         "net tls {} tls://{host}:{port} sni={sni}:",
         PCIE_CONTROLLERS[index].name
     );
-    match net_tls_client_hello(index, host, port, sni, HTTP_TIMEOUT_MS) {
+    match net_tls_client_hello(index, host, port, sni, TLS_TIMEOUT_MS) {
         Ok(result) => print_tls_client_hello_result(uart, result),
         Err(error) => {
             let _ = writeln!(uart, "  error           {}", error.as_str());
@@ -14546,7 +15080,7 @@ fn command_net_https(
         "net https {} https://{host}:{port}{path} sni={sni}:",
         PCIE_CONTROLLERS[index].name
     );
-    match net_https_get(index, host, port, path, sni, HTTP_TIMEOUT_MS) {
+    match net_https_get(index, host, port, path, sni, TLS_TIMEOUT_MS) {
         Ok(result) => print_https_get_result(uart, result),
         Err(error) => {
             let _ = writeln!(uart, "  error           {}", error.as_str());
@@ -14617,7 +15151,7 @@ fn command_net_https_post(
         path,
         body.as_bytes(),
         sni,
-        HTTP_TIMEOUT_MS,
+        TLS_TIMEOUT_MS,
     ) {
         Ok(result) => print_https_get_result(uart, result),
         Err(error) => {
@@ -14670,7 +15204,7 @@ fn command_net_tls_finish(
         "net tls-finish {} tls://{host}:{port} sni={sni}:",
         PCIE_CONTROLLERS[index].name
     );
-    match net_tls_client_finish(index, host, port, sni, HTTP_TIMEOUT_MS) {
+    match net_tls_client_finish(index, host, port, sni, TLS_TIMEOUT_MS) {
         Ok(result) => print_tls_client_finish_result(uart, result),
         Err(error) => {
             let _ = writeln!(uart, "  error           {}", error.as_str());
@@ -14735,7 +15269,7 @@ fn command_net_tls_pin(
         "net tls-pin {} tls://{host}:{port} sni={sni}:",
         PCIE_CONTROLLERS[index].name
     );
-    match net_tls_client_hello(index, host, port, sni, HTTP_TIMEOUT_MS) {
+    match net_tls_client_hello(index, host, port, sni, TLS_TIMEOUT_MS) {
         Ok(result) => {
             print_tls_client_hello_result(uart, result);
             let pin_match = tls_first_certificate_pin_matches(&result, expected_sha.as_bytes());
@@ -15124,6 +15658,15 @@ fn command_maint_pull_exec(
     uart.put_str("\n");
 }
 
+fn command_maint_config_pull_exec(uart: &mut Uart, confirm: Option<&str>) {
+    if confirm != Some("confirm") {
+        uart.put_str("usage: maint config-pull-exec confirm\n");
+        return;
+    }
+    write_maint_config_pull_exec_query_summary(uart);
+    uart.put_str("\n");
+}
+
 fn command_maint_loop(
     uart: &mut Uart,
     iface: Option<&str>,
@@ -15400,6 +15943,50 @@ fn command_maint_status(
         PCIE_CONTROLLERS[index].name
     );
     write_maint_status_summary(uart, index, host, port, path);
+    uart.put_str("\n");
+}
+
+fn command_maint_pending(
+    uart: &mut Uart,
+    iface: Option<&str>,
+    host: Option<&str>,
+    port: Option<&str>,
+    path: Option<&str>,
+    confirm: Option<&str>,
+) {
+    if confirm != Some("confirm") {
+        uart.put_str(
+            "usage: maint pending <pcie3x1|pcie3x2|auto|0|1> <host|ip> <port> <path> confirm\n",
+        );
+        return;
+    }
+    let Some(iface) = iface else {
+        uart.put_str("missing interface\n");
+        return;
+    };
+    let Some(index) = parse_net_interface(iface) else {
+        uart.put_str("unknown interface; use pcie3x1, pcie3x2, auto, 0, or 1\n");
+        return;
+    };
+    let Some(host) = host else {
+        uart.put_str("missing host\n");
+        return;
+    };
+    let Some(port) = port.and_then(parse_u16) else {
+        uart.put_str("missing or invalid TCP port\n");
+        return;
+    };
+    let Some(path) = path else {
+        uart.put_str("missing path\n");
+        return;
+    };
+
+    let _ = writeln!(
+        uart,
+        "maint pending {} http://{host}:{port}{path}:",
+        PCIE_CONTROLLERS[index].name
+    );
+    write_maint_pending_summary(uart, index, host, port, path);
     uart.put_str("\n");
 }
 
@@ -15756,7 +16343,7 @@ fn write_maint_https_poll_summary<W: Write>(
     sni: &str,
     tls_pin_sha256: Option<&[u8; 32]>,
 ) {
-    match net_https_get(index, host, port, path, sni, HTTP_TIMEOUT_MS) {
+    match net_https_get(index, host, port, path, sni, TLS_TIMEOUT_MS) {
         Ok(result) => {
             if let Some(expected) = tls_pin_sha256 {
                 if !https_result_certificate_pin_matches(&result, expected) {
@@ -15853,6 +16440,58 @@ fn write_maint_status_summary<W: Write>(
         }
         Err(error) => {
             let _ = write!(out, "XJQ ERR maint-status {}", error.as_str());
+        }
+    }
+}
+
+fn write_maint_pending_summary<W: Write>(
+    out: &mut W,
+    index: usize,
+    host: &str,
+    port: u16,
+    path: &str,
+) {
+    match net_http_get(index, host, port, path, HTTP_TIMEOUT_MS) {
+        Ok(result) => {
+            let Some(body) = find_http_body_start(&result.sample[..result.sample_len])
+                .map(|start| &result.sample[start..result.sample_len])
+            else {
+                let _ = write!(out, "XJQ ERR maint-pending no-body");
+                return;
+            };
+            let _ = write!(
+                out,
+                "XJQ OK maint-pending iface={} host={} ip={}.{}.{}.{} port={} status={} bytes={} payload={} ",
+                PCIE_CONTROLLERS[index].name,
+                host,
+                result.tcp.dst_ip[0],
+                result.tcp.dst_ip[1],
+                result.tcp.dst_ip[2],
+                result.tcp.dst_ip[3],
+                result.tcp.dst_port,
+                result.status_code,
+                result.response_bytes,
+                result.payload_bytes
+            );
+            write_maint_field(out, body, b"device_id");
+            write_maint_field(out, body, b"registered");
+            write_maint_field(out, body, b"commands_pending");
+            write_maint_field(out, body, b"next_pending_command_id");
+            write_maint_field(out, body, b"next_pending_command_kind");
+            write_maint_field(out, body, b"next_pending_command_updated_unix");
+            write_maint_field(out, body, b"next_pending_payload_sha256");
+            write_maint_field(out, body, b"next_pending_command_sha256");
+            write_maint_field(out, body, b"next_pending_signer_id");
+            write_maint_field(out, body, b"next_pending_signature_algorithm");
+            write_maint_field(out, body, b"next_pending_signature_sha256");
+            write_maint_field(out, body, b"next_pending_signature_present");
+            write_maint_field(out, body, b"next_pending_public_query_present");
+            write_maint_field(out, body, b"next_pending_public_query_sha256");
+            write_maint_field(out, body, b"next_pending_ota_payload_present");
+            write_maint_pending_query_fields(out, body);
+        }
+        Err(error) => {
+            let _ = write!(out, "XJQ ERR maint-pending {}", error.as_str());
         }
     }
 }
@@ -16039,7 +16678,7 @@ fn write_maint_https_event_summary<W: Write>(
         path,
         body.as_slice(),
         sni,
-        HTTP_TIMEOUT_MS,
+        TLS_TIMEOUT_MS,
     ) {
         Ok(result) => {
             if let Some(expected) = tls_pin_sha256 {
@@ -16448,231 +17087,249 @@ fn write_maint_verify_summary<W: Write>(
     }
 }
 
-fn write_maint_pull_exec_summary<W: Write>(
+#[derive(Clone, Copy)]
+enum MaintPullExecReportTransport<'a> {
+    Http,
+    Https {
+        sni: &'a str,
+        tls_pin_sha256: Option<&'a [u8; 32]>,
+    },
+}
+
+enum MaintPullExecEventReport {
+    Http(Result<HttpPostResult, HttpError>),
+    Https(Result<HttpsGetResult, TlsError>, Option<bool>),
+}
+
+fn write_maint_pull_exec_http_result_summary<W: Write>(
     out: &mut W,
     index: usize,
     host: &str,
     port: u16,
-    path: &str,
+    _path: &str,
     event_path: Option<&str>,
     hmac_key: MaintHmacKey<'_>,
+    result: HttpGetResult,
+    report_transport: MaintPullExecReportTransport<'_>,
 ) {
-    match net_http_get(index, host, port, path, HTTP_TIMEOUT_MS) {
-        Ok(result) => {
-            let Some(body) = find_http_body_start(&result.sample[..result.sample_len])
-                .map(|start| &result.sample[start..result.sample_len])
-            else {
-                let _ = write!(out, "XJQ ERR maint-pull-exec no-body");
-                return;
-            };
+    let Some(body) = find_http_body_start(&result.sample[..result.sample_len])
+        .map(|start| &result.sample[start..result.sample_len])
+    else {
+        let _ = write!(out, "XJQ ERR maint-pull-exec no-body");
+        return;
+    };
 
-            let command_id = find_maint_text_field(body, b"next_pending_command_id");
-            let kind = find_maint_text_field(body, b"next_pending_command_kind");
-            let payload_sha = find_maint_text_field(body, b"next_pending_payload_sha256");
-            let command_sha = find_maint_text_field(body, b"next_pending_command_sha256");
-            let signature_algorithm =
-                find_maint_text_field(body, b"next_pending_signature_algorithm");
-            let signature_sha = find_maint_text_field(body, b"next_pending_signature_sha256");
-            let signature_present = find_maint_text_field(body, b"next_pending_signature_present");
-            let public_query_present =
-                find_maint_text_field(body, b"next_pending_public_query_present");
-            let public_query_hex = find_maint_text_field(body, b"next_pending_public_query_hex");
-            let public_query_sha = find_maint_text_field(body, b"next_pending_public_query_sha256");
-            let ota_payload_present =
-                find_maint_text_field(body, b"next_pending_ota_payload_present");
-            let ota_payload_hex = find_maint_text_field(body, b"next_pending_ota_payload_hex");
-            let ota_payload_sha = find_maint_text_field(body, b"next_pending_ota_payload_sha256");
+    let command_id = find_maint_text_field(body, b"next_pending_command_id");
+    let kind = find_maint_text_field(body, b"next_pending_command_kind");
+    let payload_sha = find_maint_text_field(body, b"next_pending_payload_sha256");
+    let command_sha = find_maint_text_field(body, b"next_pending_command_sha256");
+    let signature_algorithm = find_maint_text_field(body, b"next_pending_signature_algorithm");
+    let signature_sha = find_maint_text_field(body, b"next_pending_signature_sha256");
+    let signature_present = find_maint_text_field(body, b"next_pending_signature_present");
+    let public_query_present = find_maint_text_field(body, b"next_pending_public_query_present");
+    let public_query_hex = find_maint_text_field(body, b"next_pending_public_query_hex");
+    let public_query_sha = find_maint_text_field(body, b"next_pending_public_query_sha256");
+    let ota_manifest_present = find_maint_text_field(body, b"next_pending_ota_manifest_present");
+    let ota_manifest_path = find_maint_text_field(body, b"next_pending_ota_manifest_path");
+    let ota_manifest_sha = find_maint_text_field(body, b"next_pending_ota_manifest_sha256");
+    let ota_payload_present = find_maint_text_field(body, b"next_pending_ota_payload_present");
+    let ota_payload_hex = find_maint_text_field(body, b"next_pending_ota_payload_hex");
+    let ota_payload_sha = find_maint_text_field(body, b"next_pending_ota_payload_sha256");
 
-            let Some(command_id) = command_id else {
-                let _ = write!(out, "XJQ ERR maint-pull-exec missing-command-id");
-                return;
-            };
-            if ascii_eq(command_id, b"none") {
-                let _ = write!(out, "XJQ ERR maint-pull-exec no-pending");
+    let Some(command_id) = command_id else {
+        let _ = write!(out, "XJQ ERR maint-pull-exec missing-command-id");
+        return;
+    };
+    if ascii_eq(command_id, b"none") {
+        let _ = write!(out, "XJQ ERR maint-pull-exec no-pending");
+        return;
+    }
+    let Some(kind) = kind else {
+        let _ = write!(out, "XJQ ERR maint-pull-exec missing-kind");
+        return;
+    };
+    let (Some(payload_sha), Some(command_sha)) = (payload_sha, command_sha) else {
+        let _ = write!(out, "XJQ ERR maint-pull-exec missing-digest");
+        return;
+    };
+    if !is_sha256_hex(payload_sha) || !is_sha256_hex(command_sha) {
+        let _ = write!(out, "XJQ ERR maint-pull-exec bad-digest");
+        return;
+    }
+    if ascii_eq(kind, b"net_ota_stage") {
+        write_maint_pull_exec_ota_stage_summary(
+            out,
+            index,
+            host,
+            port,
+            result.status_code,
+            event_path,
+            report_transport,
+            hmac_key,
+            command_id,
+            kind,
+            payload_sha,
+            command_sha,
+            signature_algorithm,
+            signature_sha,
+            signature_present,
+            ota_manifest_present,
+            ota_manifest_path,
+            ota_manifest_sha,
+            ota_payload_present,
+            ota_payload_hex,
+            ota_payload_sha,
+        );
+        return;
+    }
+    if !ascii_eq(kind, b"xj_query") {
+        let _ = write!(out, "XJQ ERR maint-pull-exec unsupported-kind kind=");
+        write_ascii_token(out, kind);
+        return;
+    }
+    if !matches!(public_query_present, Some(value) if ascii_eq(value, b"yes")) {
+        let _ = write!(out, "XJQ ERR maint-pull-exec public-query-missing");
+        return;
+    }
+    let Some(public_query_hex) = public_query_hex else {
+        let _ = write!(out, "XJQ ERR maint-pull-exec missing-query-hex");
+        return;
+    };
+    let mut query_buf = [0u8; NETCONTROL_QUERY_BYTES];
+    let Some(query_len) = decode_hex_to_buf(public_query_hex, &mut query_buf) else {
+        let _ = write!(out, "XJQ ERR maint-pull-exec bad-query-hex");
+        return;
+    };
+    let query_bytes = &query_buf[..query_len];
+    if !is_public_xj_query(query_bytes) {
+        let _ = write!(out, "XJQ ERR maint-pull-exec query-denied query=");
+        write_ascii_token(out, query_bytes);
+        return;
+    }
+    if let Some(public_query_sha) = public_query_sha {
+        let query_digest = sha256_digest(query_bytes);
+        if !sha256_hex_matches(&query_digest, public_query_sha) {
+            let _ = write!(out, "XJQ ERR maint-pull-exec query-sha-mismatch");
+            return;
+        }
+    }
+    let Some(payload_digest) = maint_public_query_payload_digest(query_bytes) else {
+        let _ = write!(out, "XJQ ERR maint-pull-exec payload-canonical-too-long");
+        return;
+    };
+    if !sha256_hex_matches(&payload_digest, payload_sha) {
+        let _ = write!(out, "XJQ ERR maint-pull-exec payload-mismatch calculated=");
+        write_sha256_hex(out, &payload_digest);
+        return;
+    }
+    let Some(command_digest) = maint_command_digest(command_id, kind, payload_sha) else {
+        let _ = write!(out, "XJQ ERR maint-pull-exec command-canonical-too-long");
+        return;
+    };
+    if !sha256_hex_matches(&command_digest, command_sha) {
+        let _ = write!(out, "XJQ ERR maint-pull-exec command-mismatch calculated=");
+        write_sha256_hex(out, &command_digest);
+        return;
+    }
+
+    let signature_calculated =
+        match maint_hmac_signature_digest(Some(command_sha), signature_algorithm, hmac_key) {
+            MaintHmacCheckInput::NoPending => {
+                let _ = write!(out, "XJQ ERR maint-pull-exec signature-no-pending");
                 return;
             }
-            let Some(kind) = kind else {
-                let _ = write!(out, "XJQ ERR maint-pull-exec missing-kind");
-                return;
-            };
-            let (Some(payload_sha), Some(command_sha)) = (payload_sha, command_sha) else {
-                let _ = write!(out, "XJQ ERR maint-pull-exec missing-digest");
-                return;
-            };
-            if !is_sha256_hex(payload_sha) || !is_sha256_hex(command_sha) {
-                let _ = write!(out, "XJQ ERR maint-pull-exec bad-digest");
+            MaintHmacCheckInput::DigestNotOk => {
+                let _ = write!(out, "XJQ ERR maint-pull-exec signature-bad-digest");
                 return;
             }
-            if ascii_eq(kind, b"net_ota_stage") {
-                write_maint_pull_exec_ota_stage_summary(
-                    out,
+            MaintHmacCheckInput::BadKey => {
+                let _ = write!(out, "XJQ ERR maint-pull-exec signature-bad-key");
+                return;
+            }
+            MaintHmacCheckInput::BadAlgorithm => {
+                let _ = write!(out, "XJQ ERR maint-pull-exec signature-bad-algorithm");
+                return;
+            }
+            MaintHmacCheckInput::Calculated(digest) => digest,
+        };
+    if !matches!(signature_present, Some(value) if ascii_eq(value, b"yes")) {
+        let _ = write!(out, "XJQ ERR maint-pull-exec signature-missing");
+        return;
+    }
+    let Some(signature_sha) = signature_sha else {
+        let _ = write!(out, "XJQ ERR maint-pull-exec signature-sha-missing");
+        return;
+    };
+    if !sha256_hex_matches(&signature_calculated, signature_sha) {
+        let _ = write!(
+            out,
+            "XJQ ERR maint-pull-exec signature-mismatch calculated="
+        );
+        write_sha256_hex(out, &signature_calculated);
+        return;
+    }
+
+    let Ok(query) = str::from_utf8(query_bytes) else {
+        let _ = write!(out, "XJQ ERR maint-pull-exec query-utf8");
+        return;
+    };
+    let mut query_result = NetReplyBuf::new();
+    if !write_public_xj_query_result(query, &mut query_result) {
+        let _ = write!(out, "XJQ ERR maint-pull-exec query-denied");
+        return;
+    }
+
+    let mut event = NetReplyBuf::new();
+    let result_digest = sha256_digest(query_result.as_slice());
+    let _ = write!(
+        event,
+        "maint-pull-exec-v1 iface={} host=",
+        PCIE_CONTROLLERS[index].name
+    );
+    write_ascii_token(&mut event, host.as_bytes());
+    let _ = write!(
+        event,
+        " port={} http={} query=",
+        result.tcp.dst_port, result.status_code
+    );
+    write_ascii_token(&mut event, query_bytes);
+    let _ = write!(event, " command_id=");
+    write_ascii_token(&mut event, command_id);
+    let _ = write!(event, " command_sha=");
+    write_ascii_token(&mut event, command_sha);
+    let _ = write!(event, " sig-ok=yes result-sha=");
+    write_sha256_hex(&mut event, &result_digest);
+    if event.as_slice().len() > DB_EVENT_PAYLOAD_BYTES {
+        let _ = write!(
+            out,
+            "XJQ ERR maint-pull-exec payload-too-long len={} max={DB_EVENT_PAYLOAD_BYTES}",
+            event.as_slice().len()
+        );
+        return;
+    }
+
+    match append_db_event(
+        DB_EVENT_KIND_MAINT_PULL_EXEC,
+        DB_EVENT_SOURCE_MAINTAINER,
+        event.as_slice(),
+    ) {
+        Ok((_info, _catalog, meta, db_event)) => {
+            let report = event_path.map(|event_path| {
+                post_maint_pull_exec_event_for_transport(
+                    report_transport,
                     index,
                     host,
                     port,
-                    result.status_code,
                     event_path,
-                    hmac_key,
                     command_id,
-                    kind,
-                    payload_sha,
                     command_sha,
-                    signature_algorithm,
                     signature_sha,
-                    signature_present,
-                    ota_payload_present,
-                    ota_payload_hex,
-                    ota_payload_sha,
-                );
-                return;
-            }
-            if !ascii_eq(kind, b"xj_query") {
-                let _ = write!(out, "XJQ ERR maint-pull-exec unsupported-kind kind=");
-                write_ascii_token(out, kind);
-                return;
-            }
-            if !matches!(public_query_present, Some(value) if ascii_eq(value, b"yes")) {
-                let _ = write!(out, "XJQ ERR maint-pull-exec public-query-missing");
-                return;
-            }
-            let Some(public_query_hex) = public_query_hex else {
-                let _ = write!(out, "XJQ ERR maint-pull-exec missing-query-hex");
-                return;
-            };
-            let mut query_buf = [0u8; NETCONTROL_QUERY_BYTES];
-            let Some(query_len) = decode_hex_to_buf(public_query_hex, &mut query_buf) else {
-                let _ = write!(out, "XJQ ERR maint-pull-exec bad-query-hex");
-                return;
-            };
-            let query_bytes = &query_buf[..query_len];
-            if !is_public_xj_query(query_bytes) {
-                let _ = write!(out, "XJQ ERR maint-pull-exec query-denied query=");
-                write_ascii_token(out, query_bytes);
-                return;
-            }
-            if let Some(public_query_sha) = public_query_sha {
-                let query_digest = sha256_digest(query_bytes);
-                if !sha256_hex_matches(&query_digest, public_query_sha) {
-                    let _ = write!(out, "XJQ ERR maint-pull-exec query-sha-mismatch");
-                    return;
-                }
-            }
-            let Some(payload_digest) = maint_public_query_payload_digest(query_bytes) else {
-                let _ = write!(out, "XJQ ERR maint-pull-exec payload-canonical-too-long");
-                return;
-            };
-            if !sha256_hex_matches(&payload_digest, payload_sha) {
-                let _ = write!(out, "XJQ ERR maint-pull-exec payload-mismatch calculated=");
-                write_sha256_hex(out, &payload_digest);
-                return;
-            }
-            let Some(command_digest) = maint_command_digest(command_id, kind, payload_sha) else {
-                let _ = write!(out, "XJQ ERR maint-pull-exec command-canonical-too-long");
-                return;
-            };
-            if !sha256_hex_matches(&command_digest, command_sha) {
-                let _ = write!(out, "XJQ ERR maint-pull-exec command-mismatch calculated=");
-                write_sha256_hex(out, &command_digest);
-                return;
-            }
-
-            let signature_calculated =
-                match maint_hmac_signature_digest(Some(command_sha), signature_algorithm, hmac_key)
-                {
-                    MaintHmacCheckInput::NoPending => {
-                        let _ = write!(out, "XJQ ERR maint-pull-exec signature-no-pending");
-                        return;
-                    }
-                    MaintHmacCheckInput::DigestNotOk => {
-                        let _ = write!(out, "XJQ ERR maint-pull-exec signature-bad-digest");
-                        return;
-                    }
-                    MaintHmacCheckInput::BadKey => {
-                        let _ = write!(out, "XJQ ERR maint-pull-exec signature-bad-key");
-                        return;
-                    }
-                    MaintHmacCheckInput::BadAlgorithm => {
-                        let _ = write!(out, "XJQ ERR maint-pull-exec signature-bad-algorithm");
-                        return;
-                    }
-                    MaintHmacCheckInput::Calculated(digest) => digest,
-                };
-            if !matches!(signature_present, Some(value) if ascii_eq(value, b"yes")) {
-                let _ = write!(out, "XJQ ERR maint-pull-exec signature-missing");
-                return;
-            }
-            let Some(signature_sha) = signature_sha else {
-                let _ = write!(out, "XJQ ERR maint-pull-exec signature-sha-missing");
-                return;
-            };
-            if !sha256_hex_matches(&signature_calculated, signature_sha) {
-                let _ = write!(
-                    out,
-                    "XJQ ERR maint-pull-exec signature-mismatch calculated="
-                );
-                write_sha256_hex(out, &signature_calculated);
-                return;
-            }
-
-            let Ok(query) = str::from_utf8(query_bytes) else {
-                let _ = write!(out, "XJQ ERR maint-pull-exec query-utf8");
-                return;
-            };
-            let mut query_result = NetReplyBuf::new();
-            if !write_public_xj_query_result(query, &mut query_result) {
-                let _ = write!(out, "XJQ ERR maint-pull-exec query-denied");
-                return;
-            }
-
-            let mut event = NetReplyBuf::new();
-            let result_digest = sha256_digest(query_result.as_slice());
+                    query_bytes,
+                    &result_digest,
+                    db_event,
+                )
+            });
             let _ = write!(
-                event,
-                "maint-pull-exec-v1 iface={} host=",
-                PCIE_CONTROLLERS[index].name
-            );
-            write_ascii_token(&mut event, host.as_bytes());
-            let _ = write!(
-                event,
-                " port={} http={} query=",
-                result.tcp.dst_port, result.status_code
-            );
-            write_ascii_token(&mut event, query_bytes);
-            let _ = write!(event, " command_id=");
-            write_ascii_token(&mut event, command_id);
-            let _ = write!(event, " command_sha=");
-            write_ascii_token(&mut event, command_sha);
-            let _ = write!(event, " sig-ok=yes result-sha=");
-            write_sha256_hex(&mut event, &result_digest);
-            if event.as_slice().len() > DB_EVENT_PAYLOAD_BYTES {
-                let _ = write!(
-                    out,
-                    "XJQ ERR maint-pull-exec payload-too-long len={} max={DB_EVENT_PAYLOAD_BYTES}",
-                    event.as_slice().len()
-                );
-                return;
-            }
-
-            match append_db_event(
-                DB_EVENT_KIND_MAINT_PULL_EXEC,
-                DB_EVENT_SOURCE_MAINTAINER,
-                event.as_slice(),
-            ) {
-                Ok((_info, _catalog, meta, db_event)) => {
-                    let report = event_path.map(|event_path| {
-                        post_maint_pull_exec_event(
-                            index,
-                            host,
-                            port,
-                            event_path,
-                            command_id,
-                            command_sha,
-                            signature_sha,
-                            query_bytes,
-                            &result_digest,
-                            db_event,
-                        )
-                    });
-                    let _ = write!(
                         out,
                         "XJQ OK maint-pull-exec iface={} host={} ip={}.{}.{}.{} port={} status={} signature-ok=yes seq={} page={} events={} next-page={} query=\"",
                         PCIE_CONTROLLERS[index].name,
@@ -16688,45 +17345,155 @@ fn write_maint_pull_exec_summary<W: Write>(
                         meta.event_count,
                         meta.next_page
                     );
-                    write_http_sample_line(out, query_bytes);
-                    let _ = write!(out, "\" command_id=");
-                    write_ascii_token(out, command_id);
-                    match report {
-                        Some(Ok(report)) => {
-                            let _ = write!(
-                                out,
-                                " report=ok report-status={} report-bytes={} report-sent={} report-src-port={}",
-                                report.status_code,
-                                report.response_bytes,
-                                report.sent_payload_len,
-                                report.tcp.src_port
-                            );
-                        }
-                        Some(Err(error)) => {
-                            let _ = write!(out, " report=err report-error={}", error.as_str());
-                        }
-                        None => {
-                            let _ = write!(out, " report=skipped");
-                        }
-                    }
-                    let _ = write!(out, " result=\"");
-                    write_http_sample_line(out, query_result.as_slice());
-                    let _ = write!(out, "\"");
-                }
-                Err(error) => {
-                    let _ = write!(out, "XJQ ERR maint-pull-exec {}", error.as_str());
-                    if let DbError::Sd(SdReadError::StatusError(bits))
-                    | DbError::Sd(SdReadError::IdmacError(bits)) = error
-                    {
-                        let _ = write!(out, " bits=0x{bits:08x}");
-                    }
-                }
+            write_http_sample_line(out, query_bytes);
+            let _ = write!(out, "\" command_id=");
+            write_ascii_token(out, command_id);
+            write_maint_pull_exec_event_report(out, report);
+            let _ = write!(out, " result=\"");
+            write_http_sample_line(out, query_result.as_slice());
+            let _ = write!(out, "\"");
+        }
+        Err(error) => {
+            let _ = write!(out, "XJQ ERR maint-pull-exec {}", error.as_str());
+            if let DbError::Sd(SdReadError::StatusError(bits))
+            | DbError::Sd(SdReadError::IdmacError(bits)) = error
+            {
+                let _ = write!(out, " bits=0x{bits:08x}");
             }
         }
+    }
+}
+
+fn write_maint_pull_exec_summary<W: Write>(
+    out: &mut W,
+    index: usize,
+    host: &str,
+    port: u16,
+    path: &str,
+    event_path: Option<&str>,
+    hmac_key: MaintHmacKey<'_>,
+) {
+    match net_http_get(index, host, port, path, HTTP_TIMEOUT_MS) {
+        Ok(result) => write_maint_pull_exec_http_result_summary(
+            out,
+            index,
+            host,
+            port,
+            path,
+            event_path,
+            hmac_key,
+            result,
+            MaintPullExecReportTransport::Http,
+        ),
         Err(error) => {
             let _ = write!(out, "XJQ ERR maint-pull-exec {}", error.as_str());
         }
     }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn write_maint_pull_exec_https_summary<W: Write>(
+    out: &mut W,
+    index: usize,
+    host: &str,
+    port: u16,
+    path: &str,
+    event_path: Option<&str>,
+    sni: &str,
+    tls_pin_sha256: Option<&[u8; 32]>,
+    hmac_key: MaintHmacKey<'_>,
+) {
+    match net_https_get(index, host, port, path, sni, TLS_TIMEOUT_MS) {
+        Ok(result) => {
+            if let Some(expected) = tls_pin_sha256 {
+                if !https_result_certificate_pin_matches(&result, expected) {
+                    let _ = write!(
+                        out,
+                        "XJQ ERR maint-pull-exec https tls-pin-mismatch expected="
+                    );
+                    write_sha256_hex(out, expected);
+                    let _ = write!(out, " actual=");
+                    write_optional_sha256_hex(out, &result.tls.decrypted_first_certificate_sha256);
+                    return;
+                }
+            }
+            let synthetic = HttpGetResult {
+                tcp: result.tls.tcp,
+                status_code: result.status_code.unwrap_or(0),
+                response_bytes: result.encrypted_response_bytes,
+                payload_bytes: result.decrypted_payload_bytes,
+                segments: result.encrypted_response_segments,
+                fin: result.encrypted_response_fin,
+                truncated: result.encrypted_response_truncated,
+                sample_len: result.decrypted_sample_len,
+                sample: result.decrypted_sample,
+            };
+            write_maint_pull_exec_http_result_summary(
+                out,
+                index,
+                host,
+                port,
+                path,
+                event_path,
+                hmac_key,
+                synthetic,
+                MaintPullExecReportTransport::Https {
+                    sni,
+                    tls_pin_sha256,
+                },
+            );
+        }
+        Err(error) => {
+            let _ = write!(out, "XJQ ERR maint-pull-exec https {}", error.as_str());
+        }
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn build_maint_pull_exec_event_body(
+    index: usize,
+    command_id: &[u8],
+    command_sha: &[u8],
+    signature_sha: &[u8],
+    query: &[u8],
+    result_digest: &[u8; 32],
+    db_event: DbEventPage,
+) -> Option<NetReplyBuf> {
+    let mut post_body = NetReplyBuf::new();
+    write!(
+        post_body,
+        "{{\"events\":[{{\"kind\":\"maint_pull_exec\",\"payload\":{{\"source\":\"xiaojin-os\",\"device_id\":\"{XIAOJIN_DEVICE_ID}\",\"iface\":\"{}\",\"command_id\":\"",
+        PCIE_CONTROLLERS[index].name,
+    )
+    .ok()?;
+    if !write_json_ascii_value(&mut post_body, command_id, 96) {
+        return None;
+    }
+    write!(post_body, "\",\"command_sha256\":\"").ok()?;
+    if !write_json_ascii_value(&mut post_body, command_sha, 64) {
+        return None;
+    }
+    write!(post_body, "\",\"signature_sha256\":\"").ok()?;
+    if !write_json_ascii_value(&mut post_body, signature_sha, 64) {
+        return None;
+    }
+    write!(post_body, "\",\"query\":\"").ok()?;
+    if !write_json_ascii_value(&mut post_body, query, 96) {
+        return None;
+    }
+    write!(post_body, "\",\"result_sha256\":\"").ok()?;
+    write_sha256_hex(&mut post_body, result_digest);
+    write!(
+        post_body,
+        "\",\"db_seq\":{},\"db_page\":{},\"ok\":true}}}}]}}",
+        db_event.sequence, db_event.page
+    )
+    .ok()?;
+
+    if post_body.as_slice().len() > 1024 {
+        return None;
+    }
+    Some(post_body)
 }
 
 fn post_maint_pull_exec_event(
@@ -16741,40 +17508,17 @@ fn post_maint_pull_exec_event(
     result_digest: &[u8; 32],
     db_event: DbEventPage,
 ) -> Result<HttpPostResult, HttpError> {
-    let mut post_body = NetReplyBuf::new();
-    write!(
-        post_body,
-        "{{\"events\":[{{\"kind\":\"maint_pull_exec\",\"payload\":{{\"source\":\"xiaojin-os\",\"device_id\":\"{XIAOJIN_DEVICE_ID}\",\"iface\":\"{}\",\"command_id\":\"",
-        PCIE_CONTROLLERS[index].name,
-    )
-    .map_err(|_| HttpError::BadBody)?;
-    if !write_json_ascii_value(&mut post_body, command_id, 96) {
+    let Some(post_body) = build_maint_pull_exec_event_body(
+        index,
+        command_id,
+        command_sha,
+        signature_sha,
+        query,
+        result_digest,
+        db_event,
+    ) else {
         return Err(HttpError::BadBody);
-    }
-    write!(post_body, "\",\"command_sha256\":\"").map_err(|_| HttpError::BadBody)?;
-    if !write_json_ascii_value(&mut post_body, command_sha, 64) {
-        return Err(HttpError::BadBody);
-    }
-    write!(post_body, "\",\"signature_sha256\":\"").map_err(|_| HttpError::BadBody)?;
-    if !write_json_ascii_value(&mut post_body, signature_sha, 64) {
-        return Err(HttpError::BadBody);
-    }
-    write!(post_body, "\",\"query\":\"").map_err(|_| HttpError::BadBody)?;
-    if !write_json_ascii_value(&mut post_body, query, 96) {
-        return Err(HttpError::BadBody);
-    }
-    write!(post_body, "\",\"result_sha256\":\"").map_err(|_| HttpError::BadBody)?;
-    write_sha256_hex(&mut post_body, result_digest);
-    write!(
-        post_body,
-        "\",\"db_seq\":{},\"db_page\":{},\"ok\":true}}}}]}}",
-        db_event.sequence, db_event.page
-    )
-    .map_err(|_| HttpError::BadBody)?;
-
-    if post_body.as_slice().len() > 1024 {
-        return Err(HttpError::BadBody);
-    }
+    };
 
     net_http_post(
         index,
@@ -16787,6 +17531,387 @@ fn post_maint_pull_exec_event(
 }
 
 #[allow(clippy::too_many_arguments)]
+fn post_maint_pull_exec_event_https(
+    index: usize,
+    host: &str,
+    port: u16,
+    event_path: &str,
+    sni: &str,
+    command_id: &[u8],
+    command_sha: &[u8],
+    signature_sha: &[u8],
+    query: &[u8],
+    result_digest: &[u8; 32],
+    db_event: DbEventPage,
+) -> Result<HttpsGetResult, TlsError> {
+    let Some(post_body) = build_maint_pull_exec_event_body(
+        index,
+        command_id,
+        command_sha,
+        signature_sha,
+        query,
+        result_digest,
+        db_event,
+    ) else {
+        return Err(TlsError::HttpsBadBody);
+    };
+
+    net_https_post(
+        index,
+        host,
+        port,
+        event_path,
+        post_body.as_slice(),
+        sni,
+        TLS_TIMEOUT_MS,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn post_maint_pull_exec_event_for_transport(
+    transport: MaintPullExecReportTransport<'_>,
+    index: usize,
+    host: &str,
+    port: u16,
+    event_path: &str,
+    command_id: &[u8],
+    command_sha: &[u8],
+    signature_sha: &[u8],
+    query: &[u8],
+    result_digest: &[u8; 32],
+    db_event: DbEventPage,
+) -> MaintPullExecEventReport {
+    match transport {
+        MaintPullExecReportTransport::Http => {
+            MaintPullExecEventReport::Http(post_maint_pull_exec_event(
+                index,
+                host,
+                port,
+                event_path,
+                command_id,
+                command_sha,
+                signature_sha,
+                query,
+                result_digest,
+                db_event,
+            ))
+        }
+        MaintPullExecReportTransport::Https {
+            sni,
+            tls_pin_sha256,
+        } => {
+            let result = post_maint_pull_exec_event_https(
+                index,
+                host,
+                port,
+                event_path,
+                sni,
+                command_id,
+                command_sha,
+                signature_sha,
+                query,
+                result_digest,
+                db_event,
+            );
+            let pin_match = result.as_ref().ok().and_then(|result| {
+                tls_pin_sha256
+                    .map(|expected| https_result_certificate_pin_matches(result, expected))
+            });
+            MaintPullExecEventReport::Https(result, pin_match)
+        }
+    }
+}
+
+fn write_maint_pull_exec_event_report<W: Write>(
+    out: &mut W,
+    report: Option<MaintPullExecEventReport>,
+) {
+    match report {
+        Some(MaintPullExecEventReport::Http(Ok(report))) => {
+            let _ = write!(
+                out,
+                " report=ok report-scheme=http report-status={} report-bytes={} report-sent={} report-src-port={}",
+                report.status_code,
+                report.response_bytes,
+                report.sent_payload_len,
+                report.tcp.src_port
+            );
+        }
+        Some(MaintPullExecEventReport::Http(Err(error))) => {
+            let _ = write!(
+                out,
+                " report=err report-scheme=http report-error={}",
+                error.as_str()
+            );
+        }
+        Some(MaintPullExecEventReport::Https(Ok(report), pin_match)) => {
+            if matches!(pin_match, Some(false)) {
+                let _ = write!(
+                    out,
+                    " report=err report-scheme=https report-error=tls-pin-mismatch"
+                );
+            } else {
+                let _ = write!(
+                    out,
+                    " report=ok report-scheme=https report-status={} report-bytes={} report-sent={} report-src-port={} report-tls-pin={}",
+                    optional_u16_dec(report.status_code),
+                    report.encrypted_response_bytes,
+                    report.encrypted_sent,
+                    report.tls.tcp.src_port,
+                    match pin_match {
+                        Some(true) => "matched",
+                        Some(false) => "mismatch",
+                        None => "unchecked",
+                    }
+                );
+            }
+        }
+        Some(MaintPullExecEventReport::Https(Err(error), _)) => {
+            let _ = write!(
+                out,
+                " report=err report-scheme=https report-error={}",
+                error.as_str()
+            );
+        }
+        None => {
+            let _ = write!(out, " report=skipped");
+        }
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn fetch_maint_ota_manifest_payload(
+    index: usize,
+    host: &str,
+    port: u16,
+    transport: MaintPullExecReportTransport<'_>,
+    path: &[u8],
+    expected_text_sha: Option<&[u8]>,
+    command_id: &[u8],
+    kind: &[u8],
+    payload_sha: &[u8],
+    command_sha: &[u8],
+    signature_sha: Option<&[u8]>,
+    signature_present: Option<&[u8]>,
+    out: &mut [u8],
+) -> Result<usize, &'static str> {
+    let path = str::from_utf8(path).map_err(|_| "manifest-path-utf8")?;
+    if !valid_maint_manifest_path(path) {
+        return Err("manifest-path-value");
+    }
+    let result = match transport {
+        MaintPullExecReportTransport::Http => {
+            net_http_get(index, host, port, path, HTTP_TIMEOUT_MS).map_err(|_| "manifest-http")?
+        }
+        MaintPullExecReportTransport::Https {
+            sni,
+            tls_pin_sha256,
+        } => {
+            let result = net_https_get(index, host, port, path, sni, TLS_TIMEOUT_MS)
+                .map_err(|_| "manifest-https")?;
+            if let Some(expected) = tls_pin_sha256 {
+                if !https_result_certificate_pin_matches(&result, expected) {
+                    return Err("manifest-tls-pin");
+                }
+            }
+            HttpGetResult {
+                tcp: result.tls.tcp,
+                status_code: result.status_code.unwrap_or(0),
+                response_bytes: result.encrypted_response_bytes,
+                payload_bytes: result.decrypted_payload_bytes,
+                segments: result.encrypted_response_segments,
+                fin: result.encrypted_response_fin,
+                truncated: result.encrypted_response_truncated,
+                sample_len: result.decrypted_sample_len,
+                sample: result.decrypted_sample,
+            }
+        }
+    };
+    if result.status_code != 200 {
+        return Err("manifest-status");
+    }
+    let Some(body_start) = find_http_body_start(&result.sample[..result.sample_len]) else {
+        return Err("manifest-no-body");
+    };
+    let body = &result.sample[body_start..result.sample_len];
+    if let Some(expected_text_sha) = expected_text_sha {
+        if !is_sha256_hex(expected_text_sha) {
+            return Err("manifest-text-sha-value");
+        }
+        let actual = sha256_digest(body);
+        if !sha256_hex_matches(&actual, expected_text_sha) {
+            return Err("manifest-text-sha-mismatch");
+        }
+    }
+    parse_maint_ota_manifest_payload_body(
+        body,
+        command_id,
+        kind,
+        payload_sha,
+        command_sha,
+        signature_sha,
+        signature_present,
+        out,
+    )
+}
+
+fn valid_maint_manifest_path(path: &str) -> bool {
+    path.starts_with("/device-pull/")
+        && path.ends_with("/ota-manifest.txt")
+        && path.len() <= 192
+        && path
+            .bytes()
+            .all(|byte| byte.is_ascii_graphic() && !matches!(byte, b'"' | b'\\'))
+}
+
+#[allow(clippy::too_many_arguments)]
+fn parse_maint_ota_manifest_payload_body(
+    body: &[u8],
+    command_id: &[u8],
+    kind: &[u8],
+    payload_sha: &[u8],
+    command_sha: &[u8],
+    signature_sha: Option<&[u8]>,
+    signature_present: Option<&[u8]>,
+    out: &mut [u8],
+) -> Result<usize, &'static str> {
+    if !body.starts_with(b"xiaojin-ota-manifest-v1\n")
+        && !body.starts_with(b"xiaojin-ota-manifest-v1\r\n")
+    {
+        return Err("manifest-format");
+    }
+    if !manifest_field_eq(body, b"device_id", XIAOJIN_DEVICE_ID.as_bytes()) {
+        return Err("manifest-device");
+    }
+    if !manifest_field_eq(body, b"board_id", XIAOJIN_BOARD_ID.as_bytes()) {
+        return Err("manifest-board");
+    }
+    if !manifest_field_eq(body, b"arch", XIAOJIN_ARCH_ID.as_bytes()) {
+        return Err("manifest-arch");
+    }
+    if !manifest_field_eq(body, b"command_id", command_id) {
+        return Err("manifest-command-id");
+    }
+    if !manifest_field_eq(body, b"command_kind", kind) {
+        return Err("manifest-kind");
+    }
+    if !manifest_field_eq(body, b"payload_sha256", payload_sha) {
+        return Err("manifest-payload-sha");
+    }
+    if !manifest_field_eq(body, b"command_sha256", command_sha) {
+        return Err("manifest-command-sha");
+    }
+    if !manifest_field_eq(body, b"signature_present", b"yes")
+        || !matches!(signature_present, Some(value) if ascii_eq(value, b"yes"))
+    {
+        return Err("manifest-signature-present");
+    }
+    let Some(expected_signature_sha) = signature_sha else {
+        return Err("manifest-signature-sha-missing");
+    };
+    if !manifest_field_eq(body, b"signature_sha256", expected_signature_sha) {
+        return Err("manifest-signature-sha");
+    }
+    let Some(slot) = find_maint_text_field(body, b"slot") else {
+        return Err("manifest-slot-missing");
+    };
+    if !matches!(slot, b"a" | b"b") {
+        return Err("manifest-slot");
+    }
+    let Some(artifact_url) = find_maint_text_field(body, b"artifact_url") else {
+        return Err("manifest-artifact-url-missing");
+    };
+    let artifact_url = manifest_ascii_field(artifact_url, MAINT_OTA_ARTIFACT_URL_BYTES)
+        .ok_or("manifest-artifact-url")?;
+    if parse_maint_artifact_url(artifact_url).is_none() {
+        return Err("manifest-artifact-url-value");
+    }
+    let Some(image_bytes) = find_maint_text_field(body, b"image_bytes") else {
+        return Err("manifest-image-bytes-missing");
+    };
+    let image_bytes = manifest_ascii_field(image_bytes, 16).ok_or("manifest-image-bytes-value")?;
+    let image_bytes_u64 = parse_u64(image_bytes).ok_or("manifest-image-bytes-parse")?;
+    if image_bytes_u64 == 0 || image_bytes_u64 > XLOAD_MAX_IMAGE_SIZE {
+        return Err("manifest-image-bytes-range");
+    }
+    let Some(image_sha256) = find_maint_text_field(body, b"image_sha256") else {
+        return Err("manifest-image-sha-missing");
+    };
+    if !is_sha256_hex(image_sha256) {
+        return Err("manifest-image-sha-value");
+    }
+    let image_sha256 = manifest_ascii_field(image_sha256, 64).ok_or("manifest-image-sha-ascii")?;
+    let Some(image_crc32) = find_maint_text_field(body, b"image_crc32") else {
+        return Err("manifest-image-crc-missing");
+    };
+    let image_crc32 = manifest_ascii_field(image_crc32, 10).ok_or("manifest-image-crc-ascii")?;
+    if parse_u64(image_crc32).is_none() {
+        return Err("manifest-image-crc-value");
+    }
+    let chunk_bytes = find_maint_text_field(body, b"chunk_bytes").and_then(|value| {
+        if ascii_eq(value, b"none") {
+            None
+        } else {
+            manifest_ascii_field(value, 8)
+        }
+    });
+    if let Some(chunk_bytes) = chunk_bytes {
+        let value = parse_u64(chunk_bytes).ok_or("manifest-chunk-parse")?;
+        if value < 128 || value > 16 * 1024 {
+            return Err("manifest-chunk-range");
+        }
+    }
+    let mut canonical = NetReplyBuf::new();
+    let chunk_ok = if let Some(chunk_bytes) = chunk_bytes {
+        write!(
+            canonical,
+            "{{\"action\":\"stage\",\"arch\":\"{XIAOJIN_ARCH_ID}\",\"artifact_url\":\"{artifact_url}\",\"board_id\":\"{XIAOJIN_BOARD_ID}\",\"chunk_bytes\":{chunk_bytes},\"device_id\":\"{XIAOJIN_DEVICE_ID}\",\"format\":\"xiaojin-ota-command-v1\",\"image_bytes\":{image_bytes},\"image_crc32\":\"{image_crc32}\",\"image_sha256\":\"{image_sha256}\",\"slot\":\"{}\"}}",
+            AsciiBytes(slot)
+        )
+        .is_ok()
+    } else {
+        write!(
+            canonical,
+            "{{\"action\":\"stage\",\"arch\":\"{XIAOJIN_ARCH_ID}\",\"artifact_url\":\"{artifact_url}\",\"board_id\":\"{XIAOJIN_BOARD_ID}\",\"device_id\":\"{XIAOJIN_DEVICE_ID}\",\"format\":\"xiaojin-ota-command-v1\",\"image_bytes\":{image_bytes},\"image_crc32\":\"{image_crc32}\",\"image_sha256\":\"{image_sha256}\",\"slot\":\"{}\"}}",
+            AsciiBytes(slot)
+        )
+        .is_ok()
+    };
+    if !chunk_ok {
+        return Err("manifest-payload-too-long");
+    }
+    let digest = sha256_digest(canonical.as_slice());
+    if !sha256_hex_matches(&digest, payload_sha) {
+        return Err("manifest-payload-sha-mismatch");
+    }
+    let len = canonical.as_slice().len();
+    if len > out.len() {
+        return Err("manifest-payload-buffer");
+    }
+    out[..len].copy_from_slice(canonical.as_slice());
+    Ok(len)
+}
+
+fn manifest_field_eq(body: &[u8], key: &[u8], expected: &[u8]) -> bool {
+    find_maint_text_field(body, key)
+        .map(|value| trim_ascii_whitespace(value) == trim_ascii_whitespace(expected))
+        .unwrap_or(false)
+}
+
+fn manifest_ascii_field(value: &[u8], max_len: usize) -> Option<&str> {
+    let value = trim_ascii_whitespace(value);
+    if value.is_empty()
+        || value.len() > max_len
+        || value
+            .iter()
+            .any(|byte| !(0x21..=0x7e).contains(byte) || matches!(*byte, b'"' | b'\\'))
+    {
+        return None;
+    }
+    str::from_utf8(value).ok()
+}
+
+#[allow(clippy::too_many_arguments)]
 fn write_maint_pull_exec_ota_stage_summary<W: Write>(
     out: &mut W,
     index: usize,
@@ -16794,6 +17919,7 @@ fn write_maint_pull_exec_ota_stage_summary<W: Write>(
     port: u16,
     poll_status: u16,
     event_path: Option<&str>,
+    report_transport: MaintPullExecReportTransport<'_>,
     hmac_key: MaintHmacKey<'_>,
     command_id: &[u8],
     kind: &[u8],
@@ -16802,6 +17928,9 @@ fn write_maint_pull_exec_ota_stage_summary<W: Write>(
     signature_algorithm: Option<&[u8]>,
     signature_sha: Option<&[u8]>,
     signature_present: Option<&[u8]>,
+    ota_manifest_present: Option<&[u8]>,
+    ota_manifest_path: Option<&[u8]>,
+    ota_manifest_sha: Option<&[u8]>,
     ota_payload_present: Option<&[u8]>,
     ota_payload_hex: Option<&[u8]>,
     ota_payload_sha: Option<&[u8]>,
@@ -16810,29 +17939,77 @@ fn write_maint_pull_exec_ota_stage_summary<W: Write>(
         let _ = write!(out, "XJQ ERR maint-pull-exec ota-bad-digest");
         return;
     }
-    if !matches!(ota_payload_present, Some(value) if ascii_eq(value, b"yes")) {
-        let _ = write!(out, "XJQ ERR maint-pull-exec ota-payload-missing");
-        return;
-    }
-    let Some(ota_payload_hex) = ota_payload_hex else {
-        let _ = write!(out, "XJQ ERR maint-pull-exec ota-missing-payload-hex");
-        return;
-    };
     let mut payload_buf = [0u8; MAINT_OTA_PAYLOAD_BYTES];
-    let Some(payload_len) = decode_hex_to_buf(ota_payload_hex, &mut payload_buf) else {
-        let _ = write!(out, "XJQ ERR maint-pull-exec ota-bad-payload-hex");
-        return;
-    };
-    let payload = &payload_buf[..payload_len];
-    if let Some(ota_payload_sha) = ota_payload_sha {
-        let ota_digest = sha256_digest(payload);
-        if !sha256_hex_matches(&ota_digest, ota_payload_sha) {
-            let _ = write!(out, "XJQ ERR maint-pull-exec ota-payload-sha-mismatch");
-            return;
+    let mut payload_len = None;
+    let mut manifest_error = None;
+    if matches!(ota_manifest_present, Some(value) if ascii_eq(value, b"yes")) {
+        if let Some(path) = ota_manifest_path {
+            match fetch_maint_ota_manifest_payload(
+                index,
+                host,
+                port,
+                report_transport,
+                path,
+                ota_manifest_sha,
+                command_id,
+                kind,
+                payload_sha,
+                command_sha,
+                signature_sha,
+                signature_present,
+                &mut payload_buf,
+            ) {
+                Ok(len) => payload_len = Some(len),
+                Err(error) => manifest_error = Some(error),
+            }
+        } else {
+            manifest_error = Some("manifest-path-missing");
         }
     }
+    if payload_len.is_none()
+        && !matches!(ota_payload_present, Some(value) if ascii_eq(value, b"yes"))
+    {
+        let _ = write!(out, "XJQ ERR maint-pull-exec ota-payload-missing");
+        if let Some(error) = manifest_error {
+            let _ = write!(out, " manifest-error={error}");
+        }
+        return;
+    }
+    if payload_len.is_none() {
+        let Some(ota_payload_hex) = ota_payload_hex else {
+            let _ = write!(out, "XJQ ERR maint-pull-exec ota-missing-payload-hex");
+            if let Some(error) = manifest_error {
+                let _ = write!(out, " manifest-error={error}");
+            }
+            return;
+        };
+        let Some(len) = decode_hex_to_buf(ota_payload_hex, &mut payload_buf) else {
+            let _ = write!(out, "XJQ ERR maint-pull-exec ota-bad-payload-hex");
+            if let Some(error) = manifest_error {
+                let _ = write!(out, " manifest-error={error}");
+            }
+            return;
+        };
+        payload_len = Some(len);
+        let payload = &payload_buf[..len];
+        if let Some(ota_payload_sha) = ota_payload_sha {
+            let ota_digest = sha256_digest(payload);
+            if !sha256_hex_matches(&ota_digest, ota_payload_sha) {
+                let _ = write!(out, "XJQ ERR maint-pull-exec ota-payload-sha-mismatch");
+                if let Some(error) = manifest_error {
+                    let _ = write!(out, " manifest-error={error}");
+                }
+                return;
+            }
+        }
+    }
+    let payload = &payload_buf[..payload_len.unwrap_or(0)];
     let Some(payload_digest) = maint_ota_stage_payload_digest(payload) else {
-        let _ = write!(out, "XJQ ERR maint-pull-exec ota-payload-invalid");
+        let _ = write!(
+            out,
+            "XJQ ERR maint-pull-exec ota-payload-invalid reason={}",
+            maint_ota_stage_payload_invalid_reason(payload)
+        );
         return;
     };
     if !sha256_hex_matches(&payload_digest, payload_sha) {
@@ -16904,15 +18081,28 @@ fn write_maint_pull_exec_ota_stage_summary<W: Write>(
         return;
     };
     let download = match plan.artifact_scheme {
-        MaintOtaArtifactScheme::Http => match net_http_download_artifact(
-            index,
-            plan.artifact_host,
-            plan.artifact_port,
-            plan.artifact_path,
-            addr,
-            plan.image_bytes,
-            HTTP_ARTIFACT_TIMEOUT_MS,
-        ) {
+        MaintOtaArtifactScheme::Http => match if plan.chunk_bytes > 0 {
+            net_http_download_artifact_chunked(
+                index,
+                plan.artifact_host,
+                plan.artifact_port,
+                plan.artifact_path,
+                addr,
+                plan.image_bytes,
+                plan.chunk_bytes,
+                HTTP_ARTIFACT_TIMEOUT_MS,
+            )
+        } else {
+            net_http_download_artifact(
+                index,
+                plan.artifact_host,
+                plan.artifact_port,
+                plan.artifact_path,
+                addr,
+                plan.image_bytes,
+                HTTP_ARTIFACT_TIMEOUT_MS,
+            )
+        } {
             Ok(download) => download,
             Err(error) => {
                 let _ = write!(
@@ -16920,15 +18110,47 @@ fn write_maint_pull_exec_ota_stage_summary<W: Write>(
                     "XJQ ERR maint-pull-exec ota-download {}",
                     error.as_str()
                 );
+                write_https_artifact_diag(out);
                 return;
             }
         },
         MaintOtaArtifactScheme::Https => {
-            let _ = write!(
-                out,
-                "XJQ ERR maint-pull-exec ota-https-artifact-streaming-not-ready"
-            );
-            return;
+            let result = if plan.chunk_bytes > 0 {
+                net_https_download_artifact_chunked(
+                    index,
+                    plan.artifact_host,
+                    plan.artifact_port,
+                    plan.artifact_path,
+                    plan.artifact_host,
+                    addr,
+                    plan.image_bytes,
+                    plan.chunk_bytes,
+                    HTTP_ARTIFACT_TIMEOUT_MS,
+                )
+            } else {
+                net_https_download_artifact(
+                    index,
+                    plan.artifact_host,
+                    plan.artifact_port,
+                    plan.artifact_path,
+                    plan.artifact_host,
+                    addr,
+                    plan.image_bytes,
+                    HTTP_ARTIFACT_TIMEOUT_MS,
+                )
+            };
+            match result {
+                Ok(download) => download,
+                Err(error) => {
+                    let _ = write!(
+                        out,
+                        "XJQ ERR maint-pull-exec ota-download-https {}",
+                        error.as_str()
+                    );
+                    write_https_artifact_diag(out);
+                    return;
+                }
+            }
         }
     };
     if download.status_code != 200 {
@@ -17044,7 +18266,8 @@ fn write_maint_pull_exec_ota_stage_summary<W: Write>(
         Ok((_info, _catalog, meta, db_event)) => {
             let result_digest = sha256_digest(event.as_slice());
             let report = event_path.map(|event_path| {
-                post_maint_pull_exec_event(
+                post_maint_pull_exec_event_for_transport(
+                    report_transport,
                     index,
                     host,
                     port,
@@ -17080,24 +18303,7 @@ fn write_maint_pull_exec_ota_stage_summary<W: Write>(
                 meta.event_count,
                 meta.next_page
             );
-            match report {
-                Some(Ok(report)) => {
-                    let _ = write!(
-                        out,
-                        " report=ok report-status={} report-bytes={} report-sent={} report-src-port={}",
-                        report.status_code,
-                        report.response_bytes,
-                        report.sent_payload_len,
-                        report.tcp.src_port
-                    );
-                }
-                Some(Err(error)) => {
-                    let _ = write!(out, " report=err report-error={}", error.as_str());
-                }
-                None => {
-                    let _ = write!(out, " report=skipped");
-                }
-            }
+            write_maint_pull_exec_event_report(out, report);
         }
         Err(error) => {
             let _ = write!(out, "XJQ ERR maint-pull-exec ota-db {}", error.as_str());
@@ -17158,6 +18364,7 @@ struct MaintOtaStagePlan<'a> {
     artifact_host: &'a str,
     artifact_port: u16,
     artifact_path: &'a str,
+    chunk_bytes: u32,
     image_bytes: u32,
     image_crc32: u32,
     image_sha256: [u8; 32],
@@ -17203,16 +18410,90 @@ fn parse_maint_ota_stage_payload(payload: &[u8]) -> Option<MaintOtaStagePlan<'_>
     let artifact_url = json_get_string(json, "artifact_url")?;
     let (artifact_scheme, artifact_host, artifact_port, artifact_path) =
         parse_maint_artifact_url(artifact_url)?;
+    let chunk_bytes = json_get_u64(json, "chunk_bytes").unwrap_or(0);
+    if chunk_bytes > 0 && (chunk_bytes < 128 || chunk_bytes > 16 * 1024) {
+        return None;
+    }
     Some(MaintOtaStagePlan {
         slot,
         artifact_scheme,
         artifact_host,
         artifact_port,
         artifact_path,
+        chunk_bytes: chunk_bytes as u32,
         image_bytes,
         image_crc32,
         image_sha256,
     })
+}
+
+fn maint_ota_stage_payload_invalid_reason(payload: &[u8]) -> &'static str {
+    let Ok(json) = str::from_utf8(payload) else {
+        return "utf8";
+    };
+    match json_get_string(json, "format") {
+        Some("xiaojin-ota-command-v1") => {}
+        Some(_) => return "format-value",
+        None => return "format-missing",
+    }
+    match json_get_string(json, "action") {
+        Some("stage") => {}
+        Some(_) => return "action-value",
+        None => return "action-missing",
+    }
+    match json_get_string(json, "device_id") {
+        Some(XIAOJIN_DEVICE_ID) => {}
+        Some(_) => return "device-id-value",
+        None => return "device-id-missing",
+    }
+    match json_get_string(json, "board_id") {
+        Some(XIAOJIN_BOARD_ID) => {}
+        Some(_) => return "board-id-value",
+        None => return "board-id-missing",
+    }
+    match json_get_string(json, "arch") {
+        Some(XIAOJIN_ARCH_ID) => {}
+        Some(_) => return "arch-value",
+        None => return "arch-missing",
+    }
+    match json_get_string(json, "slot") {
+        Some("a" | "b") => {}
+        Some(_) => return "slot-value",
+        None => return "slot-missing",
+    }
+    let Some(image_bytes) = json_get_u64(json, "image_bytes") else {
+        return "image-bytes-missing";
+    };
+    if image_bytes == 0 {
+        return "image-bytes-zero";
+    }
+    if image_bytes > XLOAD_MAX_IMAGE_SIZE {
+        return "image-bytes-too-large";
+    }
+    let Some(image_sha256) = json_get_string(json, "image_sha256") else {
+        return "image-sha256-missing";
+    };
+    if parse_sha256_hex_array(image_sha256).is_none() {
+        return "image-sha256-value";
+    }
+    let Some(image_crc32) = json_get_string(json, "image_crc32") else {
+        return "image-crc32-missing";
+    };
+    if parse_u64(image_crc32).is_none() {
+        return "image-crc32-value";
+    }
+    let Some(artifact_url) = json_get_string(json, "artifact_url") else {
+        return "artifact-url-missing";
+    };
+    if parse_maint_artifact_url(artifact_url).is_none() {
+        return "artifact-url-value";
+    }
+    if let Some(chunk_bytes) = json_get_u64(json, "chunk_bytes") {
+        if chunk_bytes > 0 && (chunk_bytes < 128 || chunk_bytes > 16 * 1024) {
+            return "chunk-bytes-value";
+        }
+    }
+    "unknown"
 }
 
 fn json_get_string<'a>(json: &'a str, key: &str) -> Option<&'a str> {
@@ -17325,6 +18606,9 @@ fn is_public_xj_query(query: &[u8]) -> bool {
         "caps",
         "identity",
         "identity facts",
+        "svc facts",
+        "service facts",
+        "service manifest",
         "net ips",
         "net ifaces",
         "net roles",
@@ -17354,6 +18638,12 @@ fn write_public_xj_query_result<W: Write>(query: &str, out: &mut W) -> bool {
     {
         let _ = write!(out, "XJQ OK ");
         write_identity_summary(out);
+    } else if query.eq_ignore_ascii_case("svc facts")
+        || query.eq_ignore_ascii_case("service facts")
+        || query.eq_ignore_ascii_case("service manifest")
+    {
+        let _ = write!(out, "XJQ OK ");
+        write_service_manifest_summary(out);
     } else if query.eq_ignore_ascii_case("net ips") {
         let _ = write!(out, "XJQ OK ");
         write_net_ips_summary(out);
@@ -17435,6 +18725,35 @@ fn write_maint_compact_field<W: Write>(out: &mut W, name: &str, body: &[u8], key
         let _ = write!(out, "?");
     }
     let _ = write!(out, " ");
+}
+
+fn write_maint_pending_query_fields<W: Write>(out: &mut W, body: &[u8]) {
+    let present = find_maint_text_field(body, b"next_pending_public_query_present")
+        .map(|value| ascii_eq_ignore_case(value, b"yes"))
+        .unwrap_or(false);
+    if !present {
+        let _ = write!(out, "public-query=absent query-len=0 query-allowed=no ");
+        return;
+    }
+    let Some(query_hex) = find_maint_text_field(body, b"next_pending_public_query_hex") else {
+        let _ = write!(out, "public-query=missing query-len=0 query-allowed=no ");
+        return;
+    };
+    let mut query_buf = [0u8; NETCONTROL_QUERY_BYTES];
+    let Some(query_len) = decode_hex_to_buf(query_hex, &mut query_buf) else {
+        let _ = write!(out, "public-query=bad-hex query-len=0 query-allowed=no ");
+        return;
+    };
+    let query_bytes = &query_buf[..query_len];
+    let allowed = is_public_xj_query(query_bytes);
+    let _ = write!(
+        out,
+        "public-query=decoded query-len={} query-allowed={} query=\"",
+        query_len,
+        yes_no(allowed)
+    );
+    write_ascii_token(out, query_bytes);
+    let _ = write!(out, "\" ");
 }
 
 fn is_public_maint_event_kind(kind: &str) -> bool {
@@ -17713,11 +19032,9 @@ fn command_net_polling(uart: &mut Uart, label: &str, duration_ms: Option<u64>) {
     let mut next_announce_elapsed = 0u64;
     let mut next_watchdog_elapsed = watchdog_ticks;
     let mut next_auto_dhcp_elapsed = auto_dhcp_retry_ticks;
-    let maint_tick_enabled = duration_ms.is_none();
+    let maint_tick_enabled = NET_MAINT_COLD_BOOT_AUTO_RUN && duration_ms.is_none();
     let mut next_maint_tick_elapsed = maint_tick_ticks;
-    let mut last_watchdog_udp_replies = 0u32;
-    let mut last_watchdog_control_replies = 0u32;
-    let mut last_watchdog_rx_packets = 0u32;
+    let mut last_watchdog_stats = [NetPollStats::empty(); RTL_DEVICE_COUNT];
     let mut rx_watchdog_refreshes = 0u32;
     let mut auto_dhcp_retries = 0u32;
 
@@ -17759,19 +19076,26 @@ fn command_net_polling(uart: &mut Uart, label: &str, duration_ms: Option<u64>) {
             rx_packets = rx_packets.wrapping_add(stats.rx_packets);
         }
         if elapsed >= next_watchdog_elapsed {
-            let no_udp_progress = udp_replies == last_watchdog_udp_replies;
-            let no_control_progress = control_replies == last_watchdog_control_replies
-                && rx_packets != last_watchdog_rx_packets;
-            if no_udp_progress || no_control_progress {
-                for index in 0..RTL_DEVICE_COUNT {
+            for index in 0..RTL_DEVICE_COUNT {
+                let stats = net_poll_stats_snapshot(index);
+                let last = last_watchdog_stats[index];
+                let rx_progress = stats.rx_packets != last.rx_packets;
+                let udp_progress = stats.udp_replies != last.udp_replies;
+                let control_progress = stats.control_replies != last.control_replies;
+                let route_or_control_ip =
+                    net_device_route_ready(index) || valid_unicast_ipv4(net_device_ip(index));
+                if rtl_device_link_up(index)
+                    && route_or_control_ip
+                    && !udp_progress
+                    && !control_progress
+                    && (rx_progress || rtl_rx_ready_count(index) == 0)
+                {
                     rtl_refresh_dma(index);
                     let _ = net_send_host_hello(index);
+                    rx_watchdog_refreshes = rx_watchdog_refreshes.wrapping_add(1);
                 }
-                rx_watchdog_refreshes = rx_watchdog_refreshes.wrapping_add(1);
+                last_watchdog_stats[index] = stats;
             }
-            last_watchdog_udp_replies = udp_replies;
-            last_watchdog_control_replies = control_replies;
-            last_watchdog_rx_packets = rx_packets;
             next_watchdog_elapsed = next_watchdog_elapsed.wrapping_add(watchdog_ticks);
         }
         if NET_AUTO_DHCP && elapsed >= next_auto_dhcp_elapsed {
@@ -19290,11 +20614,28 @@ fn ipv4_same_subnet(a: [u8; 4], b: [u8; 4], mask: [u8; 4]) -> bool {
 }
 
 fn net_resolve_mac(index: usize, target_ip: [u8; 4]) -> Option<[u8; 6]> {
+    if let Some(mac) = unsafe {
+        let entry = NET_ARP_CACHE[index];
+        if entry.valid && entry.ip == target_ip && is_likely_valid_mac(entry.mac) {
+            Some(entry.mac)
+        } else {
+            None
+        }
+    } {
+        return Some(mac);
+    }
     for _ in 0..ARP_RESOLVE_ATTEMPTS {
         if !net_send_arp_request(index, target_ip) {
             continue;
         }
         if let Some(mac) = net_wait_arp_reply(index, target_ip, ARP_RESOLVE_TIMEOUT_MS) {
+            unsafe {
+                NET_ARP_CACHE[index] = ArpCacheEntry {
+                    valid: true,
+                    ip: target_ip,
+                    mac,
+                };
+            }
             return Some(mac);
         }
     }
@@ -19447,6 +20788,18 @@ fn net_tcp_connect(
     })
 }
 
+fn net_next_tcp_client_port(index: usize) -> u16 {
+    if index >= RTL_DEVICE_COUNT {
+        return TCP_CLIENT_PORT_BASE;
+    }
+    unsafe {
+        let offset = TCP_CLIENT_PORT_OFFSETS[index] & TCP_CLIENT_PORT_MASK;
+        TCP_CLIENT_PORT_OFFSETS[index] =
+            TCP_CLIENT_PORT_OFFSETS[index].wrapping_add(1) & TCP_CLIENT_PORT_MASK;
+        TCP_CLIENT_PORT_BASE.wrapping_add(offset)
+    }
+}
+
 fn net_tcp_open(
     index: usize,
     host: &str,
@@ -19474,7 +20827,7 @@ fn net_tcp_open(
     };
 
     let ticks = read_cntpct();
-    let src_port = TCP_CLIENT_PORT_BASE.wrapping_add((ticks as u16) & 0x3fff);
+    let src_port = net_next_tcp_client_port(index);
     let seq = (ticks as u32).rotate_left(13) ^ 0x584a_5443 ^ ((index as u32) << 24);
     let src_ip = net_device_ip(index);
 
@@ -19675,6 +21028,8 @@ fn net_tls_client_hello(
     else {
         return Err(TlsError::ClientHelloTooLong);
     };
+    let client_random = tls_client_hello_random(&client_hello[..client_hello_len]);
+    let client_x25519_public = Some(x25519_public);
 
     let session = net_tcp_open(index, host, dst_port, timeout_ms).map_err(TlsError::Tcp)?;
     if !net_send_tcp_packet(
@@ -19694,7 +21049,8 @@ fn net_tls_client_hello(
     }
 
     let sent_payload_len = client_hello_len as u32;
-    let Some(response) = net_wait_http_response(index, session, sent_payload_len, timeout_ms)
+    let Some(response) =
+        net_wait_tls_handshake_response(index, session, sent_payload_len, timeout_ms)
     else {
         let _ = net_tcp_reset(index, session);
         return Err(TlsError::ResponseTimeout);
@@ -19708,6 +21064,7 @@ fn net_tls_client_hello(
     };
     let response_sample = http_response_full_sample(&response);
     let record = parse_tls_first_record(response_sample).ok_or(TlsError::MalformedRecord)?;
+    let mut server_x25519_public = None;
     let mut shared_secret_sha256 = None;
     let mut transcript_sha256 = None;
     let mut client_handshake_traffic_sha256 = None;
@@ -19725,9 +21082,11 @@ fn net_tls_client_hello(
         handshake: TlsHandshakeParseSummary::empty(),
     };
     if let Some(server_key) = record.server_x25519_key_share {
+        server_x25519_public = Some(server_key);
         let server_public = X25519PublicKey::from(server_key);
-        let shared_secret = x25519_secret.diffie_hellman(&server_public);
-        shared_secret_sha256 = Some(sha256_digest(shared_secret.as_bytes()));
+        let shared = x25519_secret.diffie_hellman(&server_public);
+        let shared_raw = *shared.as_bytes();
+        shared_secret_sha256 = Some(sha256_digest(&shared_raw));
         let mut transcript_prefix = [0u8; TLS_TRANSCRIPT_MAX_BYTES];
         if let (Some(cipher_suite), Some(transcript_len)) = (
             record.cipher_suite,
@@ -19740,7 +21099,7 @@ fn net_tls_client_hello(
             let transcript_hash = sha256_digest(&transcript_prefix[..transcript_len]);
             transcript_sha256 = Some(transcript_hash);
             if let Some(traffic) = tls13_handshake_key_schedule_fingerprints(
-                shared_secret.as_bytes(),
+                &shared_raw,
                 &transcript_hash,
                 cipher_suite,
             ) {
@@ -19781,6 +21140,9 @@ fn net_tls_client_hello(
     Ok(TlsClientHelloResult {
         tcp: session,
         sent_payload_len,
+        client_random,
+        client_x25519_public,
+        server_x25519_public,
         record_type: record.record_type,
         record_version: record.version,
         record_len: record.len,
@@ -19854,6 +21216,8 @@ fn net_tls_client_finish(
     else {
         return Err(TlsError::ClientHelloTooLong);
     };
+    let client_random = tls_client_hello_random(&client_hello[..client_hello_len]);
+    let client_x25519_public = Some(x25519_public);
 
     let session = net_tcp_open(index, host, dst_port, timeout_ms).map_err(TlsError::Tcp)?;
     if !net_send_tcp_packet(
@@ -19873,9 +21237,38 @@ fn net_tls_client_finish(
     }
 
     let client_hello_payload_len = client_hello_len as u32;
-    let Some(response) =
-        net_wait_http_response(index, session, client_hello_payload_len, timeout_ms)
-    else {
+    let hello_wait_ms = core::cmp::min(timeout_ms, TLS_CLIENT_HELLO_RETRY_TIMEOUT_MS);
+    let mut response = None;
+    for attempt in 0..TLS_CLIENT_HELLO_RETRIES {
+        if attempt > 0 {
+            busy_wait_ms(TLS_CLIENT_HELLO_RETRY_DELAY_MS);
+            if !net_send_tcp_packet(
+                index,
+                session.next_hop_mac,
+                net_device_ip(index),
+                session.dst_ip,
+                session.src_port,
+                session.dst_port,
+                session.local_seq,
+                session.remote_seq_next,
+                TCP_FLAG_ACK | TCP_FLAG_PSH,
+                &client_hello[..client_hello_len],
+            ) {
+                let _ = net_tcp_reset(index, session);
+                return Err(TlsError::ClientHelloTx);
+            }
+        }
+        response = net_wait_tls_handshake_response(
+            index,
+            session,
+            client_hello_payload_len,
+            hello_wait_ms,
+        );
+        if response.is_some() {
+            break;
+        }
+    }
+    let Some(response) = response else {
         let _ = net_tcp_reset(index, session);
         return Err(TlsError::ResponseTimeout);
     };
@@ -19888,6 +21281,7 @@ fn net_tls_client_finish(
     };
     let response_sample = http_response_full_sample(&response);
     let record = parse_tls_first_record(response_sample).ok_or(TlsError::MalformedRecord)?;
+    let mut server_x25519_public = None;
     let mut shared_secret_sha256 = None;
     let mut transcript_sha256 = None;
     let mut client_handshake_traffic_sha256 = None;
@@ -19906,9 +21300,11 @@ fn net_tls_client_finish(
         handshake: TlsHandshakeParseSummary::empty(),
     };
     if let Some(server_key) = record.server_x25519_key_share {
+        server_x25519_public = Some(server_key);
         let server_public = X25519PublicKey::from(server_key);
-        let shared_secret = x25519_secret.diffie_hellman(&server_public);
-        shared_secret_sha256 = Some(sha256_digest(shared_secret.as_bytes()));
+        let shared = x25519_secret.diffie_hellman(&server_public);
+        let shared_raw = *shared.as_bytes();
+        shared_secret_sha256 = Some(sha256_digest(&shared_raw));
         let mut transcript_prefix = [0u8; TLS_TRANSCRIPT_MAX_BYTES];
         if let (Some(cipher_suite), Some(transcript_len)) = (
             record.cipher_suite,
@@ -19921,7 +21317,7 @@ fn net_tls_client_finish(
             let transcript_hash = sha256_digest(&transcript_prefix[..transcript_len]);
             transcript_sha256 = Some(transcript_hash);
             if let Some(schedule) = tls13_handshake_key_schedule_fingerprints(
-                shared_secret.as_bytes(),
+                &shared_raw,
                 &transcript_hash,
                 cipher_suite,
             ) {
@@ -19952,6 +21348,9 @@ fn net_tls_client_finish(
     let hello = TlsClientHelloResult {
         tcp: session,
         sent_payload_len: client_hello_payload_len,
+        client_random,
+        client_x25519_public,
+        server_x25519_public,
         record_type: record.record_type,
         record_version: record.version,
         record_len: record.len,
@@ -20164,6 +21563,8 @@ fn net_https_request(
     else {
         return Err(TlsError::ClientHelloTooLong);
     };
+    let client_random = tls_client_hello_random(&client_hello[..client_hello_len]);
+    let client_x25519_public = Some(x25519_public);
 
     let session = net_tcp_open(index, host, dst_port, timeout_ms).map_err(TlsError::Tcp)?;
     if !net_send_tcp_packet(
@@ -20184,7 +21585,7 @@ fn net_https_request(
 
     let client_hello_payload_len = client_hello_len as u32;
     let Some(response) =
-        net_wait_http_response(index, session, client_hello_payload_len, timeout_ms)
+        net_wait_tls_handshake_response(index, session, client_hello_payload_len, timeout_ms)
     else {
         let _ = net_tcp_reset(index, session);
         return Err(TlsError::ResponseTimeout);
@@ -20199,6 +21600,7 @@ fn net_https_request(
     let response_sample = http_response_full_sample(&response);
     let record = parse_tls_first_record(response_sample).ok_or(TlsError::MalformedRecord)?;
 
+    let mut server_x25519_public = None;
     let mut shared_secret_sha256 = None;
     let mut shared_secret_bytes: Option<[u8; 32]> = None;
     let mut transcript_sha256 = None;
@@ -20218,10 +21620,12 @@ fn net_https_request(
         handshake: TlsHandshakeParseSummary::empty(),
     };
     if let Some(server_key) = record.server_x25519_key_share {
+        server_x25519_public = Some(server_key);
         let server_public = X25519PublicKey::from(server_key);
-        let shared_secret = x25519_secret.diffie_hellman(&server_public);
-        shared_secret_sha256 = Some(sha256_digest(shared_secret.as_bytes()));
-        shared_secret_bytes = Some(*shared_secret.as_bytes());
+        let shared = x25519_secret.diffie_hellman(&server_public);
+        let shared_raw = *shared.as_bytes();
+        shared_secret_sha256 = Some(sha256_digest(&shared_raw));
+        shared_secret_bytes = Some(shared_raw);
         let mut transcript_prefix = [0u8; TLS_TRANSCRIPT_MAX_BYTES];
         if let (Some(cipher_suite), Some(transcript_len)) = (
             record.cipher_suite,
@@ -20234,7 +21638,7 @@ fn net_https_request(
             let transcript_hash = sha256_digest(&transcript_prefix[..transcript_len]);
             transcript_sha256 = Some(transcript_hash);
             if let Some(schedule) = tls13_handshake_key_schedule_fingerprints(
-                shared_secret.as_bytes(),
+                &shared_raw,
                 &transcript_hash,
                 cipher_suite,
             ) {
@@ -20265,6 +21669,9 @@ fn net_https_request(
     let hello = TlsClientHelloResult {
         tcp: session,
         sent_payload_len: client_hello_payload_len,
+        client_random,
+        client_x25519_public,
+        server_x25519_public,
         record_type: record.record_type,
         record_version: record.version,
         record_len: record.len,
@@ -20519,6 +21926,635 @@ fn net_https_request(
     })
 }
 
+fn net_https_download_artifact(
+    index: usize,
+    host: &str,
+    dst_port: u16,
+    path: &str,
+    sni: &str,
+    addr: u64,
+    expected_size: u32,
+    timeout_ms: u64,
+) -> Result<HttpArtifactResult, TlsError> {
+    if expected_size == 0 || expected_size as u64 > XLOAD_MAX_IMAGE_SIZE {
+        return Err(TlsError::HttpsBadBody);
+    }
+    validate_xload_target(addr, expected_size as u64).map_err(|_| TlsError::HttpsBadBody)?;
+    net_https_download_artifact_unchecked_target(
+        index,
+        host,
+        dst_port,
+        path,
+        sni,
+        addr,
+        expected_size,
+        timeout_ms,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn net_https_download_artifact_unchecked_target(
+    index: usize,
+    host: &str,
+    dst_port: u16,
+    path: &str,
+    sni: &str,
+    addr: u64,
+    expected_size: u32,
+    timeout_ms: u64,
+) -> Result<HttpArtifactResult, TlsError> {
+    if expected_size == 0 || expected_size as u64 > XLOAD_MAX_IMAGE_SIZE {
+        return Err(TlsError::HttpsBadBody);
+    }
+    https_artifact_diag_reset_for_chunk_attempt(expected_size);
+    if !valid_tls_server_name(sni) {
+        return Err(TlsError::BadServerName);
+    }
+    if !path.starts_with('/')
+        || path
+            .as_bytes()
+            .iter()
+            .any(|b| *b == b' ' || *b == b'\r' || *b == b'\n')
+    {
+        return Err(TlsError::HttpsBadPath);
+    }
+
+    let x25519_secret = tls_x25519_secret();
+    let x25519_public = X25519PublicKey::from(&x25519_secret).to_bytes();
+    let mut client_hello = [0u8; TLS_CLIENT_HELLO_BYTES];
+    let Some(client_hello_len) = build_tls_client_hello(sni, &x25519_public, &mut client_hello)
+    else {
+        return Err(TlsError::ClientHelloTooLong);
+    };
+
+    let session = net_tcp_open(index, host, dst_port, timeout_ms).map_err(TlsError::Tcp)?;
+    if !net_send_tcp_packet(
+        index,
+        session.next_hop_mac,
+        net_device_ip(index),
+        session.dst_ip,
+        session.src_port,
+        session.dst_port,
+        session.local_seq,
+        session.remote_seq_next,
+        TCP_FLAG_ACK | TCP_FLAG_PSH,
+        &client_hello[..client_hello_len],
+    ) {
+        let _ = net_tcp_reset(index, session);
+        return Err(TlsError::ClientHelloTx);
+    }
+
+    let client_hello_payload_len = client_hello_len as u32;
+    let Some(response) =
+        net_wait_tls_handshake_response(index, session, client_hello_payload_len, timeout_ms)
+    else {
+        let _ = net_tcp_reset(index, session);
+        return Err(TlsError::ResponseTimeout);
+    };
+    let response = match response {
+        Ok(response) => response,
+        Err(error) => {
+            let _ = net_tcp_reset(index, session);
+            return Err(TlsError::Response(error));
+        }
+    };
+    let response_sample = http_response_full_sample(&response);
+    let record = parse_tls_first_record(response_sample).ok_or(TlsError::MalformedRecord)?;
+
+    let mut shared_secret_bytes: Option<[u8; 32]> = None;
+    let mut traffic: Option<Tls13HandshakeKeySchedule> = None;
+    let mut decrypt = TlsDecryptSummary {
+        status: TlsDecryptStatus::NotAttempted,
+        record_type: None,
+        inner_type: None,
+        handshake_type: None,
+        payload_len: None,
+        handshake: TlsHandshakeParseSummary::empty(),
+    };
+    if let Some(server_key) = record.server_x25519_key_share {
+        let server_public = X25519PublicKey::from(server_key);
+        let shared_secret = x25519_secret.diffie_hellman(&server_public);
+        shared_secret_bytes = Some(*shared_secret.as_bytes());
+        let mut transcript_prefix = [0u8; TLS_TRANSCRIPT_MAX_BYTES];
+        if let (Some(cipher_suite), Some(transcript_len)) = (
+            record.cipher_suite,
+            tls_handshake_transcript_prefix(
+                &client_hello[..client_hello_len],
+                response_sample,
+                &mut transcript_prefix,
+            ),
+        ) {
+            let transcript_hash = sha256_digest(&transcript_prefix[..transcript_len]);
+            if let Some(schedule) = tls13_handshake_key_schedule_fingerprints(
+                shared_secret.as_bytes(),
+                &transcript_hash,
+                cipher_suite,
+            ) {
+                decrypt = tls13_decrypt_first_server_handshake_record(
+                    response_sample,
+                    cipher_suite,
+                    &schedule.server_key,
+                    &schedule.server_iv,
+                    &schedule.server_secret,
+                    &schedule.client_secret,
+                    &transcript_prefix[..transcript_len],
+                );
+                traffic = Some(schedule);
+            } else {
+                decrypt.status = TlsDecryptStatus::UnsupportedCipher;
+            }
+        }
+    }
+
+    let (
+        Some(cipher_suite),
+        Some(schedule),
+        Some(client_verify_data),
+        Some(shared_secret),
+        Some(application_transcript_hash),
+    ) = (
+        record.cipher_suite,
+        traffic,
+        decrypt.handshake.client_finished_verify_data,
+        shared_secret_bytes,
+        decrypt.handshake.client_finished_transcript_sha256,
+    )
+    else {
+        let _ = net_tcp_reset(index, session);
+        return Err(TlsError::ClientFinishedNotReady);
+    };
+    if !decrypt.handshake.server_finished_verified {
+        let _ = net_tcp_reset(index, session);
+        return Err(TlsError::ClientFinishedNotReady);
+    }
+    let Some(application_schedule) =
+        tls13_application_key_schedule(&shared_secret, &application_transcript_hash, cipher_suite)
+    else {
+        let _ = net_tcp_reset(index, session);
+        return Err(TlsError::ClientFinishedNotReady);
+    };
+
+    let mut finished_record = [0u8; TLS_ENCRYPT_MAX_BYTES];
+    let Some(finished_record_len) = tls13_encrypt_client_finished_record(
+        cipher_suite,
+        &schedule.client_key,
+        &schedule.client_iv,
+        &client_verify_data,
+        &mut finished_record,
+    ) else {
+        let _ = net_tcp_reset(index, session);
+        return Err(TlsError::ClientFinishedEncrypt);
+    };
+    let finished_record_len_u32 =
+        u32::try_from(finished_record_len).map_err(|_| TlsError::ClientFinishedTooLong)?;
+    let client_finished_seq = session.local_seq.wrapping_add(client_hello_payload_len);
+    if !net_send_tcp_packet(
+        index,
+        session.next_hop_mac,
+        net_device_ip(index),
+        session.dst_ip,
+        session.src_port,
+        session.dst_port,
+        client_finished_seq,
+        response.next_remote_seq,
+        TCP_FLAG_ACK | TCP_FLAG_PSH,
+        &finished_record[..finished_record_len],
+    ) {
+        let _ = net_tcp_reset(index, session);
+        return Err(TlsError::ClientFinishedTx);
+    }
+
+    let mut request = HttpRequestBuf::new();
+    if write!(
+        request,
+        "GET {path} HTTP/1.0\r\nHost: {sni}\r\nUser-Agent: xiaojin-os/0.1\r\nConnection: close\r\n\r\n"
+    )
+    .is_err()
+    {
+        let _ = net_tcp_reset(index, session);
+        return Err(TlsError::HttpsRequestTooLong);
+    }
+
+    let mut request_record = [0u8; TLS_ENCRYPT_MAX_BYTES];
+    let Some(request_record_len) = tls13_encrypt_inner_record(
+        cipher_suite,
+        &application_schedule.client_key,
+        &application_schedule.client_iv,
+        0,
+        TLS_RECORD_APPLICATION_DATA,
+        request.as_slice(),
+        &mut request_record,
+    ) else {
+        let _ = net_tcp_reset(index, session);
+        return Err(TlsError::HttpsRequestEncrypt);
+    };
+    let request_record_len_u32 =
+        u32::try_from(request_record_len).map_err(|_| TlsError::HttpsRequestTooLong)?;
+    let request_seq = client_finished_seq.wrapping_add(finished_record_len_u32);
+    if !net_send_tcp_packet(
+        index,
+        session.next_hop_mac,
+        net_device_ip(index),
+        session.dst_ip,
+        session.src_port,
+        session.dst_port,
+        request_seq,
+        response.next_remote_seq,
+        TCP_FLAG_ACK | TCP_FLAG_PSH,
+        &request_record[..request_record_len],
+    ) {
+        let _ = net_tcp_reset(index, session);
+        return Err(TlsError::HttpsRequestTx);
+    }
+
+    let total_sent = client_hello_payload_len
+        .wrapping_add(finished_record_len_u32)
+        .wrapping_add(request_record_len_u32);
+    let Some(result) = net_wait_https_artifact_response(
+        index,
+        session,
+        total_sent,
+        response.next_remote_seq,
+        cipher_suite,
+        &application_schedule,
+        addr,
+        expected_size,
+        timeout_ms,
+    ) else {
+        let _ = net_tcp_reset(index, session);
+        return Err(TlsError::ResponseTimeout);
+    };
+    let result = match result {
+        Ok(result) => result,
+        Err(error) => {
+            let _ = net_tcp_reset(index, session);
+            return Err(error);
+        }
+    };
+    let _ = net_send_tcp_packet(
+        index,
+        session.next_hop_mac,
+        net_device_ip(index),
+        session.dst_ip,
+        session.src_port,
+        session.dst_port,
+        session.local_seq.wrapping_add(total_sent),
+        result.tcp.remote_seq_next,
+        TCP_FLAG_ACK | TCP_FLAG_RST,
+        &[],
+    );
+    Ok(result)
+}
+
+fn path_looks_http_safe(path: &str) -> bool {
+    path.starts_with('/')
+        && !path
+            .as_bytes()
+            .iter()
+            .any(|b| *b <= 0x20 || matches!(*b, b'"' | b'\\'))
+}
+
+fn build_artifact_chunk_path(base_path: &str, offset: u32, size: u32) -> Option<HttpRequestBuf> {
+    if !path_looks_http_safe(base_path) {
+        return None;
+    }
+    let mut path = HttpRequestBuf::new();
+    let separator = if base_path.as_bytes().contains(&b'?') {
+        '&'
+    } else {
+        '?'
+    };
+    if write!(path, "{base_path}{separator}offset={offset}&size={size}").is_err() {
+        return None;
+    }
+    Some(path)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn net_http_download_artifact_chunked(
+    index: usize,
+    host: &str,
+    dst_port: u16,
+    path: &str,
+    addr: u64,
+    expected_size: u32,
+    chunk_bytes: u32,
+    timeout_ms: u64,
+) -> Result<HttpArtifactResult, HttpError> {
+    if chunk_bytes == 0 || expected_size == 0 || expected_size as u64 > XLOAD_MAX_IMAGE_SIZE {
+        return Err(HttpError::BadBody);
+    }
+    validate_xload_target(addr, expected_size as u64).map_err(|_| HttpError::BadBody)?;
+    https_artifact_diag_reset_for_chunk_attempt(expected_size);
+    let chunk_timeout_ms = if timeout_ms > HTTPS_ARTIFACT_CHUNK_TIMEOUT_MS {
+        HTTPS_ARTIFACT_CHUNK_TIMEOUT_MS
+    } else {
+        timeout_ms
+    };
+    let chunks = ((expected_size as u64)
+        .saturating_add(chunk_bytes as u64)
+        .saturating_sub(1))
+        / chunk_bytes as u64;
+    let dynamic_total_timeout_ms = chunks
+        .saturating_mul(chunk_timeout_ms.saturating_add(250))
+        .saturating_add(30_000);
+    let total_timeout_ms = core::cmp::min(
+        HTTPS_ARTIFACT_CHUNKED_MAX_TOTAL_TIMEOUT_MS,
+        core::cmp::max(
+            core::cmp::max(timeout_ms, HTTPS_ARTIFACT_CHUNKED_TOTAL_TIMEOUT_MS),
+            dynamic_total_timeout_ms,
+        ),
+    );
+    let freq = read_cntfrq();
+    let Some(total_timeout_ticks) = ms_to_ticks(total_timeout_ms, freq) else {
+        return Err(HttpError::ResponseTimeout);
+    };
+    let started = read_cntpct();
+    let mut offset = 0u32;
+    let mut response_bytes = 0usize;
+    let mut segments = 0u32;
+    let mut last: Option<HttpArtifactResult> = None;
+
+    while offset < expected_size {
+        let remaining = expected_size - offset;
+        let take = core::cmp::min(chunk_bytes, remaining);
+        if read_cntpct().wrapping_sub(started) >= total_timeout_ticks {
+            https_artifact_diag_set_chunk(offset, take, 0);
+            https_artifact_diag_mark_chunk_error(
+                HttpError::ResponseTimeout.as_str(),
+                expected_size,
+            );
+            return Err(HttpError::ResponseTimeout);
+        }
+        let Some(path_buf) = build_artifact_chunk_path(path, offset, take) else {
+            return Err(HttpError::BadPath);
+        };
+        let path = core::str::from_utf8(path_buf.as_slice()).map_err(|_| HttpError::BadPath)?;
+        let chunk_addr = addr.saturating_add(offset as u64);
+        let mut attempt = 0u32;
+        loop {
+            attempt = attempt.saturating_add(1);
+            https_artifact_diag_set_chunk(offset, take, attempt);
+            if read_cntpct().wrapping_sub(started) >= total_timeout_ticks {
+                https_artifact_diag_mark_chunk_error(
+                    HttpError::ResponseTimeout.as_str(),
+                    expected_size,
+                );
+                return Err(HttpError::ResponseTimeout);
+            }
+            net_recover_https_chunk_transport(index);
+            let error = match net_http_download_artifact(
+                index,
+                host,
+                dst_port,
+                path,
+                chunk_addr,
+                take,
+                chunk_timeout_ms,
+            ) {
+                Ok(result) if result.status_code == 200 && result.body_bytes == take => {
+                    response_bytes = response_bytes.saturating_add(result.response_bytes);
+                    segments = segments.saturating_add(result.segments);
+                    last = Some(result);
+                    net_recover_https_chunk_transport(index);
+                    break;
+                }
+                Ok(result) => {
+                    https_artifact_diag_mark_chunk_error(
+                        HttpError::BadBody.as_str(),
+                        expected_size,
+                    );
+                    unsafe {
+                        LAST_HTTPS_ARTIFACT_DIAG.status_code = result.status_code;
+                        LAST_HTTPS_ARTIFACT_DIAG.received = result.body_bytes;
+                        LAST_HTTPS_ARTIFACT_DIAG.response_bytes = result.response_bytes;
+                        LAST_HTTPS_ARTIFACT_DIAG.segments = result.segments;
+                        LAST_HTTPS_ARTIFACT_DIAG.fin = result.fin;
+                        LAST_HTTPS_ARTIFACT_DIAG.next_remote_seq = result.tcp.remote_seq_next;
+                    }
+                    HttpError::BadBody
+                }
+                Err(error) => error,
+            };
+            if read_cntpct().wrapping_sub(started) >= total_timeout_ticks {
+                if https_artifact_diag_error_is_empty() {
+                    https_artifact_diag_mark_chunk_error(
+                        HttpError::ResponseTimeout.as_str(),
+                        expected_size,
+                    );
+                }
+                return Err(HttpError::ResponseTimeout);
+            }
+            if attempt >= 20 {
+                if https_artifact_diag_error_is_empty() {
+                    https_artifact_diag_mark_chunk_error(error.as_str(), expected_size);
+                }
+                return Err(error);
+            }
+            if http_error_is_transport_retryable(error) {
+                net_recover_https_chunk_transport(index);
+            } else {
+                if https_artifact_diag_error_is_empty() {
+                    https_artifact_diag_mark_chunk_error(error.as_str(), expected_size);
+                }
+                return Err(error);
+            }
+        }
+        offset = offset.saturating_add(take);
+    }
+
+    let Some(last) = last else {
+        return Err(HttpError::BadBody);
+    };
+    let sha256 = unsafe {
+        let bytes = core::slice::from_raw_parts(addr as usize as *const u8, expected_size as usize);
+        sha256_digest(bytes)
+    };
+    Ok(HttpArtifactResult {
+        tcp: last.tcp,
+        status_code: last.status_code,
+        response_bytes,
+        body_bytes: expected_size,
+        segments,
+        fin: last.fin,
+        addr,
+        crc32: crc32_memory(addr, expected_size as u64),
+        sha256,
+    })
+}
+
+#[allow(clippy::too_many_arguments)]
+fn net_https_download_artifact_chunked(
+    index: usize,
+    host: &str,
+    dst_port: u16,
+    path: &str,
+    sni: &str,
+    addr: u64,
+    expected_size: u32,
+    chunk_bytes: u32,
+    timeout_ms: u64,
+) -> Result<HttpArtifactResult, TlsError> {
+    if chunk_bytes == 0 || expected_size == 0 || expected_size as u64 > XLOAD_MAX_IMAGE_SIZE {
+        return Err(TlsError::HttpsBadBody);
+    }
+    validate_xload_target(addr, expected_size as u64).map_err(|_| TlsError::HttpsBadBody)?;
+    let chunk_timeout_ms = if timeout_ms > HTTPS_ARTIFACT_CHUNK_TIMEOUT_MS {
+        HTTPS_ARTIFACT_CHUNK_TIMEOUT_MS
+    } else {
+        timeout_ms
+    };
+    let chunks = ((expected_size as u64)
+        .saturating_add(chunk_bytes as u64)
+        .saturating_sub(1))
+        / chunk_bytes as u64;
+    let dynamic_total_timeout_ms = chunks
+        .saturating_mul(chunk_timeout_ms.saturating_add(250))
+        .saturating_add(30_000);
+    let total_timeout_ms = core::cmp::min(
+        HTTPS_ARTIFACT_CHUNKED_MAX_TOTAL_TIMEOUT_MS,
+        core::cmp::max(
+            core::cmp::max(timeout_ms, HTTPS_ARTIFACT_CHUNKED_TOTAL_TIMEOUT_MS),
+            dynamic_total_timeout_ms,
+        ),
+    );
+    let freq = read_cntfrq();
+    let Some(total_timeout_ticks) = ms_to_ticks(total_timeout_ms, freq) else {
+        https_artifact_diag_mark_chunk_error(TlsError::ResponseTimeout.as_str(), expected_size);
+        return Err(TlsError::ResponseTimeout);
+    };
+    let started = read_cntpct();
+    let mut offset = 0u32;
+    let mut response_bytes = 0usize;
+    let mut segments = 0u32;
+    let mut last: Option<HttpArtifactResult> = None;
+
+    while offset < expected_size {
+        let remaining = expected_size - offset;
+        let take = core::cmp::min(chunk_bytes, remaining);
+        if read_cntpct().wrapping_sub(started) >= total_timeout_ticks {
+            https_artifact_diag_set_chunk(offset, take, 0);
+            https_artifact_diag_mark_chunk_error(TlsError::ResponseTimeout.as_str(), expected_size);
+            return Err(TlsError::ResponseTimeout);
+        }
+        let Some(path_buf) = build_artifact_chunk_path(path, offset, take) else {
+            return Err(TlsError::HttpsBadPath);
+        };
+        let path = core::str::from_utf8(path_buf.as_slice()).map_err(|_| TlsError::HttpsBadPath)?;
+        let chunk_addr = addr.saturating_add(offset as u64);
+        let mut attempt = 0u32;
+        loop {
+            attempt = attempt.saturating_add(1);
+            https_artifact_diag_set_chunk(offset, take, attempt);
+            if read_cntpct().wrapping_sub(started) >= total_timeout_ticks {
+                https_artifact_diag_mark_chunk_error(
+                    TlsError::ResponseTimeout.as_str(),
+                    expected_size,
+                );
+                return Err(TlsError::ResponseTimeout);
+            }
+            let error = match net_https_download_artifact_unchecked_target(
+                index,
+                host,
+                dst_port,
+                path,
+                sni,
+                chunk_addr,
+                take,
+                chunk_timeout_ms,
+            ) {
+                Ok(result) if result.status_code == 200 && result.body_bytes == take => {
+                    response_bytes = response_bytes.saturating_add(result.response_bytes);
+                    segments = segments.saturating_add(result.segments);
+                    last = Some(result);
+                    break;
+                }
+                Ok(_) => TlsError::HttpsBadBody,
+                Err(error) => error,
+            };
+            if read_cntpct().wrapping_sub(started) >= total_timeout_ticks {
+                if https_artifact_diag_error_is_empty() {
+                    https_artifact_diag_mark_chunk_error(
+                        TlsError::ResponseTimeout.as_str(),
+                        expected_size,
+                    );
+                }
+                return Err(TlsError::ResponseTimeout);
+            }
+            if attempt >= 20 {
+                if https_artifact_diag_error_is_empty() {
+                    https_artifact_diag_mark_chunk_error(error.as_str(), expected_size);
+                }
+                return Err(error);
+            }
+            if tls_error_is_transport_retryable(error) {
+                net_recover_https_chunk_transport(index);
+            }
+        }
+        offset = offset.saturating_add(take);
+    }
+
+    let Some(last) = last else {
+        return Err(TlsError::HttpsBadBody);
+    };
+    let sha256 = unsafe {
+        let bytes = core::slice::from_raw_parts(addr as usize as *const u8, expected_size as usize);
+        sha256_digest(bytes)
+    };
+    Ok(HttpArtifactResult {
+        tcp: last.tcp,
+        status_code: last.status_code,
+        response_bytes,
+        body_bytes: expected_size,
+        segments,
+        fin: last.fin,
+        addr,
+        crc32: crc32_memory(addr, expected_size as u64),
+        sha256,
+    })
+}
+
+fn tls_error_is_transport_retryable(error: TlsError) -> bool {
+    match error {
+        TlsError::Tcp(error) => tcp_error_is_transport_retryable(error),
+        TlsError::ClientHelloTx
+        | TlsError::ClientFinishedTx
+        | TlsError::HttpsRequestTx
+        | TlsError::ResponseTimeout => true,
+        TlsError::Response(error) => http_error_is_transport_retryable(error),
+        _ => false,
+    }
+}
+
+fn http_error_is_transport_retryable(error: HttpError) -> bool {
+    match error {
+        HttpError::Tcp(error) => tcp_error_is_transport_retryable(error),
+        HttpError::RequestTx | HttpError::ResponseTimeout => true,
+        _ => false,
+    }
+}
+
+fn tcp_error_is_transport_retryable(error: TcpError) -> bool {
+    matches!(
+        error,
+        TcpError::ArpTimeout | TcpError::SynTx | TcpError::ResponseTimeout | TcpError::Reset
+    )
+}
+
+fn net_recover_https_chunk_transport(index: usize) {
+    if index >= RTL_DEVICE_COUNT {
+        return;
+    }
+    unsafe {
+        NET_ARP_CACHE[index] = ArpCacheEntry::empty();
+    }
+    rtl_refresh_dma(index);
+    busy_wait_ms(5);
+    let _ = net_send_gratuitous_arp(index, ARP_REQUEST);
+    let _ = net_send_gratuitous_arp(index, ARP_REPLY);
+    let _ = net_send_host_hello(index);
+}
+
 fn net_https_get(
     index: usize,
     host: &str,
@@ -20686,8 +22722,8 @@ fn build_tls_client_hello(sni: &str, x25519_public: &[u8; 32], out: &mut [u8]) -
     tls_put_u8(out, &mut offset, 0)?;
 
     tls_put_u16(out, &mut offset, 4)?;
-    tls_put_u16(out, &mut offset, 0x1303)?;
     tls_put_u16(out, &mut offset, 0x1301)?;
+    tls_put_u16(out, &mut offset, 0x1303)?;
 
     tls_put_u8(out, &mut offset, 1)?;
     tls_put_u8(out, &mut offset, 0)?;
@@ -20755,6 +22791,15 @@ fn build_tls_client_hello(sni: &str, x25519_public: &[u8; 32], out: &mut [u8]) -
     Some(offset)
 }
 
+fn tls_client_hello_random(client_record: &[u8]) -> Option<[u8; 32]> {
+    if client_record.len() < 43 || client_record.first().copied()? != TLS_RECORD_HANDSHAKE {
+        return None;
+    }
+    let mut random = [0u8; 32];
+    random.copy_from_slice(&client_record[11..43]);
+    Some(random)
+}
+
 fn tls_x25519_secret() -> X25519StaticSecret {
     let mut private = [0u8; 32];
     rng_fill(&mut private);
@@ -20791,6 +22836,29 @@ fn parse_tls_first_record(sample: &[u8]) -> Option<TlsRecordSummary> {
         }
     }
     Some(summary)
+}
+
+fn tls_sample_has_complete_first_application_record(sample: &[u8]) -> bool {
+    let mut offset = 0usize;
+    while offset.saturating_add(5) <= sample.len() {
+        let Some(record_len) = read_be16(sample, offset + 3).map(|value| value as usize) else {
+            return false;
+        };
+        let Some(record_end) = offset
+            .checked_add(5)
+            .and_then(|value| value.checked_add(record_len))
+        else {
+            return false;
+        };
+        if record_end > sample.len() {
+            return false;
+        }
+        if sample[offset] == TLS_RECORD_APPLICATION_DATA {
+            return true;
+        }
+        offset = record_end;
+    }
+    false
 }
 
 fn parse_tls_server_hello(sample: &[u8], summary: &mut TlsRecordSummary) -> Option<()> {
@@ -20873,7 +22941,10 @@ fn tls13_handshake_key_schedule_fingerprints(
 ) -> Option<Tls13HandshakeKeySchedule> {
     let zero = [0u8; 32];
     let empty_hash = sha256_digest(&[]);
-    let early_secret = hkdf_extract_sha256(&zero, &[]);
+    // TLS 1.3 represents an unavailable PSK as Hash.length zero bytes, not as
+    // a zero-length IKM. Using an empty IKM derives traffic secrets that do not
+    // match OpenSSL/rustls key logs.
+    let early_secret = hkdf_extract_sha256(&zero, &zero);
     let derived_secret = tls13_derive_secret(&early_secret, b"derived", &empty_hash);
     let handshake_secret = hkdf_extract_sha256(&derived_secret, shared_secret);
     let client_secret = tls13_derive_secret(&handshake_secret, b"c hs traffic", transcript_hash);
@@ -20910,11 +22981,12 @@ fn tls13_application_key_schedule(
 ) -> Option<Tls13ApplicationKeySchedule> {
     let zero = [0u8; 32];
     let empty_hash = sha256_digest(&[]);
-    let early_secret = hkdf_extract_sha256(&zero, &[]);
+    // TLS 1.3 represents unavailable inputs as Hash.length zero bytes.
+    let early_secret = hkdf_extract_sha256(&zero, &zero);
     let derived_secret = tls13_derive_secret(&early_secret, b"derived", &empty_hash);
     let handshake_secret = hkdf_extract_sha256(&derived_secret, shared_secret);
     let derived_master_secret = tls13_derive_secret(&handshake_secret, b"derived", &empty_hash);
-    let master_secret = hkdf_extract_sha256(&derived_master_secret, &[]);
+    let master_secret = hkdf_extract_sha256(&derived_master_secret, &zero);
     let client_secret = tls13_derive_secret(&master_secret, b"c ap traffic", transcript_hash);
     let server_secret = tls13_derive_secret(&master_secret, b"s ap traffic", transcript_hash);
     let key_len = tls13_cipher_suite_key_len(cipher_suite)?;
@@ -21018,6 +23090,11 @@ fn tls13_decrypt_first_server_handshake_record(
 
     let mut offset = 0usize;
     let mut encrypted_seq = 0u64;
+    let mut handshake_len = 0usize;
+    let mut first_record_type = None;
+    let mut first_inner_type = None;
+    let mut first_handshake_type = None;
+    let mut total_payload_len = 0usize;
     while offset.saturating_add(5) <= sample.len() {
         let record_type = sample[offset];
         let Some(record_len) = read_be16(sample, offset + 3).map(|value| value as usize) else {
@@ -21037,16 +23114,62 @@ fn tls13_decrypt_first_server_handshake_record(
         }
         let record = &sample[offset..record_end];
         if record_type == TLS_RECORD_APPLICATION_DATA {
-            return tls13_decrypt_application_record(
+            let plaintext = tls_stream_plaintext_mut();
+            let Some((inner_type, payload_len)) = tls13_decrypt_inner_record_into(
                 record,
                 encrypted_seq,
                 cipher_suite,
                 server_key,
                 server_iv,
-                server_secret,
-                client_secret,
-                transcript_prefix,
-            );
+                plaintext,
+            ) else {
+                return tls_decrypt_summary(TlsDecryptStatus::AuthFailed);
+            };
+            encrypted_seq = encrypted_seq.saturating_add(1);
+            first_record_type.get_or_insert(record_type);
+            first_inner_type.get_or_insert(inner_type);
+            if inner_type == TLS_RECORD_HANDSHAKE && payload_len > 0 {
+                first_handshake_type.get_or_insert(plaintext[0]);
+                let Some(next_len) = handshake_len.checked_add(payload_len) else {
+                    return tls_decrypt_summary(TlsDecryptStatus::TooLarge);
+                };
+                if next_len > TLS_DECRYPTED_HANDSHAKE_BYTES {
+                    return tls_decrypt_summary(TlsDecryptStatus::TooLarge);
+                }
+                if !tls_decrypted_handshake_copy(handshake_len, &plaintext[..payload_len]) {
+                    return tls_decrypt_summary(TlsDecryptStatus::TooLarge);
+                }
+                handshake_len = next_len;
+                total_payload_len = handshake_len;
+                let handshake_payload = tls_decrypted_handshake_slice(handshake_len);
+                let handshake = tls_parse_decrypted_handshake_payload(
+                    handshake_payload,
+                    server_secret,
+                    client_secret,
+                    transcript_prefix,
+                );
+                if handshake.finished {
+                    return TlsDecryptSummary {
+                        status: TlsDecryptStatus::Ok,
+                        record_type: first_record_type,
+                        inner_type: first_inner_type,
+                        handshake_type: first_handshake_type,
+                        payload_len: u16::try_from(total_payload_len).ok(),
+                        handshake,
+                    };
+                }
+            } else if inner_type == TLS_RECORD_ALERT {
+                return TlsDecryptSummary {
+                    status: TlsDecryptStatus::Ok,
+                    record_type: first_record_type,
+                    inner_type: first_inner_type,
+                    handshake_type: first_handshake_type,
+                    payload_len: u16::try_from(payload_len).ok(),
+                    handshake: TlsHandshakeParseSummary::empty(),
+                };
+            }
+            offset = record_end;
+            continue;
         }
         if record_type == TLS_RECORD_CHANGE_CIPHER_SPEC {
             offset = record_end;
@@ -21059,101 +23182,33 @@ fn tls13_decrypt_first_server_handshake_record(
         encrypted_seq = encrypted_seq.saturating_add(1);
         offset = record_end;
     }
-    tls_decrypt_summary(TlsDecryptStatus::NoEncryptedRecord)
-}
-
-fn tls13_decrypt_application_record(
-    record: &[u8],
-    sequence: u64,
-    cipher_suite: u16,
-    server_key: &[u8; 32],
-    server_iv: &[u8; 12],
-    server_secret: &[u8; 32],
-    client_secret: &[u8; 32],
-    transcript_prefix: &[u8],
-) -> TlsDecryptSummary {
-    if record.len() < 21 {
-        return tls_decrypt_summary(TlsDecryptStatus::AuthFailed);
-    }
-    let Some(encrypted_len) = read_be16(record, 3).map(|value| value as usize) else {
-        return tls_decrypt_summary(TlsDecryptStatus::AuthFailed);
-    };
-    if encrypted_len < 16 || encrypted_len + 5 > record.len() {
-        return tls_decrypt_summary(TlsDecryptStatus::AuthFailed);
-    }
-    let ciphertext_len = encrypted_len - 16;
-    if ciphertext_len > TLS_DECRYPT_MAX_BYTES {
-        return tls_decrypt_summary(TlsDecryptStatus::TooLarge);
-    }
-
-    let mut plaintext = [0u8; TLS_DECRYPT_MAX_BYTES];
-    plaintext[..ciphertext_len].copy_from_slice(&record[5..5 + ciphertext_len]);
-    let tag_bytes = &record[5 + ciphertext_len..5 + encrypted_len];
-    let nonce_bytes = tls13_record_nonce(server_iv, sequence);
-    let decrypt_ok = match cipher_suite {
-        0x1301 => tls13_aes128gcm_decrypt_in_place(
-            server_key,
-            &nonce_bytes,
-            &record[..5],
-            &mut plaintext[..ciphertext_len],
-            tag_bytes,
-        ),
-        0x1303 => tls13_chacha20poly1305_decrypt_in_place(
-            server_key,
-            &nonce_bytes,
-            &record[..5],
-            &mut plaintext[..ciphertext_len],
-            Tag::from_slice(tag_bytes),
-        ),
-        _ => return tls_decrypt_summary(TlsDecryptStatus::UnsupportedCipher),
-    };
-    if !decrypt_ok {
-        return tls_decrypt_summary(TlsDecryptStatus::AuthFailed);
-    }
-
-    let mut inner_end = ciphertext_len;
-    while inner_end > 0 && plaintext[inner_end - 1] == 0 {
-        inner_end -= 1;
-    }
-    if inner_end == 0 {
-        return tls_decrypt_summary(TlsDecryptStatus::AuthFailed);
-    }
-    let inner_type = plaintext[inner_end - 1];
-    let payload_len = inner_end - 1;
-    if payload_len > u16::MAX as usize {
-        return tls_decrypt_summary(TlsDecryptStatus::TooLarge);
-    }
-    let handshake = if inner_type == TLS_RECORD_HANDSHAKE {
-        tls_parse_decrypted_handshake_payload(
-            &plaintext[..payload_len],
+    if handshake_len > 0 {
+        let handshake_payload = tls_decrypted_handshake_slice(handshake_len);
+        let handshake = tls_parse_decrypted_handshake_payload(
+            handshake_payload,
             server_secret,
             client_secret,
             transcript_prefix,
-        )
-    } else {
-        TlsHandshakeParseSummary::empty()
-    };
-    TlsDecryptSummary {
-        status: TlsDecryptStatus::Ok,
-        record_type: Some(record[0]),
-        inner_type: Some(inner_type),
-        handshake_type: if inner_type == TLS_RECORD_HANDSHAKE && payload_len > 0 {
-            Some(plaintext[0])
-        } else {
-            None
-        },
-        payload_len: Some(payload_len as u16),
-        handshake,
+        );
+        return TlsDecryptSummary {
+            status: TlsDecryptStatus::Ok,
+            record_type: first_record_type,
+            inner_type: first_inner_type,
+            handshake_type: first_handshake_type,
+            payload_len: u16::try_from(total_payload_len).ok(),
+            handshake,
+        };
     }
+    tls_decrypt_summary(TlsDecryptStatus::NoEncryptedRecord)
 }
 
-fn tls13_decrypt_inner_record(
+fn tls13_decrypt_inner_record_into(
     record: &[u8],
     sequence: u64,
     cipher_suite: u16,
     key: &[u8; 32],
     iv: &[u8; 12],
-    plaintext: &mut [u8; TLS_DECRYPT_MAX_BYTES],
+    plaintext: &mut [u8],
 ) -> Option<(u8, usize)> {
     if record.len() < 21 || record[0] != TLS_RECORD_APPLICATION_DATA {
         return None;
@@ -21221,7 +23276,6 @@ fn tls13_decrypt_application_data_sample(
     };
     let mut offset = 0usize;
     let mut sequence = 0u64;
-    let mut plaintext = [0u8; TLS_DECRYPT_MAX_BYTES];
     while offset.saturating_add(5) <= sample.len() {
         let record_type = sample[offset];
         let record_len = read_be16(sample, offset + 3)? as usize;
@@ -21232,13 +23286,14 @@ fn tls13_decrypt_application_data_sample(
         let record = &sample[offset..record_end];
         match record_type {
             TLS_RECORD_APPLICATION_DATA => {
-                let (inner_type, payload_len) = tls13_decrypt_inner_record(
+                let plaintext = tls_stream_plaintext_mut();
+                let (inner_type, payload_len) = tls13_decrypt_inner_record_into(
                     record,
                     sequence,
                     cipher_suite,
                     server_key,
                     server_iv,
-                    &mut plaintext,
+                    plaintext,
                 )?;
                 sequence = sequence.saturating_add(1);
                 summary.records = summary.records.saturating_add(1);
@@ -21495,10 +23550,10 @@ fn tls_verify_server_finished(
     else {
         return;
     };
-    if transcript_len > TLS_TRANSCRIPT_MAX_BYTES {
+    let transcript = tls_handshake_transcript_mut();
+    if transcript_len > transcript.len() {
         return;
     }
-    let mut transcript = [0u8; TLS_TRANSCRIPT_MAX_BYTES];
     transcript[..transcript_prefix.len()].copy_from_slice(transcript_prefix);
     transcript[transcript_prefix.len()..transcript_len].copy_from_slice(decrypted_before_finished);
     let transcript_hash = sha256_digest(&transcript[..transcript_len]);
@@ -21514,7 +23569,7 @@ fn tls_verify_server_finished(
     else {
         return;
     };
-    if client_transcript_len > TLS_TRANSCRIPT_MAX_BYTES || verify_data.len() > 0x00ff_ffff {
+    if client_transcript_len > transcript.len() || verify_data.len() > 0x00ff_ffff {
         return;
     }
     transcript[transcript_len] = TLS_HANDSHAKE_FINISHED;
@@ -21815,6 +23870,18 @@ struct HttpResponseAccum {
 #[repr(align(64))]
 struct TlsResponseScratch([u8; TLS_RESPONSE_SCRATCH_BYTES]);
 
+#[repr(align(64))]
+struct TlsStreamRecordScratch([u8; TLS_STREAM_RECORD_BYTES]);
+
+#[repr(align(64))]
+struct TlsStreamPlaintextScratch([u8; TLS_STREAM_PLAINTEXT_BYTES]);
+
+#[repr(align(64))]
+struct TlsDecryptedHandshakeScratch([u8; TLS_DECRYPTED_HANDSHAKE_BYTES]);
+
+#[repr(align(64))]
+struct TlsHandshakeTranscriptScratch([u8; TLS_HANDSHAKE_TRANSCRIPT_BYTES]);
+
 fn net_wait_http_response(
     index: usize,
     session: TcpSession,
@@ -21837,9 +23904,46 @@ fn net_wait_tcp_response_from(
     initial_remote_seq: u32,
     timeout_ms: u64,
 ) -> Option<Result<HttpResponseAccum, HttpError>> {
+    net_wait_tcp_response_from_mode(
+        index,
+        session,
+        sent_payload_len,
+        initial_remote_seq,
+        timeout_ms,
+        HTTP_IDLE_TIMEOUT_MS,
+        false,
+    )
+}
+
+fn net_wait_tls_handshake_response(
+    index: usize,
+    session: TcpSession,
+    sent_payload_len: u32,
+    timeout_ms: u64,
+) -> Option<Result<HttpResponseAccum, HttpError>> {
+    net_wait_tcp_response_from_mode(
+        index,
+        session,
+        sent_payload_len,
+        session.remote_seq_next,
+        timeout_ms,
+        TLS_HANDSHAKE_IDLE_TIMEOUT_MS,
+        true,
+    )
+}
+
+fn net_wait_tcp_response_from_mode(
+    index: usize,
+    session: TcpSession,
+    sent_payload_len: u32,
+    initial_remote_seq: u32,
+    timeout_ms: u64,
+    idle_timeout_ms: u64,
+    require_tls_first_app_record: bool,
+) -> Option<Result<HttpResponseAccum, HttpError>> {
     let freq = read_cntfrq();
     let timeout_ticks = ms_to_ticks(timeout_ms, freq)?;
-    let idle_ticks = ms_to_ticks(HTTP_IDLE_TIMEOUT_MS, freq)?;
+    let idle_ticks = ms_to_ticks(idle_timeout_ms, freq)?;
     let start = read_cntpct();
     let mut last_progress = start;
     let local_seq = session.local_seq.wrapping_add(sent_payload_len);
@@ -21864,6 +23968,18 @@ fn net_wait_tcp_response_from(
             };
             if segment.payload_bytes > 0 {
                 if segment.remote_seq != response.next_remote_seq {
+                    let _ = net_send_tcp_packet(
+                        index,
+                        session.next_hop_mac,
+                        net_device_ip(index),
+                        session.dst_ip,
+                        session.src_port,
+                        session.dst_port,
+                        local_seq,
+                        response.next_remote_seq,
+                        TCP_FLAG_ACK,
+                        &[],
+                    );
                     continue;
                 }
                 let remaining = HTTP_RESPONSE_MAX_BYTES.saturating_sub(response.payload_bytes);
@@ -21941,6 +24057,18 @@ fn net_wait_tcp_response_from(
                 && segment.flags & TCP_FLAG_FIN != 0
                 && segment.remote_seq != response.next_remote_seq
             {
+                let _ = net_send_tcp_packet(
+                    index,
+                    session.next_hop_mac,
+                    net_device_ip(index),
+                    session.dst_ip,
+                    session.src_port,
+                    session.dst_port,
+                    local_seq,
+                    response.next_remote_seq,
+                    TCP_FLAG_ACK,
+                    &[],
+                );
                 continue;
             }
 
@@ -21969,7 +24097,13 @@ fn net_wait_tcp_response_from(
             }
             return None;
         }
-        if response.payload_bytes > 0 && now.wrapping_sub(last_progress) >= idle_ticks {
+        if response.payload_bytes > 0
+            && now.wrapping_sub(last_progress) >= idle_ticks
+            && (!require_tls_first_app_record
+                || tls_sample_has_complete_first_application_record(http_response_full_sample(
+                    &response,
+                )))
+        {
             return Some(Ok(response));
         }
         core::hint::spin_loop();
@@ -22080,7 +24214,7 @@ fn net_wait_http_artifact_response(
 ) -> Option<Result<HttpArtifactResult, HttpError>> {
     let freq = read_cntfrq();
     let timeout_ticks = ms_to_ticks(timeout_ms, freq)?;
-    let idle_ticks = ms_to_ticks(HTTP_IDLE_TIMEOUT_MS, freq)?;
+    let idle_ticks = ms_to_ticks(HTTP_ARTIFACT_IDLE_TIMEOUT_MS, freq)?;
     let start = read_cntpct();
     let mut last_progress = start;
     let local_seq = session.local_seq.wrapping_add(sent_payload_len);
@@ -22102,6 +24236,18 @@ fn net_wait_http_artifact_response(
             };
             if segment.payload_bytes > 0 {
                 if segment.remote_seq != next_remote_seq {
+                    let _ = net_send_tcp_packet(
+                        index,
+                        session.next_hop_mac,
+                        net_device_ip(index),
+                        session.dst_ip,
+                        session.src_port,
+                        session.dst_port,
+                        local_seq,
+                        next_remote_seq,
+                        TCP_FLAG_ACK,
+                        &[],
+                    );
                     continue;
                 }
                 let payload_len = segment.payload_bytes.min(segment.sample_len);
@@ -22172,6 +24318,18 @@ fn net_wait_http_artifact_response(
                 && segment.flags & TCP_FLAG_FIN != 0
                 && segment.remote_seq != next_remote_seq
             {
+                let _ = net_send_tcp_packet(
+                    index,
+                    session.next_hop_mac,
+                    net_device_ip(index),
+                    session.dst_ip,
+                    session.src_port,
+                    session.dst_port,
+                    local_seq,
+                    next_remote_seq,
+                    TCP_FLAG_ACK,
+                    &[],
+                );
                 continue;
             }
 
@@ -22271,6 +24429,586 @@ fn net_wait_http_artifact_response(
         }
         core::hint::spin_loop();
     }
+}
+
+struct HttpsArtifactResponseState {
+    next_remote_seq: u32,
+    response_bytes: usize,
+    encrypted_payload_bytes: usize,
+    segments: u32,
+    records: u32,
+    server_sequence: u64,
+    header: [u8; HTTP_RESPONSE_SAMPLE_BYTES],
+    header_len: usize,
+    header_done: bool,
+    status_code: u16,
+    received: u32,
+    fin: bool,
+}
+
+impl HttpsArtifactResponseState {
+    fn new(next_remote_seq: u32) -> Self {
+        Self {
+            next_remote_seq,
+            response_bytes: 0,
+            encrypted_payload_bytes: 0,
+            segments: 0,
+            records: 0,
+            server_sequence: 0,
+            header: [0; HTTP_RESPONSE_SAMPLE_BYTES],
+            header_len: 0,
+            header_done: false,
+            status_code: 0,
+            received: 0,
+            fin: false,
+        }
+    }
+}
+
+fn https_artifact_diag_store(
+    error: &'static str,
+    expected_size: u32,
+    state: &HttpsArtifactResponseState,
+    record_len: usize,
+    record_expected: usize,
+) {
+    unsafe {
+        let previous = LAST_HTTPS_ARTIFACT_DIAG;
+        LAST_HTTPS_ARTIFACT_DIAG = HttpsArtifactDiag {
+            error,
+            chunk_offset: previous.chunk_offset,
+            chunk_size: previous.chunk_size,
+            chunk_attempt: previous.chunk_attempt,
+            expected_size,
+            received: state.received,
+            status_code: state.status_code,
+            response_bytes: state.response_bytes,
+            encrypted_payload_bytes: state.encrypted_payload_bytes,
+            segments: state.segments,
+            records: state.records,
+            server_sequence: state.server_sequence,
+            next_remote_seq: state.next_remote_seq,
+            record_len,
+            record_expected,
+            header_done: state.header_done,
+            fin: state.fin,
+        };
+    }
+}
+
+fn write_https_artifact_diag<W: Write>(out: &mut W) {
+    let diag = unsafe { LAST_HTTPS_ARTIFACT_DIAG };
+    if diag.error.is_empty() && diag.expected_size == 0 {
+        return;
+    }
+    let _ = write!(
+        out,
+        " diag-error={} diag-chunk-offset={} diag-chunk-size={} diag-chunk-attempt={} diag-status={} diag-received={} diag-expected={} diag-response-bytes={} diag-encrypted-payload={} diag-segments={} diag-records={} diag-server-seq={} diag-next-seq=0x{:08x} diag-record-len={} diag-record-expected={} diag-header-done={} diag-fin={}",
+        diag.error,
+        diag.chunk_offset,
+        diag.chunk_size,
+        diag.chunk_attempt,
+        diag.status_code,
+        diag.received,
+        diag.expected_size,
+        diag.response_bytes,
+        diag.encrypted_payload_bytes,
+        diag.segments,
+        diag.records,
+        diag.server_sequence,
+        diag.next_remote_seq,
+        diag.record_len,
+        diag.record_expected,
+        yes_no(diag.header_done),
+        yes_no(diag.fin),
+    );
+}
+
+fn net_wait_https_artifact_response(
+    index: usize,
+    session: TcpSession,
+    sent_payload_len: u32,
+    initial_remote_seq: u32,
+    cipher_suite: u16,
+    app_schedule: &Tls13ApplicationKeySchedule,
+    addr: u64,
+    expected_size: u32,
+    timeout_ms: u64,
+) -> Option<Result<HttpArtifactResult, TlsError>> {
+    let freq = read_cntfrq();
+    let timeout_ticks = ms_to_ticks(timeout_ms, freq)?;
+    let idle_ticks = ms_to_ticks(HTTP_ARTIFACT_IDLE_TIMEOUT_MS, freq)?;
+    let start = read_cntpct();
+    let mut last_progress = start;
+    let local_seq = session.local_seq.wrapping_add(sent_payload_len);
+    let mut state = HttpsArtifactResponseState::new(initial_remote_seq);
+    let mut record_len = 0usize;
+    let mut record_expected = 0usize;
+    https_artifact_diag_store("", expected_size, &state, record_len, record_expected);
+
+    loop {
+        if let Some(segment) = net_poll_tcp_payload(index, session, sent_payload_len) {
+            let segment = match segment {
+                Ok(segment) => segment,
+                Err(error) => return Some(Err(TlsError::Response(error))),
+            };
+            if segment.payload_bytes > 0 {
+                if segment.remote_seq != state.next_remote_seq {
+                    let _ = net_send_tcp_packet(
+                        index,
+                        session.next_hop_mac,
+                        net_device_ip(index),
+                        session.dst_ip,
+                        session.src_port,
+                        session.dst_port,
+                        local_seq,
+                        state.next_remote_seq,
+                        TCP_FLAG_ACK,
+                        &[],
+                    );
+                    continue;
+                }
+                if segment.payload_bytes > segment.sample_len {
+                    https_artifact_diag_store(
+                        TlsError::HttpsArtifactSegmentSampleOverflow.as_str(),
+                        expected_size,
+                        &state,
+                        record_len,
+                        record_expected,
+                    );
+                    return Some(Err(TlsError::HttpsArtifactSegmentSampleOverflow));
+                }
+                let payload = &segment.sample[..segment.payload_bytes];
+                state.response_bytes = state.response_bytes.saturating_add(segment.response_bytes);
+                state.encrypted_payload_bytes = state
+                    .encrypted_payload_bytes
+                    .saturating_add(segment.payload_bytes);
+                state.segments = state.segments.saturating_add(1);
+
+                if !tls_stream_record_append(&mut record_len, &mut record_expected, payload) {
+                    https_artifact_diag_store(
+                        TlsError::HttpsArtifactRecordAppend.as_str(),
+                        expected_size,
+                        &state,
+                        record_len,
+                        record_expected,
+                    );
+                    return Some(Err(TlsError::HttpsArtifactRecordAppend));
+                }
+
+                state.next_remote_seq = state
+                    .next_remote_seq
+                    .wrapping_add(segment.payload_bytes as u32);
+                last_progress = read_cntpct();
+                https_artifact_diag_store("", expected_size, &state, record_len, record_expected);
+                let _ = net_send_tcp_packet(
+                    index,
+                    session.next_hop_mac,
+                    net_device_ip(index),
+                    session.dst_ip,
+                    session.src_port,
+                    session.dst_port,
+                    local_seq,
+                    state.next_remote_seq,
+                    TCP_FLAG_ACK,
+                    &[],
+                );
+
+                loop {
+                    if record_expected == 0 || record_len < record_expected {
+                        break;
+                    }
+                    let record = tls_stream_record_slice(record_expected);
+                    match record.first().copied() {
+                        Some(TLS_RECORD_APPLICATION_DATA) => {
+                            let plaintext = tls_stream_plaintext_mut();
+                            let Some((inner_type, payload_len)) = tls13_decrypt_inner_record_into(
+                                record,
+                                state.server_sequence,
+                                cipher_suite,
+                                &app_schedule.server_key,
+                                &app_schedule.server_iv,
+                                plaintext,
+                            ) else {
+                                https_artifact_diag_store(
+                                    TlsError::HttpsArtifactDecrypt.as_str(),
+                                    expected_size,
+                                    &state,
+                                    record_len,
+                                    record_expected,
+                                );
+                                return Some(Err(TlsError::HttpsArtifactDecrypt));
+                            };
+                            state.server_sequence = state.server_sequence.saturating_add(1);
+                            state.records = state.records.saturating_add(1);
+                            match inner_type {
+                                TLS_RECORD_APPLICATION_DATA => {
+                                    let plaintext = &plaintext[..payload_len];
+                                    if https_artifact_process_plaintext(
+                                        addr,
+                                        expected_size,
+                                        &mut state,
+                                        plaintext,
+                                    )
+                                    .is_err()
+                                    {
+                                        https_artifact_diag_store(
+                                            TlsError::HttpsArtifactBody.as_str(),
+                                            expected_size,
+                                            &state,
+                                            record_len,
+                                            record_expected,
+                                        );
+                                        return Some(Err(TlsError::HttpsArtifactBody));
+                                    }
+                                    https_artifact_diag_store(
+                                        "",
+                                        expected_size,
+                                        &state,
+                                        record_len,
+                                        record_expected,
+                                    );
+                                    if state.header_done && state.received == expected_size {
+                                        return Some(Ok(https_artifact_finish(
+                                            session,
+                                            state,
+                                            addr,
+                                            expected_size,
+                                        )));
+                                    }
+                                }
+                                TLS_RECORD_HANDSHAKE => {}
+                                TLS_RECORD_ALERT => {
+                                    if state.header_done && state.received == expected_size {
+                                        return Some(Ok(https_artifact_finish(
+                                            session,
+                                            state,
+                                            addr,
+                                            expected_size,
+                                        )));
+                                    }
+                                    https_artifact_diag_store(
+                                        TlsError::HttpsArtifactAlert.as_str(),
+                                        expected_size,
+                                        &state,
+                                        record_len,
+                                        record_expected,
+                                    );
+                                    return Some(Err(TlsError::HttpsArtifactAlert));
+                                }
+                                _ => {}
+                            }
+                        }
+                        Some(TLS_RECORD_CHANGE_CIPHER_SPEC) | Some(TLS_RECORD_HANDSHAKE) => {}
+                        Some(TLS_RECORD_ALERT) => {
+                            if state.header_done && state.received == expected_size {
+                                return Some(Ok(https_artifact_finish(
+                                    session,
+                                    state,
+                                    addr,
+                                    expected_size,
+                                )));
+                            }
+                            https_artifact_diag_store(
+                                TlsError::HttpsArtifactAlert.as_str(),
+                                expected_size,
+                                &state,
+                                record_len,
+                                record_expected,
+                            );
+                            return Some(Err(TlsError::HttpsArtifactAlert));
+                        }
+                        _ => return Some(Err(TlsError::MalformedRecord)),
+                    }
+                    tls_stream_record_consume(
+                        record_expected,
+                        &mut record_len,
+                        &mut record_expected,
+                    );
+                    https_artifact_diag_store(
+                        "",
+                        expected_size,
+                        &state,
+                        record_len,
+                        record_expected,
+                    );
+                }
+
+                if state.header_done && state.received == expected_size {
+                    return Some(Ok(https_artifact_finish(
+                        session,
+                        state,
+                        addr,
+                        expected_size,
+                    )));
+                }
+            }
+
+            if segment.payload_bytes == 0
+                && segment.flags & TCP_FLAG_FIN != 0
+                && segment.remote_seq != state.next_remote_seq
+            {
+                let _ = net_send_tcp_packet(
+                    index,
+                    session.next_hop_mac,
+                    net_device_ip(index),
+                    session.dst_ip,
+                    session.src_port,
+                    session.dst_port,
+                    local_seq,
+                    state.next_remote_seq,
+                    TCP_FLAG_ACK,
+                    &[],
+                );
+                continue;
+            }
+
+            if segment.flags & TCP_FLAG_FIN != 0 {
+                state.next_remote_seq = state.next_remote_seq.wrapping_add(1);
+                state.fin = true;
+                let _ = net_send_tcp_packet(
+                    index,
+                    session.next_hop_mac,
+                    net_device_ip(index),
+                    session.dst_ip,
+                    session.src_port,
+                    session.dst_port,
+                    local_seq,
+                    state.next_remote_seq,
+                    TCP_FLAG_ACK,
+                    &[],
+                );
+                if state.header_done && state.received == expected_size {
+                    return Some(Ok(https_artifact_finish(
+                        session,
+                        state,
+                        addr,
+                        expected_size,
+                    )));
+                }
+                https_artifact_diag_store(
+                    TlsError::HttpsArtifactFinIncomplete.as_str(),
+                    expected_size,
+                    &state,
+                    record_len,
+                    record_expected,
+                );
+                return Some(Err(TlsError::HttpsArtifactFinIncomplete));
+            }
+        }
+        let now = read_cntpct();
+        if now.wrapping_sub(start) >= timeout_ticks {
+            if state.header_done && state.received == expected_size {
+                return Some(Ok(https_artifact_finish(
+                    session,
+                    state,
+                    addr,
+                    expected_size,
+                )));
+            }
+            https_artifact_diag_store(
+                TlsError::ResponseTimeout.as_str(),
+                expected_size,
+                &state,
+                record_len,
+                record_expected,
+            );
+            return None;
+        }
+        if state.received > 0 && now.wrapping_sub(last_progress) >= idle_ticks {
+            if state.header_done && state.received == expected_size {
+                return Some(Ok(https_artifact_finish(
+                    session,
+                    state,
+                    addr,
+                    expected_size,
+                )));
+            }
+            https_artifact_diag_store(
+                TlsError::HttpsArtifactIdleIncomplete.as_str(),
+                expected_size,
+                &state,
+                record_len,
+                record_expected,
+            );
+            return Some(Err(TlsError::HttpsArtifactIdleIncomplete));
+        }
+        core::hint::spin_loop();
+    }
+}
+
+fn https_artifact_process_plaintext(
+    addr: u64,
+    expected_size: u32,
+    state: &mut HttpsArtifactResponseState,
+    payload: &[u8],
+) -> Result<(), HttpError> {
+    if payload.is_empty() {
+        return Ok(());
+    }
+    if state.header_done {
+        if artifact_copy_chunk(addr, expected_size, &mut state.received, payload) {
+            return Ok(());
+        }
+        return Err(HttpError::MalformedResponse);
+    }
+
+    let remaining = state.header.len().saturating_sub(state.header_len);
+    let copy_len = core::cmp::min(remaining, payload.len());
+    if copy_len > 0 {
+        state.header[state.header_len..state.header_len + copy_len]
+            .copy_from_slice(&payload[..copy_len]);
+        state.header_len += copy_len;
+    }
+    if let Some(body_start) = find_http_body_start(&state.header[..state.header_len]) {
+        state.status_code = parse_http_status_code(&state.header[..state.header_len]).unwrap_or(0);
+        state.header_done = true;
+        let body = &state.header[body_start..state.header_len];
+        if !artifact_copy_chunk(addr, expected_size, &mut state.received, body) {
+            return Err(HttpError::MalformedResponse);
+        }
+        if payload.len() > copy_len
+            && !artifact_copy_chunk(
+                addr,
+                expected_size,
+                &mut state.received,
+                &payload[copy_len..],
+            )
+        {
+            return Err(HttpError::MalformedResponse);
+        }
+        return Ok(());
+    }
+    if copy_len < payload.len() {
+        return Err(HttpError::MalformedResponse);
+    }
+    Ok(())
+}
+
+fn https_artifact_finish(
+    session: TcpSession,
+    state: HttpsArtifactResponseState,
+    addr: u64,
+    expected_size: u32,
+) -> HttpArtifactResult {
+    let sha256 = unsafe {
+        let bytes = core::slice::from_raw_parts(addr as usize as *const u8, expected_size as usize);
+        sha256_digest(bytes)
+    };
+    HttpArtifactResult {
+        tcp: TcpSession {
+            remote_seq_next: state.next_remote_seq,
+            ..session
+        },
+        status_code: state.status_code,
+        response_bytes: state.response_bytes,
+        body_bytes: state.received,
+        segments: state.segments,
+        fin: state.fin,
+        addr,
+        crc32: crc32_memory(addr, expected_size as u64),
+        sha256,
+    }
+}
+
+fn tls_stream_record_append(
+    record_len: &mut usize,
+    record_expected: &mut usize,
+    payload: &[u8],
+) -> bool {
+    if payload.len() > TLS_STREAM_RECORD_BYTES.saturating_sub(*record_len) {
+        return false;
+    }
+    unsafe {
+        let dst = core::ptr::addr_of_mut!(TLS_STREAM_RECORD_SCRATCH.0) as *mut u8;
+        core::ptr::copy_nonoverlapping(payload.as_ptr(), dst.add(*record_len), payload.len());
+    }
+    *record_len += payload.len();
+    tls_stream_record_refresh_expected(*record_len, record_expected)
+}
+
+fn tls_stream_record_refresh_expected(record_len: usize, record_expected: &mut usize) -> bool {
+    if *record_expected != 0 || record_len < 5 {
+        return true;
+    }
+    let header = tls_stream_record_slice(5);
+    let Some(len) = read_be16(header, 3).map(|value| value as usize) else {
+        return false;
+    };
+    let Some(expected) = len.checked_add(5) else {
+        return false;
+    };
+    if expected > TLS_STREAM_RECORD_BYTES {
+        return false;
+    }
+    *record_expected = expected;
+    true
+}
+
+fn tls_stream_record_slice(len: usize) -> &'static [u8] {
+    unsafe {
+        core::slice::from_raw_parts(
+            core::ptr::addr_of!(TLS_STREAM_RECORD_SCRATCH.0) as *const u8,
+            len,
+        )
+    }
+}
+
+fn tls_stream_plaintext_mut() -> &'static mut [u8] {
+    unsafe {
+        core::slice::from_raw_parts_mut(
+            core::ptr::addr_of_mut!(TLS_STREAM_PLAINTEXT_SCRATCH.0) as *mut u8,
+            TLS_STREAM_PLAINTEXT_BYTES,
+        )
+    }
+}
+
+fn tls_decrypted_handshake_copy(offset: usize, payload: &[u8]) -> bool {
+    let Some(end) = offset.checked_add(payload.len()) else {
+        return false;
+    };
+    if end > TLS_DECRYPTED_HANDSHAKE_BYTES {
+        return false;
+    }
+    unsafe {
+        let dst = core::ptr::addr_of_mut!(TLS_DECRYPTED_HANDSHAKE_SCRATCH.0) as *mut u8;
+        core::ptr::copy_nonoverlapping(payload.as_ptr(), dst.add(offset), payload.len());
+    }
+    true
+}
+
+fn tls_decrypted_handshake_slice(len: usize) -> &'static [u8] {
+    unsafe {
+        core::slice::from_raw_parts(
+            core::ptr::addr_of!(TLS_DECRYPTED_HANDSHAKE_SCRATCH.0) as *const u8,
+            len,
+        )
+    }
+}
+
+fn tls_handshake_transcript_mut() -> &'static mut [u8] {
+    unsafe {
+        core::slice::from_raw_parts_mut(
+            core::ptr::addr_of_mut!(TLS_HANDSHAKE_TRANSCRIPT_SCRATCH.0) as *mut u8,
+            TLS_HANDSHAKE_TRANSCRIPT_BYTES,
+        )
+    }
+}
+
+fn tls_stream_record_consume(consumed: usize, record_len: &mut usize, record_expected: &mut usize) {
+    if consumed >= *record_len {
+        *record_len = 0;
+        *record_expected = 0;
+        return;
+    }
+    let remaining = *record_len - consumed;
+    unsafe {
+        let base = core::ptr::addr_of_mut!(TLS_STREAM_RECORD_SCRATCH.0) as *mut u8;
+        core::ptr::copy(base.add(consumed), base, remaining);
+    }
+    *record_len = remaining;
+    *record_expected = 0;
+    let _ = tls_stream_record_refresh_expected(*record_len, record_expected);
 }
 
 fn artifact_copy_chunk(addr: u64, expected_size: u32, received: &mut u32, chunk: &[u8]) -> bool {
@@ -22426,8 +25164,9 @@ fn net_parse_tcp_payload(
     if parsed.flags & TCP_FLAG_RST != 0 {
         return Some(Err(HttpError::Tcp(TcpError::Reset)));
     }
-    let expected_ack = session.local_seq.wrapping_add(sent_payload_len);
-    if parsed.ack != expected_ack || (parsed.payload.is_empty() && parsed.flags & TCP_FLAG_FIN == 0)
+    let ack_delta = parsed.ack.wrapping_sub(session.local_seq);
+    if ack_delta > sent_payload_len
+        || (parsed.payload.is_empty() && parsed.flags & TCP_FLAG_FIN == 0)
     {
         return None;
     }
@@ -23367,6 +26106,12 @@ fn net_handle_query_packet(
             {
                 let _ = write!(reply, "XJQ OK ");
                 write_identity_summary(&mut reply);
+            } else if query.eq_ignore_ascii_case("svc facts")
+                || query.eq_ignore_ascii_case("service facts")
+                || query.eq_ignore_ascii_case("service manifest")
+            {
+                let _ = write!(reply, "XJQ OK ");
+                write_service_manifest_summary(&mut reply);
             } else if query.eq_ignore_ascii_case("rng status") {
                 let _ = write!(reply, "XJQ OK ");
                 write_rng_status_summary(&mut reply);
@@ -23420,6 +26165,8 @@ fn net_handle_query_packet(
                 write_net_https_post_query_summary(index, query, &mut reply);
             } else if query.starts_with("net https ") || query.starts_with("net https-get ") {
                 write_net_https_query_summary(index, query, &mut reply);
+            } else if query.starts_with("net tls-digest ") {
+                write_net_tls_digest_query_summary(index, query, &mut reply);
             } else if query.starts_with("net tls-finish ") {
                 write_net_tls_finish_query_summary(index, query, &mut reply);
             } else if query.starts_with("net tls-pin ") {
@@ -23438,6 +26185,8 @@ fn net_handle_query_packet(
                 write_maint_poll_query_summary(index, query, &mut reply);
             } else if query.starts_with("maint status ") {
                 write_maint_status_query_summary(index, query, &mut reply);
+            } else if query.starts_with("maint pending ") {
+                write_maint_pending_query_summary(index, query, &mut reply);
             } else if query.starts_with("maint audit ") {
                 write_maint_audit_query_summary(index, query, &mut reply);
             } else if query.starts_with("maint verify-hmac ") {
@@ -23446,6 +26195,10 @@ fn net_handle_query_packet(
                 write_maint_verify_local_query_summary(index, query, &mut reply);
             } else if query.starts_with("maint pull-exec ") {
                 write_maint_pull_exec_query_summary(index, query, &mut reply);
+            } else if query.eq_ignore_ascii_case("maint config-pull-exec")
+                || query.eq_ignore_ascii_case("maint config-pull-exec confirm")
+            {
+                write_maint_config_pull_exec_query_summary(&mut reply);
             } else if query.starts_with("maint loop ") {
                 write_maint_loop_query_summary(index, query, &mut reply);
             } else if query.starts_with("maint config-set ") {
@@ -27228,63 +29981,14 @@ fn write_digest_hex_bytes(digest: &[u8; 32], out: &mut [u8; 64]) {
 }
 
 fn hmac_sha256_digest(key: &[u8], message: &[u8]) -> [u8; 32] {
-    let mut key_block = [0u8; 64];
-    if key.len() > key_block.len() {
-        let digest = sha256_digest(key);
-        key_block[..digest.len()].copy_from_slice(&digest);
-    } else {
-        key_block[..key.len()].copy_from_slice(key);
-    }
-
-    let mut inner_pad = [0x36u8; 64];
-    let mut outer_pad = [0x5cu8; 64];
-    let mut index = 0usize;
-    while index < 64 {
-        inner_pad[index] ^= key_block[index];
-        outer_pad[index] ^= key_block[index];
-        index += 1;
-    }
-
-    let mut inner_message = [0u8; 128];
-    inner_message[..64].copy_from_slice(&inner_pad);
-    let inner_len = 64 + message.len().min(64);
-    if message.len() <= 64 {
-        inner_message[64..inner_len].copy_from_slice(message);
-        let inner_digest = sha256_digest(&inner_message[..inner_len]);
-        let mut outer_message = [0u8; 96];
-        outer_message[..64].copy_from_slice(&outer_pad);
-        outer_message[64..].copy_from_slice(&inner_digest);
-        return sha256_digest(&outer_message);
-    }
-
-    hmac_sha256_digest_slow(&key_block, &inner_pad, &outer_pad, message)
-}
-
-fn hmac_sha256_digest_slow(
-    _key_block: &[u8; 64],
-    inner_pad: &[u8; 64],
-    outer_pad: &[u8; 64],
-    message: &[u8],
-) -> [u8; 32] {
-    let mut scratch = [0u8; 256];
-    if message.len() + 64 <= scratch.len() {
-        scratch[..64].copy_from_slice(inner_pad);
-        scratch[64..64 + message.len()].copy_from_slice(message);
-        let inner_digest = sha256_digest(&scratch[..64 + message.len()]);
-        let mut outer_message = [0u8; 96];
-        outer_message[..64].copy_from_slice(outer_pad);
-        outer_message[64..].copy_from_slice(&inner_digest);
-        return sha256_digest(&outer_message);
-    }
-
-    let mut fallback = NetReplyBuf::new();
-    fallback.push_slice(inner_pad);
-    fallback.push_slice(message);
-    let inner_digest = sha256_digest(fallback.as_slice());
-    let mut outer_message = [0u8; 96];
-    outer_message[..64].copy_from_slice(outer_pad);
-    outer_message[64..].copy_from_slice(&inner_digest);
-    sha256_digest(&outer_message)
+    let Ok(mut mac) = <HmacSha256 as Mac>::new_from_slice(key) else {
+        return [0; 32];
+    };
+    mac.update(message);
+    let bytes = mac.finalize().into_bytes();
+    let mut out = [0u8; 32];
+    out.copy_from_slice(&bytes);
+    out
 }
 
 fn crc32_update(mut crc: u32, byte: u8) -> u32 {
@@ -27308,6 +30012,7 @@ fn crc32_memory(addr: u64, len: u64) -> u32 {
     !crc
 }
 
+#[allow(dead_code)]
 const SHA256_K: [u32; 64] = [
     0x428a_2f98,
     0x7137_4491,
@@ -27376,42 +30081,13 @@ const SHA256_K: [u32; 64] = [
 ];
 
 fn sha256_digest(input: &[u8]) -> [u8; 32] {
-    let mut state = [
-        0x6a09_e667u32,
-        0xbb67_ae85,
-        0x3c6e_f372,
-        0xa54f_f53a,
-        0x510e_527f,
-        0x9b05_688c,
-        0x1f83_d9ab,
-        0x5be0_cd19,
-    ];
-
-    let mut offset = 0usize;
-    while input.len().saturating_sub(offset) >= 64 {
-        sha256_compress(&mut state, &input[offset..offset + 64]);
-        offset += 64;
-    }
-
-    let rem = &input[offset..];
-    let mut block = [0u8; 64];
-    block[..rem.len()].copy_from_slice(rem);
-    block[rem.len()] = 0x80;
-    if rem.len() >= 56 {
-        sha256_compress(&mut state, &block);
-        block = [0u8; 64];
-    }
-    let bit_len = (input.len() as u64).wrapping_mul(8);
-    block[56..64].copy_from_slice(&bit_len.to_be_bytes());
-    sha256_compress(&mut state, &block);
-
+    let digest = Sha256::digest(input);
     let mut out = [0u8; 32];
-    for (index, word) in state.iter().enumerate() {
-        out[index * 4..index * 4 + 4].copy_from_slice(&word.to_be_bytes());
-    }
+    out.copy_from_slice(&digest);
     out
 }
 
+#[allow(dead_code)]
 fn sha256_compress(state: &mut [u32; 8], block: &[u8]) {
     let mut w = [0u32; 64];
     for index in 0..16 {
@@ -28069,6 +30745,14 @@ fn optional_u16_dec(value: Option<u16>) -> OptionalU16Dec {
 fn write_optional_sha256_hex<W: Write>(out: &mut W, digest: &Option<[u8; 32]>) {
     if let Some(digest) = digest {
         write_sha256_hex(out, digest);
+    } else {
+        let _ = write!(out, "none");
+    }
+}
+
+fn write_optional_hex32<W: Write>(out: &mut W, value: &Option<[u8; 32]>) {
+    if let Some(value) = value {
+        write_hex_bytes(out, value);
     } else {
         let _ = write!(out, "none");
     }
