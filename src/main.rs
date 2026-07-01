@@ -402,6 +402,7 @@ const MAINT_CONFIG_DEFAULT_POLL_PATH: &str = "/xiaojin-maintainer/device-pull/r5
 const MAINT_CONFIG_DEFAULT_EVENT_PATH: &str = "/xiaojin-maintainer/device-pull/r5c-lab/events";
 const MAINT_OTA_POLICY_VERSION: &str = "xiaojin-maint-ota-policy-v1";
 const MAINT_OTA_STATE_VERSION: &str = "xiaojin-maint-ota-state-v1";
+const MAINT_OTA_RESCUE_POLICY: &str = "factory-rescue-preserved";
 const DB_WAL_KIND_TEST: u32 = 1;
 const DB_WAL_KIND_PUT: u32 = 2;
 const DB_WAL_KIND_BPUT: u32 = 3;
@@ -8669,6 +8670,7 @@ fn command_maint_ota_facts(uart: &mut Uart, confirm: Option<&str>) {
     uart.put_str("  artifact-verify size,crc32,sha256\n");
     uart.put_str("  persist inactive-ab-slot\n");
     uart.put_str("  extlinux-switch yes\n");
+    let _ = writeln!(uart, "  rescue-policy {MAINT_OTA_RESCUE_POLICY}");
     uart.put_str("  event-log xiaojindb\n");
     uart.put_str("  rollback host-net-ota\n");
 }
@@ -8676,7 +8678,7 @@ fn command_maint_ota_facts(uart: &mut Uart, confirm: Option<&str>) {
 fn write_maint_ota_facts_summary<W: Write>(out: &mut W) {
     let _ = write!(
         out,
-        "maint-ota version=xiaojin-maint-ota-v1 manifest=required manifest-transport=http,https-experimental artifact-path=/artifact-pull/<artifact-id>/xiaojin-os.bin artifact-transport=http,https-experimental https-artifact-pin=artifact_tls_pin_sha256-required signature=hmac-local-key command-digest=sha256 payload-digest=sha256 artifact-verify=size,crc32,sha256 persist=inactive-ab-slot extlinux-switch=yes event-log=xiaojindb rollback=host-net-ota"
+        "maint-ota version=xiaojin-maint-ota-v1 manifest=required manifest-transport=http,https-experimental artifact-path=/artifact-pull/<artifact-id>/xiaojin-os.bin artifact-transport=http,https-experimental https-artifact-pin=artifact_tls_pin_sha256-required signature=hmac-local-key command-digest=sha256 payload-digest=sha256 artifact-verify=size,crc32,sha256 persist=inactive-ab-slot extlinux-switch=yes rescue-policy={MAINT_OTA_RESCUE_POLICY} event-log=xiaojindb rollback=host-net-ota"
     );
 }
 
@@ -8696,6 +8698,7 @@ fn command_maint_ota_policy(uart: &mut Uart, confirm: Option<&str>) {
     uart.put_str("  write inactive-ab-slot-only\n");
     uart.put_str("  switch extlinux-default\n");
     uart.put_str("  reboot network-psci-reset\n");
+    let _ = writeln!(uart, "  rescue-policy {MAINT_OTA_RESCUE_POLICY}");
     uart.put_str(
         "  confirm booted-network-listener,ota-facts,failover,service-health,app-manifest,supervisor\n",
     );
@@ -8707,7 +8710,7 @@ fn command_maint_ota_policy(uart: &mut Uart, confirm: Option<&str>) {
 fn write_maint_ota_policy_summary<W: Write>(out: &mut W) {
     let _ = write!(
         out,
-        "maint-ota-policy version={MAINT_OTA_POLICY_VERSION} mode=readonly source=signed-maintainer-poll manifest=signed-required artifact=signed-command-bound https-artifact-pin=artifact_tls_pin_sha256-required verify=manifest-sha256,artifact-size,artifact-crc32,artifact-sha256,https-artifact-tls-pin write=inactive-ab-slot-only switch=extlinux-default reboot=network-psci-reset confirm=booted-network-listener,ota-facts,failover,service-health,app-manifest,supervisor rollback=host-net-ota,previous-slot-preserved audit=xiaojindb-event-log safety=no-current-slot-without-override,no-confirm-before-boot"
+        "maint-ota-policy version={MAINT_OTA_POLICY_VERSION} mode=readonly source=signed-maintainer-poll manifest=signed-required artifact=signed-command-bound https-artifact-pin=artifact_tls_pin_sha256-required verify=manifest-sha256,artifact-size,artifact-crc32,artifact-sha256,https-artifact-tls-pin write=inactive-ab-slot-only switch=extlinux-default reboot=network-psci-reset rescue-policy={MAINT_OTA_RESCUE_POLICY} confirm=booted-network-listener,ota-facts,failover,service-health,app-manifest,supervisor rollback=host-net-ota,previous-slot-preserved audit=xiaojindb-event-log safety=no-current-slot-without-override,no-confirm-before-boot"
     );
 }
 
@@ -8724,6 +8727,7 @@ fn command_maint_ota_state(uart: &mut Uart, confirm: Option<&str>) {
     uart.put_str("  manifest-fields slot,artifact-id,size,crc32,sha256,command-digest,sequence\n");
     uart.put_str("  artifact-fields size,crc32,sha256,https-tls-pin-sha256\n");
     uart.put_str("  write-guard inactive-slot-only\n");
+    let _ = writeln!(uart, "  rescue-gate {MAINT_OTA_RESCUE_POLICY}");
     uart.put_str(
         "  confirm-gate network-listener,ota-state,failover,app-manifest,service-supervisor\n",
     );
@@ -8735,7 +8739,7 @@ fn command_maint_ota_state(uart: &mut Uart, confirm: Option<&str>) {
 fn write_maint_ota_state_summary<W: Write>(out: &mut W) {
     let _ = write!(
         out,
-        "maint-ota-state version={MAINT_OTA_STATE_VERSION} mode=readonly current=idle transitions=poll,verify-command,pull-manifest,verify-manifest,pull-artifact,verify-artifact,write-inactive-slot,switch-extlinux,reboot,boot-confirm,commit-or-rollback manifest-fields=slot,artifact-id,size,crc32,sha256,command-digest,sequence,artifact-tls-pin artifact-fields=size,crc32,sha256,https-tls-pin-sha256 write-guard=inactive-slot-only confirm-gate=network-listener,ota-state,failover,app-manifest,service-supervisor rollback=previous-slot-preserved audit=maint-events,xiaojindb unsafe-states=forbidden-current-slot-write,forbidden-confirm-before-reboot"
+        "maint-ota-state version={MAINT_OTA_STATE_VERSION} mode=readonly current=idle transitions=poll,verify-command,pull-manifest,verify-manifest,pull-artifact,verify-artifact,write-inactive-slot,switch-extlinux,reboot,boot-confirm,commit-or-rollback manifest-fields=slot,artifact-id,size,crc32,sha256,command-digest,sequence,artifact-tls-pin,rescue-policy artifact-fields=size,crc32,sha256,https-tls-pin-sha256 write-guard=inactive-slot-only rescue-gate={MAINT_OTA_RESCUE_POLICY} confirm-gate=network-listener,ota-state,failover,app-manifest,service-supervisor rollback=previous-slot-preserved audit=maint-events,xiaojindb unsafe-states=forbidden-current-slot-write,forbidden-confirm-before-reboot"
     );
 }
 
@@ -18916,18 +18920,27 @@ fn parse_maint_ota_manifest_payload_body(
             return Err("manifest-chunk-range");
         }
     }
+    let Some(rescue_policy) = find_maint_text_field(body, b"rescue_policy") else {
+        return Err("manifest-rescue-policy-missing");
+    };
+    if !ascii_eq(
+        trim_ascii_whitespace(rescue_policy),
+        MAINT_OTA_RESCUE_POLICY.as_bytes(),
+    ) {
+        return Err("manifest-rescue-policy");
+    }
     let mut canonical = NetReplyBuf::new();
     let chunk_ok = if let Some(chunk_bytes) = chunk_bytes {
         write!(
             canonical,
-            "{{\"action\":\"stage\",\"arch\":\"{XIAOJIN_ARCH_ID}\",\"artifact_url\":\"{artifact_url}\",\"board_id\":\"{XIAOJIN_BOARD_ID}\",\"chunk_bytes\":{chunk_bytes},\"device_id\":\"{XIAOJIN_DEVICE_ID}\",\"format\":\"xiaojin-ota-command-v1\",\"image_bytes\":{image_bytes},\"image_crc32\":\"{image_crc32}\",\"image_sha256\":\"{image_sha256}\",\"slot\":\"{}\"}}",
+            "{{\"action\":\"stage\",\"arch\":\"{XIAOJIN_ARCH_ID}\",\"artifact_url\":\"{artifact_url}\",\"board_id\":\"{XIAOJIN_BOARD_ID}\",\"chunk_bytes\":{chunk_bytes},\"device_id\":\"{XIAOJIN_DEVICE_ID}\",\"format\":\"xiaojin-ota-command-v1\",\"image_bytes\":{image_bytes},\"image_crc32\":\"{image_crc32}\",\"image_sha256\":\"{image_sha256}\",\"rescue_policy\":\"{MAINT_OTA_RESCUE_POLICY}\",\"slot\":\"{}\"}}",
             AsciiBytes(slot)
         )
         .is_ok()
     } else {
         write!(
             canonical,
-            "{{\"action\":\"stage\",\"arch\":\"{XIAOJIN_ARCH_ID}\",\"artifact_url\":\"{artifact_url}\",\"board_id\":\"{XIAOJIN_BOARD_ID}\",\"device_id\":\"{XIAOJIN_DEVICE_ID}\",\"format\":\"xiaojin-ota-command-v1\",\"image_bytes\":{image_bytes},\"image_crc32\":\"{image_crc32}\",\"image_sha256\":\"{image_sha256}\",\"slot\":\"{}\"}}",
+            "{{\"action\":\"stage\",\"arch\":\"{XIAOJIN_ARCH_ID}\",\"artifact_url\":\"{artifact_url}\",\"board_id\":\"{XIAOJIN_BOARD_ID}\",\"device_id\":\"{XIAOJIN_DEVICE_ID}\",\"format\":\"xiaojin-ota-command-v1\",\"image_bytes\":{image_bytes},\"image_crc32\":\"{image_crc32}\",\"image_sha256\":\"{image_sha256}\",\"rescue_policy\":\"{MAINT_OTA_RESCUE_POLICY}\",\"slot\":\"{}\"}}",
             AsciiBytes(slot)
         )
         .is_ok()
@@ -19452,6 +19465,9 @@ fn parse_maint_ota_stage_payload(payload: &[u8]) -> Option<MaintOtaStagePlan<'_>
     if json_get_string(json, "arch")? != XIAOJIN_ARCH_ID {
         return None;
     }
+    if json_get_string(json, "rescue_policy")? != MAINT_OTA_RESCUE_POLICY {
+        return None;
+    }
     let slot_text = json_get_string(json, "slot")?;
     let slot = match slot_text {
         "a" => b'a',
@@ -19523,6 +19539,11 @@ fn maint_ota_stage_payload_invalid_reason(payload: &[u8]) -> &'static str {
         Some(XIAOJIN_ARCH_ID) => {}
         Some(_) => return "arch-value",
         None => return "arch-missing",
+    }
+    match json_get_string(json, "rescue_policy") {
+        Some(MAINT_OTA_RESCUE_POLICY) => {}
+        Some(_) => return "rescue-policy-value",
+        None => return "rescue-policy-missing",
     }
     match json_get_string(json, "slot") {
         Some("a" | "b") => {}
