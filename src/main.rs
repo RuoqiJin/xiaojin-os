@@ -6620,6 +6620,10 @@ fn write_net_http_query_summary<W: Write>(default_index: usize, query: &str, out
         let _ = write!(out, "XJQ ERR http-usage");
         return;
     }
+    if path.starts_with("/device-pull/") {
+        let _ = write!(out, "XJQ ERR http-use-maint-query");
+        return;
+    }
 
     match net_http_get(index, host, port, path, HTTP_TIMEOUT_MS) {
         Ok(result) => {
@@ -6681,6 +6685,10 @@ fn write_net_http_post_query_summary<W: Write>(default_index: usize, query: &str
     };
     if !matches!(parts.next(), None | Some("confirm")) {
         let _ = write!(out, "XJQ ERR http-post-usage");
+        return;
+    }
+    if path.starts_with("/device-pull/") {
+        let _ = write!(out, "XJQ ERR http-post-use-maint-query");
         return;
     }
 
