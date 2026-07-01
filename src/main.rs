@@ -2745,6 +2745,7 @@ fn print_help(uart: &mut Uart) {
     uart.put_str("  svc facts            show AI-native service manifest facts\n");
     uart.put_str("  svc health           show AI-native service health read model\n");
     uart.put_str("  svc apps             show AI-native app manifest facts\n");
+    uart.put_str("  svc units            show service-manager unit manifest facts\n");
     uart.put_str("  svc supervisor       show service-manager supervisor contract\n");
     uart.put_str("  mem                  show current memory map facts\n");
     uart.put_str("  regs                 show selected CPU registers\n");
@@ -3001,6 +3002,7 @@ fn print_caps(uart: &mut Uart) {
     uart.put_str("  svc manifest-readonly yes\n");
     uart.put_str("  svc health-readonly yes\n");
     uart.put_str("  svc app-manifest-readonly yes\n");
+    uart.put_str("  svc unit-manifest-readonly yes\n");
     uart.put_str("  svc supervisor-contract-readonly yes\n");
     uart.put_str("  identity facts yes\n");
     uart.put_str("  rng development-hmac-drbg yes\n");
@@ -3034,14 +3036,14 @@ fn print_caps(uart: &mut Uart) {
 fn write_caps_query_summary<W: Write>(out: &mut W) {
     let _ = write!(
         out,
-        "XJQ OK caps net-dev=yes net-reload=immediate net-ifaces=yes net-roles=yes iface-auto=yes dhcp=yes auto-dhcp=yes failover=best-linked-routed-dns route=yes arp=yes dns=yes tcp-connect=yes http-get=yes http-post=yes https-get=experimental https-post=experimental tls-clienthello=yes tls-aes128gcm-decrypt=yes tls-handshake-parse=yes tls-certificate-list-parse=yes tls-first-certificate-sha256=yes tls-server-finished-verify=yes tls-application-data=experimental ai-chat=http,https-experimental,https-bearer-experimental,response-preview ai-facts=runtime-readonly maint-poll=yes maint-status=yes maint-event=yes maint-pending=yes maint-pending-summary=yes maint-command-digest=yes maint-command-verify=yes maint-command-verify-hmac=yes maint-local-hmac-key=yes maint-pull-exec=yes maint-ota-stage-pull=http,https-experimental maint-ota-stage-persist=yes maint-ota-extlinux-switch=yes maint-config=yes maint-config-paths=yes maint-config-host-name=yes maint-config-https=yes maint-config-tls-pin=yes maint-https-event=yes identity=yes svc=manifest-readonly,health-readonly,app-manifest-readonly,supervisor-contract-readonly query=yes reboot=yes sd-writer=yes ab-persist=yes boot-slot=extlinux db=page-store,catalog,wal,fixed-table,btree,event-log"
+        "XJQ OK caps net-dev=yes net-reload=immediate net-ifaces=yes net-roles=yes iface-auto=yes dhcp=yes auto-dhcp=yes failover=best-linked-routed-dns route=yes arp=yes dns=yes tcp-connect=yes http-get=yes http-post=yes https-get=experimental https-post=experimental tls-clienthello=yes tls-aes128gcm-decrypt=yes tls-handshake-parse=yes tls-certificate-list-parse=yes tls-first-certificate-sha256=yes tls-server-finished-verify=yes tls-application-data=experimental ai-chat=http,https-experimental,https-bearer-experimental,response-preview ai-facts=runtime-readonly maint-poll=yes maint-status=yes maint-event=yes maint-pending=yes maint-pending-summary=yes maint-command-digest=yes maint-command-verify=yes maint-command-verify-hmac=yes maint-local-hmac-key=yes maint-pull-exec=yes maint-ota-stage-pull=http,https-experimental maint-ota-stage-persist=yes maint-ota-extlinux-switch=yes maint-config=yes maint-config-paths=yes maint-config-host-name=yes maint-config-https=yes maint-config-tls-pin=yes maint-https-event=yes identity=yes svc=manifest-readonly,health-readonly,app-manifest-readonly,unit-manifest-readonly,supervisor-contract-readonly query=yes reboot=yes sd-writer=yes ab-persist=yes boot-slot=extlinux db=page-store,catalog,wal,fixed-table,btree,event-log"
     );
 }
 
 fn write_caps_full_query_summary<W: Write>(out: &mut W) {
     let _ = write!(
         out,
-        "XJQ OK caps-full net=dev,reload-immediate,ifaces,iface-auto,dhcp,auto-dhcp,failover-best-linked-routed-dns,route,arp,dns,tcp,http-get,http-post,https-get-experimental,https-post-experimental,http-trace,http-debug tls=clienthello,aes128gcm,chacha20poly1305,handshake,cert-list,first-cert-sha256,first-cert-pin,server-finished,client-finished-material,client-finished-send,application-data-experimental ai=chat-http,chat-https-experimental,chat-https-bearer-experimental,response-preview ai-facts=runtime-readonly maint=poll,status,pending,digest,verify,verify-hmac,local-key,pull-exec,ota-stage-pull-http,ota-stage-pull-https-experimental,ota-stage-persist,ota-extlinux-switch,loop,config,paths,host-name,https,tls-pin,manual-config-run,ack-intent,remote-event,https-event,local-audit svc=manifest-readonly,service-facts,service-health,app-manifest,service-supervisor-contract wifi=pcie,firmware,firmware-crc,firmware-load,mmio-snapshot,mmio-fingerprint,driver-gate,rtw88-profile,trace,pcie-init,pcie-init-high,pcie-init-linux,pcie-init-dt,enum,station-planned,ap-planned sd=probe,writer,ab-persist,extlinux db=page-store,catalog,wal,fixed-table,btree,btree-delete,table-namespace,event-log,blob-backup,blob-restore"
+        "XJQ OK caps-full net=dev,reload-immediate,ifaces,iface-auto,dhcp,auto-dhcp,failover-best-linked-routed-dns,route,arp,dns,tcp,http-get,http-post,https-get-experimental,https-post-experimental,http-trace,http-debug tls=clienthello,aes128gcm,chacha20poly1305,handshake,cert-list,first-cert-sha256,first-cert-pin,server-finished,client-finished-material,client-finished-send,application-data-experimental ai=chat-http,chat-https-experimental,chat-https-bearer-experimental,response-preview ai-facts=runtime-readonly maint=poll,status,pending,digest,verify,verify-hmac,local-key,pull-exec,ota-stage-pull-http,ota-stage-pull-https-experimental,ota-stage-persist,ota-extlinux-switch,loop,config,paths,host-name,https,tls-pin,manual-config-run,ack-intent,remote-event,https-event,local-audit svc=manifest-readonly,service-facts,service-health,app-manifest,service-unit-manifest,service-supervisor-contract wifi=pcie,firmware,firmware-crc,firmware-load,mmio-snapshot,mmio-fingerprint,driver-gate,rtw88-profile,trace,pcie-init,pcie-init-high,pcie-init-linux,pcie-init-dt,enum,station-planned,ap-planned sd=probe,writer,ab-persist,extlinux db=page-store,catalog,wal,fixed-table,btree,btree-delete,table-namespace,event-log,blob-backup,blob-restore"
     );
 }
 
@@ -3065,8 +3067,24 @@ struct AppManifestEntry {
     policy: &'static str,
 }
 
+struct ServiceUnitEntry {
+    id: &'static str,
+    service: &'static str,
+    runtime: &'static str,
+    exec: &'static str,
+    cwd: &'static str,
+    env: &'static str,
+    endpoint: &'static str,
+    health: &'static str,
+    restart: &'static str,
+    storage: &'static str,
+    network: &'static str,
+    policy: &'static str,
+}
+
 const SERVICE_MANIFEST_VERSION: &str = "xiaojin-service-manifest-v1";
 const APP_MANIFEST_VERSION: &str = "xiaojin-app-manifest-v1";
+const SERVICE_UNIT_MANIFEST_VERSION: &str = "xiaojin-service-unit-manifest-v1";
 const SERVICE_SUPERVISOR_VERSION: &str = "xiaojin-service-supervisor-v1";
 const SERVICE_MANIFEST: [ServiceManifestEntry; 4] = [
     ServiceManifestEntry {
@@ -3144,6 +3162,64 @@ const APP_MANIFEST: [AppManifestEntry; 4] = [
         policy: "health-check,resource-aware-routing",
     },
 ];
+const SERVICE_UNIT_MANIFEST: [ServiceUnitEntry; 4] = [
+    ServiceUnitEntry {
+        id: "maint-agent",
+        service: "maint-agent",
+        runtime: "kernel-integrated",
+        exec: "kernel:maint-poll-loop",
+        cwd: "/",
+        env: "maint-config",
+        endpoint: "gcp-maintainer",
+        health: "maint-status",
+        restart: "kernel-loop",
+        storage: "xiaojindb-event-log,bootstate,sd-ab",
+        network: "wan-dhcp-default-route",
+        policy: "signed-command-only",
+    },
+    ServiceUnitEntry {
+        id: "xiaojindb",
+        service: "xiaojindb",
+        runtime: "kernel-integrated",
+        exec: "kernel:xiaojindb",
+        cwd: "/",
+        env: "none",
+        endpoint: "page-store",
+        health: "db-status",
+        restart: "kernel-owned",
+        storage: "xiaojin-db.dat",
+        network: "none",
+        policy: "kernel-owned-wal",
+    },
+    ServiceUnitEntry {
+        id: "edge-cognition-core",
+        service: "edge-cognition-server",
+        runtime: "user-service-planned",
+        exec: "edge-cognition-server",
+        cwd: "/xj/services/edge-cognition-core",
+        env: "EDGE_COGNITION_CONFIG=/xj/services/edge-cognition-core/config.toml",
+        endpoint: "127.0.0.1:8765",
+        health: "http://127.0.0.1:8765/api/status",
+        restart: "on-failure,backoff",
+        storage: "materials,knowledge.sqlite3,chat-history,user-memory.md",
+        network: "localhost-http-stream,remote-model-https",
+        policy: "memory-write-veto,tool-guardrail,manifest-required",
+    },
+    ServiceUnitEntry {
+        id: "model-runtime",
+        service: "model-runtime",
+        runtime: "external-adapter-planned",
+        exec: "ollama-or-openai-compatible-adapter",
+        cwd: "/xj/model-runtime",
+        env: "MODEL_RUNTIME_ENDPOINT=127.0.0.1:11434",
+        endpoint: "127.0.0.1:11434-or-openai-compatible",
+        health: "http://127.0.0.1:11434/api/tags-or-remote-models",
+        restart: "external-health-watch",
+        storage: "model-cache",
+        network: "localhost-or-remote-https",
+        policy: "health-check,resource-aware-routing",
+    },
+];
 
 fn command_service(uart: &mut Uart, action: Option<&str>) {
     match action {
@@ -3156,11 +3232,14 @@ fn command_service(uart: &mut Uart, action: Option<&str>) {
         Some("apps") | Some("app-manifest") => {
             print_app_manifest(uart);
         }
+        Some("units") | Some("unit-manifest") => {
+            print_service_unit_manifest(uart);
+        }
         Some("supervisor") | Some("contract") | Some("supervisor-contract") => {
             print_service_supervisor(uart);
         }
         _ => {
-            uart.put_str("usage: svc facts|health|apps|supervisor\n");
+            uart.put_str("usage: svc facts|health|apps|units|supervisor\n");
         }
     }
 }
@@ -3324,6 +3403,72 @@ fn write_app_manifest_summary<W: Write>(out: &mut W) {
     }
 }
 
+fn print_service_unit_manifest(uart: &mut Uart) {
+    let _ = writeln!(
+        uart,
+        "service unit manifest: version={} mode=readonly count={}",
+        SERVICE_UNIT_MANIFEST_VERSION,
+        SERVICE_UNIT_MANIFEST.len()
+    );
+    for entry in SERVICE_UNIT_MANIFEST.iter() {
+        let _ = writeln!(
+            uart,
+            "  {} service={} runtime={} exec={} cwd={} env={} endpoint={} health={} restart={} storage={} network={} policy={}",
+            entry.id,
+            entry.service,
+            entry.runtime,
+            entry.exec,
+            entry.cwd,
+            entry.env,
+            entry.endpoint,
+            entry.health,
+            entry.restart,
+            entry.storage,
+            entry.network,
+            entry.policy
+        );
+    }
+}
+
+fn write_service_unit_manifest_summary<W: Write>(out: &mut W) {
+    let _ = write!(
+        out,
+        "unit-manifest version={} mode=readonly count={}",
+        SERVICE_UNIT_MANIFEST_VERSION,
+        SERVICE_UNIT_MANIFEST.len()
+    );
+    for (index, entry) in SERVICE_UNIT_MANIFEST.iter().enumerate() {
+        let _ = write!(
+            out,
+            " unit{}={} service{}={} runtime{}={} exec{}={} cwd{}={} env{}={} endpoint{}={} health{}={} restart{}={} storage{}={} network{}={} policy{}={}",
+            index,
+            entry.id,
+            index,
+            entry.service,
+            index,
+            entry.runtime,
+            index,
+            entry.exec,
+            index,
+            entry.cwd,
+            index,
+            entry.env,
+            index,
+            entry.endpoint,
+            index,
+            entry.health,
+            index,
+            entry.restart,
+            index,
+            entry.storage,
+            index,
+            entry.network,
+            index,
+            entry.policy
+        );
+    }
+}
+
 fn print_service_supervisor(uart: &mut Uart) {
     let _ = writeln!(
         uart,
@@ -3336,7 +3481,9 @@ fn print_service_supervisor(uart: &mut Uart) {
     uart.put_str("  health periodic-planned,http-health-planned,db-health-integrated\n");
     uart.put_str("  logs serial,xiaojindb-event-log\n");
     uart.put_str("  audit xiaojindb-audit-log\n");
-    uart.put_str("  policy signed-command-only,manifest-required,resource-limits-planned\n");
+    uart.put_str(
+        "  policy signed-command-only,manifest-required,unit-manifest-required,resource-limits-planned\n",
+    );
     uart.put_str("  guardrails memory-write-veto,tool-policy,execution-layer\n");
     uart.put_str("  network wan-dhcp-default-route,lan-static-rescue,localhost-http\n");
     uart.put_str("  storage sd-fat32,xiaojindb,materials,model-cache\n");
@@ -3347,7 +3494,7 @@ fn print_service_supervisor(uart: &mut Uart) {
 fn write_service_supervisor_summary<W: Write>(out: &mut W) {
     let _ = write!(
         out,
-        "svc-supervisor version={} mode=readonly state=contract-ready boot-order=maint-agent,xiaojindb,edge-cognition-server,model-runtime launch=manual-now,auto-planned restart=crash-restart-planned,backoff-planned health=periodic-planned,http-health-planned,db-health-integrated logs=serial,xiaojindb-event-log audit=xiaojindb-audit-log policy=signed-command-only,manifest-required,resource-limits-planned guardrails=memory-write-veto,tool-policy,execution-layer network=wan-dhcp-default-route,lan-static-rescue,localhost-http storage=sd-fat32,xiaojindb,materials,model-cache ai-app=edge-cognition-core endpoint=127.0.0.1:8765 model-runtime=127.0.0.1:11434-or-openai-compatible",
+        "svc-supervisor version={} mode=readonly state=contract-ready boot-order=maint-agent,xiaojindb,edge-cognition-server,model-runtime launch=manual-now,auto-planned restart=crash-restart-planned,backoff-planned health=periodic-planned,http-health-planned,db-health-integrated logs=serial,xiaojindb-event-log audit=xiaojindb-audit-log policy=signed-command-only,manifest-required,unit-manifest-required,resource-limits-planned guardrails=memory-write-veto,tool-policy,execution-layer network=wan-dhcp-default-route,lan-static-rescue,localhost-http storage=sd-fat32,xiaojindb,materials,model-cache ai-app=edge-cognition-core endpoint=127.0.0.1:8765 model-runtime=127.0.0.1:11434-or-openai-compatible",
         SERVICE_SUPERVISOR_VERSION
     );
 }
@@ -19007,6 +19154,8 @@ fn is_public_xj_query(query: &[u8]) -> bool {
         "svc health",
         "svc apps",
         "svc app-manifest",
+        "svc units",
+        "svc unit-manifest",
         "svc supervisor",
         "svc contract",
         "svc supervisor-contract",
@@ -19014,6 +19163,8 @@ fn is_public_xj_query(query: &[u8]) -> bool {
         "service health",
         "service apps",
         "service app-manifest",
+        "service units",
+        "service unit-manifest",
         "service supervisor",
         "service contract",
         "service supervisor-contract",
@@ -19073,6 +19224,13 @@ fn write_public_xj_query_result<W: Write>(query: &str, out: &mut W) -> bool {
     {
         let _ = write!(out, "XJQ OK ");
         write_app_manifest_summary(out);
+    } else if query.eq_ignore_ascii_case("svc units")
+        || query.eq_ignore_ascii_case("svc unit-manifest")
+        || query.eq_ignore_ascii_case("service units")
+        || query.eq_ignore_ascii_case("service unit-manifest")
+    {
+        let _ = write!(out, "XJQ OK ");
+        write_service_unit_manifest_summary(out);
     } else if query.eq_ignore_ascii_case("svc supervisor")
         || query.eq_ignore_ascii_case("svc contract")
         || query.eq_ignore_ascii_case("svc supervisor-contract")
@@ -26577,6 +26735,13 @@ fn net_handle_query_packet(
             {
                 let _ = write!(reply, "XJQ OK ");
                 write_app_manifest_summary(&mut reply);
+            } else if query.eq_ignore_ascii_case("svc units")
+                || query.eq_ignore_ascii_case("svc unit-manifest")
+                || query.eq_ignore_ascii_case("service units")
+                || query.eq_ignore_ascii_case("service unit-manifest")
+            {
+                let _ = write!(reply, "XJQ OK ");
+                write_service_unit_manifest_summary(&mut reply);
             } else if query.eq_ignore_ascii_case("svc supervisor")
                 || query.eq_ignore_ascii_case("svc contract")
                 || query.eq_ignore_ascii_case("svc supervisor-contract")
