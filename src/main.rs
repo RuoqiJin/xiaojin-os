@@ -7475,7 +7475,7 @@ fn write_ai_https_chat_query_summary<W: Write>(default_index: usize, query: &str
         body.as_slice(),
         sni,
         &tls_pin_sha256,
-        TLS_TIMEOUT_MS,
+        AI_HTTP_CHAT_TIMEOUT_MS,
     ) {
         Ok(result) => {
             let _ = write!(
@@ -7605,7 +7605,7 @@ fn write_ai_https_chat_bearer_query_summary<W: Write>(
         sni,
         &bearer[..bearer_len],
         &tls_pin_sha256,
-        TLS_TIMEOUT_MS,
+        AI_HTTP_CHAT_TIMEOUT_MS,
     ) {
         Ok(result) => {
             let _ = write!(
