@@ -20079,6 +20079,56 @@ fn find_http_body_start(sample: &[u8]) -> Option<usize> {
     None
 }
 
+fn parse_http_content_length(sample: &[u8]) -> Option<usize> {
+    let header_end = find_http_body_start(sample)?;
+    let mut start = 0usize;
+    while start < header_end {
+        let mut end = start;
+        while end < header_end && sample[end] != b'\n' {
+            end += 1;
+        }
+        let mut line_end = end;
+        if line_end > start && sample[line_end - 1] == b'\r' {
+            line_end -= 1;
+        }
+        let line = &sample[start..line_end];
+        if let Some(colon) = line.iter().position(|byte| *byte == b':') {
+            let name = &line[..colon];
+            if name.eq_ignore_ascii_case(b"content-length") {
+                let mut offset = colon + 1;
+                while offset < line.len() && matches!(line[offset], b' ' | b'\t') {
+                    offset += 1;
+                }
+                let mut value = 0usize;
+                let mut found_digit = false;
+                while offset < line.len() && line[offset].is_ascii_digit() {
+                    found_digit = true;
+                    value = value
+                        .saturating_mul(10)
+                        .saturating_add((line[offset] - b'0') as usize);
+                    offset += 1;
+                }
+                if found_digit {
+                    return Some(value);
+                }
+            }
+        }
+        start = end.saturating_add(1);
+    }
+    None
+}
+
+fn http_response_content_complete(response: &HttpResponseAccum) -> bool {
+    let sample = &response.sample[..response.sample_len];
+    let Some(body_start) = find_http_body_start(sample) else {
+        return false;
+    };
+    let Some(content_length) = parse_http_content_length(sample) else {
+        return false;
+    };
+    response.payload_bytes >= body_start.saturating_add(content_length)
+}
+
 fn write_http_raw_sample_line<W: Write>(out: &mut W, sample: &[u8]) {
     let mut count = 0usize;
     for byte in sample {
@@ -25298,6 +25348,9 @@ fn net_wait_tcp_response_from_mode(
                 );
                 if response.payload_bytes >= HTTP_RESPONSE_MAX_BYTES {
                     response.truncated = true;
+                    return Some(Ok(response));
+                }
+                if !require_tls_first_app_record && http_response_content_complete(&response) {
                     return Some(Ok(response));
                 }
             }
