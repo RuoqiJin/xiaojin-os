@@ -268,9 +268,9 @@
       :purpose "Provide an SSH-like or SSH-compatible secure management surface for operators, while keeping the local LAN hot-update and recovery path available.")
     (stage maintainer-ai-bridge
       :status host-verified
-      :implemented [ai-facts ai-route-policy xjq-ai-facts xjq-ai-route-policy ai-response-preview maintainer-ai-smoke net-ai-bridge-smoke net-ai-chat net-ai-router-smoke]
+      :implemented [ai-facts ai-route-policy xjq-ai-facts xjq-ai-route-policy ai-response-preview maintainer-ai-smoke net-ai-bridge-smoke net-ai-chat net-ai-router-smoke ai-https-router-tls-pin]
       :verified [gcp-maintainer-ai-chat-openai-compatible gpt-5.5-smoke-ok]
-      :policy "Use the maintainer bridge as the first board-output model path; native board HTTPS router calls remain experimental until TLS is safe-mode isolated."
+      :policy "Use the maintainer bridge as the first board-output model path; native board HTTPS router calls remain experimental and require first-certificate SHA-256 pin verification before any application data request."
       :purpose "Let Xiaojin OS ask an OpenAI-compatible model through the maintainer/XJP Router bridge and return a short model response over serial or UDP control."))
 
   (boot-media

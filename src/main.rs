@@ -3011,8 +3011,8 @@ fn print_caps(uart: &mut Uart) {
     uart.put_str("  ai facts-readonly yes\n");
     uart.put_str("  ai route-policy-readonly yes\n");
     uart.put_str("  ai http-chat yes\n");
-    uart.put_str("  ai https-chat experimental\n");
-    uart.put_str("  ai https-chat-bearer experimental\n");
+    uart.put_str("  ai https-chat experimental-pin-required\n");
+    uart.put_str("  ai https-chat-bearer experimental-pin-required\n");
     uart.put_str("  svc manifest-readonly yes\n");
     uart.put_str("  svc health-readonly yes\n");
     uart.put_str("  svc app-manifest-readonly yes\n");
@@ -3053,14 +3053,14 @@ fn print_caps(uart: &mut Uart) {
 fn write_caps_query_summary<W: Write>(out: &mut W) {
     let _ = write!(
         out,
-        "XJQ OK caps net-dev=yes net-reload=immediate net-ifaces=yes net-roles=yes iface-auto=yes dhcp=yes auto-dhcp=yes failover=best-linked-routed-dns route=yes arp=yes dns=yes tcp-connect=yes http-get=yes http-post=yes https-get=experimental https-post=experimental tls-clienthello=yes tls-aes128gcm-decrypt=yes tls-handshake-parse=yes tls-certificate-list-parse=yes tls-first-certificate-sha256=yes tls-server-finished-verify=yes tls-application-data=experimental ai-chat=http,https-experimental,https-bearer-experimental,response-preview ai-facts=runtime-readonly ai-route=policy-readonly maint-poll=yes maint-status=yes maint-event=yes maint-pending=yes maint-pending-summary=yes maint-command-digest=yes maint-command-verify=yes maint-command-verify-hmac=yes maint-local-hmac-key=yes maint-pull-exec=yes maint-ota-stage-pull=http,https-experimental maint-ota-stage-persist=yes maint-ota-extlinux-switch=yes maint-ota-policy=readonly maint-ota-state=readonly maint-config=yes maint-config-paths=yes maint-config-host-name=yes maint-config-https=yes maint-config-tls-pin=yes maint-https-event=yes identity=yes svc=manifest-readonly,health-readonly,app-manifest-readonly,unit-manifest-readonly,plan-readonly,graph-readonly,runtime-readonly,supervisor-contract-readonly query=yes reboot=yes sd-writer=yes ab-persist=yes boot-slot=extlinux db=page-store,catalog,wal,fixed-table,btree,event-log"
+        "XJQ OK caps net-dev=yes net-reload=immediate net-ifaces=yes net-roles=yes iface-auto=yes dhcp=yes auto-dhcp=yes failover=best-linked-routed-dns route=yes arp=yes dns=yes tcp-connect=yes http-get=yes http-post=yes https-get=experimental https-post=experimental tls-clienthello=yes tls-aes128gcm-decrypt=yes tls-handshake-parse=yes tls-certificate-list-parse=yes tls-first-certificate-sha256=yes tls-server-finished-verify=yes tls-application-data=experimental ai-chat=http,https-experimental-pin-required,https-bearer-experimental-pin-required,response-preview ai-facts=runtime-readonly ai-route=policy-readonly maint-poll=yes maint-status=yes maint-event=yes maint-pending=yes maint-pending-summary=yes maint-command-digest=yes maint-command-verify=yes maint-command-verify-hmac=yes maint-local-hmac-key=yes maint-pull-exec=yes maint-ota-stage-pull=http,https-experimental maint-ota-stage-persist=yes maint-ota-extlinux-switch=yes maint-ota-policy=readonly maint-ota-state=readonly maint-config=yes maint-config-paths=yes maint-config-host-name=yes maint-config-https=yes maint-config-tls-pin=yes maint-https-event=yes identity=yes svc=manifest-readonly,health-readonly,app-manifest-readonly,unit-manifest-readonly,plan-readonly,graph-readonly,runtime-readonly,supervisor-contract-readonly query=yes reboot=yes sd-writer=yes ab-persist=yes boot-slot=extlinux db=page-store,catalog,wal,fixed-table,btree,event-log"
     );
 }
 
 fn write_caps_full_query_summary<W: Write>(out: &mut W) {
     let _ = write!(
         out,
-        "XJQ OK caps-full net=dev,reload-immediate,ifaces,iface-auto,dhcp,auto-dhcp,failover-best-linked-routed-dns,route,arp,dns,tcp,http-get,http-post,https-get-experimental,https-post-experimental,http-trace,http-debug tls=clienthello,aes128gcm,chacha20poly1305,handshake,cert-list,first-cert-sha256,first-cert-pin,server-finished,client-finished-material,client-finished-send,application-data-experimental ai=chat-http,chat-https-experimental,chat-https-bearer-experimental,response-preview,route-policy ai-facts=runtime-readonly maint=poll,status,pending,digest,verify,verify-hmac,local-key,pull-exec,ota-stage-pull-http,ota-stage-pull-https-experimental,ota-stage-persist,ota-extlinux-switch,ota-policy,ota-state,loop,config,paths,host-name,https,tls-pin,manual-config-run,ack-intent,remote-event,https-event,local-audit svc=manifest-readonly,service-facts,service-health,app-manifest,service-unit-manifest,service-plan,service-graph,service-runtime,service-supervisor-contract wifi=pcie,firmware,firmware-crc,firmware-load,mmio-snapshot,mmio-fingerprint,driver-gate,rtw88-profile,trace,pcie-init,pcie-init-high,pcie-init-linux,pcie-init-dt,enum,station-planned,ap-planned sd=probe,writer,ab-persist,extlinux db=page-store,catalog,wal,fixed-table,btree,btree-delete,table-namespace,event-log,blob-backup,blob-restore"
+        "XJQ OK caps-full net=dev,reload-immediate,ifaces,iface-auto,dhcp,auto-dhcp,failover-best-linked-routed-dns,route,arp,dns,tcp,http-get,http-post,https-get-experimental,https-post-experimental,http-trace,http-debug tls=clienthello,aes128gcm,chacha20poly1305,handshake,cert-list,first-cert-sha256,first-cert-pin,server-finished,client-finished-material,client-finished-send,application-data-experimental ai=chat-http,chat-https-experimental-pin-required,chat-https-bearer-experimental-pin-required,response-preview,route-policy ai-facts=runtime-readonly maint=poll,status,pending,digest,verify,verify-hmac,local-key,pull-exec,ota-stage-pull-http,ota-stage-pull-https-experimental,ota-stage-persist,ota-extlinux-switch,ota-policy,ota-state,loop,config,paths,host-name,https,tls-pin,manual-config-run,ack-intent,remote-event,https-event,local-audit svc=manifest-readonly,service-facts,service-health,app-manifest,service-unit-manifest,service-plan,service-graph,service-runtime,service-supervisor-contract wifi=pcie,firmware,firmware-crc,firmware-load,mmio-snapshot,mmio-fingerprint,driver-gate,rtw88-profile,trace,pcie-init,pcie-init-high,pcie-init-linux,pcie-init-dt,enum,station-planned,ap-planned sd=probe,writer,ab-persist,extlinux db=page-store,catalog,wal,fixed-table,btree,btree-delete,table-namespace,event-log,blob-backup,blob-restore"
     );
 }
 
@@ -3830,8 +3830,8 @@ fn print_ai_facts(uart: &mut Uart) {
     uart.put_str("  local-runtime planned\n");
     uart.put_str("  bridge http-maintainer\n");
     uart.put_str("  remote https-openai-compatible\n");
-    uart.put_str("  native-https experimental\n");
-    uart.put_str("  native-https-bearer experimental\n");
+    uart.put_str("  native-https experimental-pin-required\n");
+    uart.put_str("  native-https-bearer experimental-pin-required\n");
     uart.put_str("  output serial,udp-xjq\n");
     uart.put_str("  response-preview body-prefix\n");
     let _ = writeln!(uart, "  prompt-bytes {AI_CHAT_PROMPT_BYTES}");
@@ -3849,7 +3849,7 @@ fn print_ai_facts(uart: &mut Uart) {
 fn write_ai_facts_summary<W: Write>(out: &mut W) {
     let _ = write!(
         out,
-        "ai-facts version=xiaojin-ai-runtime-v1 mode=remote-first local-runtime=planned bridge=http-maintainer remote=https-openai-compatible native-https=experimental native-https-bearer=experimental output=serial,udp-xjq response-preview=body-prefix prompt-bytes={AI_CHAT_PROMPT_BYTES} model-bytes={AI_CHAT_MODEL_BYTES} bearer-bytes={AI_CHAT_BEARER_BYTES} response-preview-bytes={AI_CHAT_RESPONSE_PREVIEW_BYTES} timeout-ms={AI_HTTP_CHAT_TIMEOUT_MS} guardrails=execution-layer,tool-policy,memory-write-veto endpoints=maintainer-bridge,xjp-router"
+        "ai-facts version=xiaojin-ai-runtime-v1 mode=remote-first local-runtime=planned bridge=http-maintainer remote=https-openai-compatible native-https=experimental-pin-required native-https-bearer=experimental-pin-required output=serial,udp-xjq response-preview=body-prefix prompt-bytes={AI_CHAT_PROMPT_BYTES} model-bytes={AI_CHAT_MODEL_BYTES} bearer-bytes={AI_CHAT_BEARER_BYTES} response-preview-bytes={AI_CHAT_RESPONSE_PREVIEW_BYTES} timeout-ms={AI_HTTP_CHAT_TIMEOUT_MS} guardrails=execution-layer,tool-policy,memory-write-veto endpoints=maintainer-bridge,xjp-router"
     );
 }
 
@@ -3862,14 +3862,14 @@ fn print_ai_route_policy(uart: &mut Uart) {
         "  order maintainer-bridge,native-https-bearer,native-https,local-runtime-planned\n",
     );
     uart.put_str("  bridge http-maintainer\n");
-    uart.put_str("  native-https experimental\n");
-    uart.put_str("  native-https-bearer experimental\n");
+    uart.put_str("  native-https experimental-pin-required\n");
+    uart.put_str("  native-https-bearer experimental-pin-required\n");
     uart.put_str("  local-runtime planned\n");
     uart.put_str("  output serial,udp-xjq\n");
     uart.put_str("  response-preview required\n");
     uart.put_str("  openai-compatible required\n");
     uart.put_str("  auth bearer-or-maintainer-signed\n");
-    uart.put_str("  tls-gate server-finished,pin-optional\n");
+    uart.put_str("  tls-gate server-finished,pin-required\n");
     uart.put_str("  fallback maintainer-bridge\n");
     uart.put_str("  guardrails execution-layer,tool-policy,memory-write-veto\n");
 }
@@ -3877,7 +3877,7 @@ fn print_ai_route_policy(uart: &mut Uart) {
 fn write_ai_route_policy_summary<W: Write>(out: &mut W) {
     let _ = write!(
         out,
-        "ai-route version={AI_ROUTE_POLICY_VERSION} mode=readonly default-model=gpt-5.5 order=maintainer-bridge,native-https-bearer,native-https,local-runtime-planned bridge=http-maintainer native-https=experimental native-https-bearer=experimental local-runtime=planned output=serial,udp-xjq response-preview=required openai-compatible=required auth=bearer-or-maintainer-signed tls-gate=server-finished,pin-optional fallback=maintainer-bridge guardrails=execution-layer,tool-policy,memory-write-veto"
+        "ai-route version={AI_ROUTE_POLICY_VERSION} mode=readonly default-model=gpt-5.5 order=maintainer-bridge,native-https-bearer,native-https,local-runtime-planned bridge=http-maintainer native-https=experimental-pin-required native-https-bearer=experimental-pin-required local-runtime=planned output=serial,udp-xjq response-preview=required openai-compatible=required auth=bearer-or-maintainer-signed tls-gate=server-finished,pin-required fallback=maintainer-bridge guardrails=execution-layer,tool-policy,memory-write-veto"
     );
 }
 
@@ -7431,18 +7431,31 @@ fn write_ai_https_chat_query_summary<W: Write>(default_index: usize, query: &str
         let _ = write!(out, "XJQ ERR ai-https-chat-usage");
         return;
     };
-    let (sni, confirm) = if next.eq_ignore_ascii_case("confirm") {
-        (host, next)
+    let (sni, tls_pin_sha256, confirm) = if is_sha256_hex(next.as_bytes()) {
+        let Some(confirm) = parts.next() else {
+            let _ = write!(out, "XJQ ERR ai-https-chat-usage");
+            return;
+        };
+        (host, next, confirm)
     } else {
-        (
-            if next == "-" { host } else { next },
-            parts.next().unwrap_or(""),
-        )
+        let Some(pin) = parts.next() else {
+            let _ = write!(out, "XJQ ERR ai-https-chat-usage");
+            return;
+        };
+        let Some(confirm) = parts.next() else {
+            let _ = write!(out, "XJQ ERR ai-https-chat-usage");
+            return;
+        };
+        (if next == "-" { host } else { next }, pin, confirm)
     };
     if !confirm.eq_ignore_ascii_case("confirm") || parts.next().is_some() {
         let _ = write!(out, "XJQ ERR ai-https-chat-usage");
         return;
     }
+    let Some(tls_pin_sha256) = parse_sha256_hex_array(tls_pin_sha256) else {
+        let _ = write!(out, "XJQ ERR ai-https-chat bad-tls-pin");
+        return;
+    };
 
     let (body, prompt_len) = match build_ai_chat_body(model, prompt_hex) {
         Ok(value) => value,
@@ -7452,19 +7465,20 @@ fn write_ai_https_chat_query_summary<W: Write>(default_index: usize, query: &str
         }
     };
 
-    match net_https_post(
+    match net_https_post_pinned(
         index,
         host,
         port,
         path,
         body.as_slice(),
         sni,
+        &tls_pin_sha256,
         TLS_TIMEOUT_MS,
     ) {
         Ok(result) => {
             let _ = write!(
                 out,
-                "XJQ OK ai-https-chat iface={} host={} sni={} ip={}.{}.{}.{} port={} status={} request-bytes={} prompt-bytes={} encrypted-bytes={} encrypted-payload={} encrypted-segments={} encrypted-fin={} encrypted-truncated={} decrypted-payload={} decrypted-records={} decrypted-application-records={} src-port={} first-line=\"",
+                "XJQ OK ai-https-chat iface={} host={} sni={} tls-pin=yes ip={}.{}.{}.{} port={} status={} request-bytes={} prompt-bytes={} encrypted-bytes={} encrypted-payload={} encrypted-segments={} encrypted-fin={} encrypted-truncated={} decrypted-payload={} decrypted-records={} decrypted-application-records={} src-port={} cert-sha256=",
                 PCIE_CONTROLLERS[index].name,
                 host,
                 sni,
@@ -7486,6 +7500,8 @@ fn write_ai_https_chat_query_summary<W: Write>(default_index: usize, query: &str
                 result.decrypted_application_records,
                 result.tls.tcp.src_port
             );
+            write_optional_sha256_hex(out, &result.tls.decrypted_first_certificate_sha256);
+            let _ = write!(out, " first-line=\"");
             write_http_sample_line(out, &result.decrypted_sample[..result.decrypted_sample_len]);
             let _ = write!(out, "\" body=\"");
             write_http_body_raw_sample_line(
@@ -7541,6 +7557,10 @@ fn write_ai_https_chat_bearer_query_summary<W: Write>(
         let _ = write!(out, "XJQ ERR ai-https-chat-bearer-usage");
         return;
     };
+    let Some(tls_pin_hex) = parts.next() else {
+        let _ = write!(out, "XJQ ERR ai-https-chat-bearer-usage");
+        return;
+    };
     let Some(bearer_hex) = parts.next() else {
         let _ = write!(out, "XJQ ERR ai-https-chat-bearer-usage");
         return;
@@ -7552,6 +7572,10 @@ fn write_ai_https_chat_bearer_query_summary<W: Write>(
         return;
     }
     let sni = if sni_token == "-" { host } else { sni_token };
+    let Some(tls_pin_sha256) = parse_sha256_hex_array(tls_pin_hex) else {
+        let _ = write!(out, "XJQ ERR ai-https-chat-bearer bad-tls-pin");
+        return;
+    };
 
     let (body, prompt_len) = match build_ai_chat_body(model, prompt_hex) {
         Ok(value) => value,
@@ -7570,7 +7594,7 @@ fn write_ai_https_chat_bearer_query_summary<W: Write>(
         return;
     }
 
-    match net_https_post_bearer(
+    match net_https_post_bearer_pinned(
         index,
         host,
         port,
@@ -7578,12 +7602,13 @@ fn write_ai_https_chat_bearer_query_summary<W: Write>(
         body.as_slice(),
         sni,
         &bearer[..bearer_len],
+        &tls_pin_sha256,
         TLS_TIMEOUT_MS,
     ) {
         Ok(result) => {
             let _ = write!(
                 out,
-                "XJQ OK ai-https-chat-bearer iface={} host={} sni={} ip={}.{}.{}.{} port={} status={} auth=bearer request-bytes={} prompt-bytes={} encrypted-bytes={} encrypted-payload={} encrypted-segments={} encrypted-fin={} encrypted-truncated={} decrypted-payload={} decrypted-records={} decrypted-application-records={} src-port={} first-line=\"",
+                "XJQ OK ai-https-chat-bearer iface={} host={} sni={} tls-pin=yes ip={}.{}.{}.{} port={} status={} auth=bearer request-bytes={} prompt-bytes={} encrypted-bytes={} encrypted-payload={} encrypted-segments={} encrypted-fin={} encrypted-truncated={} decrypted-payload={} decrypted-records={} decrypted-application-records={} src-port={} cert-sha256=",
                 PCIE_CONTROLLERS[index].name,
                 host,
                 sni,
@@ -7605,6 +7630,8 @@ fn write_ai_https_chat_bearer_query_summary<W: Write>(
                 result.decrypted_application_records,
                 result.tls.tcp.src_port
             );
+            write_optional_sha256_hex(out, &result.tls.decrypted_first_certificate_sha256);
+            let _ = write!(out, " first-line=\"");
             write_http_sample_line(out, &result.decrypted_sample[..result.decrypted_sample_len]);
             let _ = write!(out, "\" body=\"");
             write_http_body_raw_sample_line(
@@ -22643,6 +22670,7 @@ fn net_https_request(
     body: &[u8],
     sni: &str,
     bearer: Option<&[u8]>,
+    tls_pin_sha256: Option<&[u8; 32]>,
     timeout_ms: u64,
 ) -> Result<HttpsGetResult, TlsError> {
     if !valid_tls_server_name(sni) {
@@ -22859,6 +22887,16 @@ fn net_https_request(
     if !hello.server_finished_verified {
         let _ = net_tcp_reset(index, session);
         return Err(TlsError::ClientFinishedNotReady);
+    }
+    if let Some(expected_pin) = tls_pin_sha256 {
+        let Some(actual_pin) = hello.decrypted_first_certificate_sha256 else {
+            let _ = net_tcp_reset(index, session);
+            return Err(TlsError::HttpsTlsPinMissing);
+        };
+        if actual_pin != *expected_pin {
+            let _ = net_tcp_reset(index, session);
+            return Err(TlsError::HttpsTlsPinMismatch);
+        }
     }
     let Some(application_schedule) =
         tls13_application_key_schedule(&shared_secret, &application_transcript_hash, cipher_suite)
@@ -23703,6 +23741,7 @@ fn net_https_get(
         &[],
         sni,
         None,
+        None,
         timeout_ms,
     )
 }
@@ -23717,11 +23756,35 @@ fn net_https_post(
     timeout_ms: u64,
 ) -> Result<HttpsGetResult, TlsError> {
     net_https_request(
-        index, host, dst_port, b"POST", path, body, sni, None, timeout_ms,
+        index, host, dst_port, b"POST", path, body, sni, None, None, timeout_ms,
     )
 }
 
-fn net_https_post_bearer(
+fn net_https_post_pinned(
+    index: usize,
+    host: &str,
+    dst_port: u16,
+    path: &str,
+    body: &[u8],
+    sni: &str,
+    tls_pin_sha256: &[u8; 32],
+    timeout_ms: u64,
+) -> Result<HttpsGetResult, TlsError> {
+    net_https_request(
+        index,
+        host,
+        dst_port,
+        b"POST",
+        path,
+        body,
+        sni,
+        None,
+        Some(tls_pin_sha256),
+        timeout_ms,
+    )
+}
+
+fn net_https_post_bearer_pinned(
     index: usize,
     host: &str,
     dst_port: u16,
@@ -23729,6 +23792,7 @@ fn net_https_post_bearer(
     body: &[u8],
     sni: &str,
     bearer: &[u8],
+    tls_pin_sha256: &[u8; 32],
     timeout_ms: u64,
 ) -> Result<HttpsGetResult, TlsError> {
     net_https_request(
@@ -23740,6 +23804,7 @@ fn net_https_post_bearer(
         body,
         sni,
         Some(bearer),
+        Some(tls_pin_sha256),
         timeout_ms,
     )
 }
