@@ -52,6 +52,7 @@ Available commands:
 - `svc health`
 - `svc apps`
 - `svc units`
+- `svc plan`
 - `svc supervisor`
 - `net loop confirm`
 - `net listen confirm`
@@ -265,12 +266,15 @@ PostgreSQL serving remain follow-on stages.
 
 The AI-native service layer currently exposes a read-only service-manager
 contract through `svc facts`, `svc health`, `svc apps`, `svc units`, and
-`svc supervisor`. `svc units` is the executable unit-manifest contract: it
-declares the future launch command, cwd, env surface, endpoint, health check,
-restart policy, storage, network boundary, and policy markers for
-`edge-cognition-core`, `model-runtime`, `maint-agent`, and XiaojinDB. It is
-intentionally not a process supervisor yet; the next stage is turning this
-contract into a runtime that can launch, monitor, and restart declared services.
+`svc plan`/`svc supervisor`. `svc units` is the executable unit-manifest
+contract: it declares the future launch command, cwd, env surface, endpoint,
+health check, restart policy, storage, network boundary, and policy markers for
+`edge-cognition-core`, `model-runtime`, `maint-agent`, and XiaojinDB. `svc plan`
+adds the current launchability view: kernel-integrated services are launchable
+now, while user-service and external-model units remain blocked behind the
+supervisor/runtime gates. It is intentionally not a process supervisor yet; the
+next stage is turning this contract into a runtime that can launch, monitor, and
+restart declared services.
 
 Persistent inactive-slot image staging is exposed through the UDP `XJPS` control
 packet, used by `xjctl net-dev --persist --slot b`. This writes the last
