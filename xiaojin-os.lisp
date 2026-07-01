@@ -256,9 +256,9 @@
       :purpose "Record every accepted, rejected, failed, and rolled-back remote administrative action in XiaojinDB.")
     (stage service-health-readmodel
       :status implemented-readonly
-      :implemented [svc-manifest svc-health svc-app-manifest svc-unit-manifest svc-plan svc-supervisor-contract net-service-smoke net-service-supervisor-smoke]
+      :implemented [svc-manifest svc-health svc-app-manifest svc-unit-manifest svc-plan svc-graph svc-supervisor-contract net-service-smoke net-service-supervisor-smoke]
       :next [service-supervisor-runtime app-launch crash-restart health-check-loop resource-limits]
-      :purpose "Expose AI-native service intent, app manifest, executable unit manifest, launchability plan, service-manager contract, and health over serial and UDP control before starting a real service manager, so edge-cognition-server, model-runtime, maint-agent, and XiaojinDB have a stable machine-readable contract.")
+      :purpose "Expose AI-native service intent, app manifest, executable unit manifest, launchability plan, dependency/failure graph, service-manager contract, and health over serial and UDP control before starting a real service manager, so edge-cognition-server, model-runtime, maint-agent, and XiaojinDB have a stable machine-readable contract.")
     (stage remote-admin-shell
       :status planned
       :requires [identity-and-access signed-command-authz tcp-stream-state tls-or-ssh-crypto command-authorizer pty-or-command-session xiaojindb-audit-log]
