@@ -281,6 +281,7 @@ const NETCONTROL_DB_BLOB_DATA_MAGIC: &[u8; 4] = b"XJBD";
 const NETCONTROL_DB_BLOB_COMMIT_MAGIC: &[u8; 4] = b"XJBC";
 const NETCONTROL_DB_BLOB_READ_MAGIC: &[u8; 4] = b"XJBR";
 const NETCONTROL_QUERY_BYTES: usize = 384;
+const NET_REPLY_BYTES: usize = 1400;
 const NETLOAD_FLAG_GO: u32 = 1;
 const NETLOAD_BOOT_MAGIC_ADDR: u64 = 0x0587_e800;
 const NETLOAD_BOOT_MAGIC: u64 = 0x584a_4e45_5442_4f4f;
@@ -3050,18 +3051,19 @@ fn print_caps(uart: &mut Uart) {
     );
 }
 
+const CAPS_QUERY_SUMMARY: &str = "XJQ OK caps net-dev=yes net-reload=immediate net-ifaces=yes net-roles=yes iface-auto=yes dhcp=yes failover=best-linked-routed-dns route=yes arp=yes dns=yes tcp-connect=yes http-get=yes http-post=yes https-get=experimental https-post=experimental tls-clienthello=yes tls-aes128gcm-decrypt=yes tls-handshake-parse=yes tls-certificate-list-parse=yes tls-first-certificate-sha256=yes tls-server-finished-verify=yes tls-application-data=experimental ai-chat=http,https-experimental-pin-required,https-bearer-experimental-pin-required ai-route=policy-readonly maint-poll=yes maint-status=yes maint-event=yes maint-pending=yes maint-pending-summary=yes maint-command-digest=yes maint-config=yes maint-config-https=yes maint-config-paths=yes maint-config-host-name=yes maint-config-tls-pin=yes maint-https-event=yes maint-local-hmac-key=yes maint-pull-exec=yes maint-ota-stage-pull=http,https-experimental maint-ota-stage-persist=yes maint-ota-extlinux-switch=yes maint-ota-policy=readonly maint-ota-state=readonly svc=manifest-readonly,health-readonly,app-manifest-readonly,supervisor-contract-readonly query=yes reboot=yes sd-writer=yes ab-persist=yes boot-slot=extlinux db=yes";
+
+const CAPS_FULL_QUERY_SUMMARY: &str = "XJQ OK caps-full net=dev,reload-immediate,ifaces,iface-auto,dhcp,auto-dhcp,failover-best-linked-routed-dns,route,arp,dns,tcp,http-get,http-post,https-get-experimental,https-post-experimental,http-trace,http-debug tls=clienthello,aes128gcm,chacha20poly1305,handshake,cert-list,first-cert-sha256,first-cert-pin,server-finished,client-finished-material,client-finished-send,application-data-experimental ai=chat-http,chat-https-experimental-pin-required,chat-https-bearer-experimental-pin-required,response-preview,route-policy ai-facts=runtime-readonly maint=poll,status,pending,digest,verify,verify-hmac,local-key,pull-exec,ota-stage-pull-http,ota-stage-pull-https-experimental,ota-stage-persist,ota-extlinux-switch,ota-policy,ota-state,loop,config,paths,host-name,https,tls-pin,manual-config-run,ack-intent,remote-event,https-event,local-audit svc=manifest-readonly,service-facts,service-health,app-manifest,service-unit-manifest,service-plan,service-graph,service-runtime,service-supervisor-contract wifi=pcie,firmware,firmware-crc,firmware-load,mmio-snapshot,mmio-fingerprint,driver-gate,rtw88-profile,trace,pcie-init,pcie-init-high,pcie-init-linux,pcie-init-dt,enum,station-planned,ap-planned sd=probe,writer,ab-persist,extlinux db=page-store,catalog,wal,fixed-table,btree,btree-delete,table-namespace,event-log,blob-backup,blob-restore";
+
+const _: () = assert!(CAPS_QUERY_SUMMARY.len() <= NET_REPLY_BYTES);
+const _: () = assert!(CAPS_FULL_QUERY_SUMMARY.len() <= NET_REPLY_BYTES);
+
 fn write_caps_query_summary<W: Write>(out: &mut W) {
-    let _ = write!(
-        out,
-        "XJQ OK caps net-dev=yes net-reload=immediate net-ifaces=yes net-roles=yes iface-auto=yes dhcp=yes auto-dhcp=yes failover=best-linked-routed-dns route=yes arp=yes dns=yes tcp-connect=yes http-get=yes http-post=yes https-get=experimental https-post=experimental tls-clienthello=yes tls-aes128gcm-decrypt=yes tls-handshake-parse=yes tls-certificate-list-parse=yes tls-first-certificate-sha256=yes tls-server-finished-verify=yes tls-application-data=experimental ai-chat=http,https-experimental-pin-required,https-bearer-experimental-pin-required,response-preview ai-facts=runtime-readonly ai-route=policy-readonly maint-poll=yes maint-status=yes maint-event=yes maint-pending=yes maint-pending-summary=yes maint-command-digest=yes maint-command-verify=yes maint-command-verify-hmac=yes maint-local-hmac-key=yes maint-pull-exec=yes maint-ota-stage-pull=http,https-experimental maint-ota-stage-persist=yes maint-ota-extlinux-switch=yes maint-ota-policy=readonly maint-ota-state=readonly maint-config=yes maint-config-paths=yes maint-config-host-name=yes maint-config-https=yes maint-config-tls-pin=yes maint-https-event=yes identity=yes svc=manifest-readonly,health-readonly,app-manifest-readonly,unit-manifest-readonly,plan-readonly,graph-readonly,runtime-readonly,supervisor-contract-readonly query=yes reboot=yes sd-writer=yes ab-persist=yes boot-slot=extlinux db=page-store,catalog,wal,fixed-table,btree,event-log"
-    );
+    let _ = write!(out, "{CAPS_QUERY_SUMMARY}");
 }
 
 fn write_caps_full_query_summary<W: Write>(out: &mut W) {
-    let _ = write!(
-        out,
-        "XJQ OK caps-full net=dev,reload-immediate,ifaces,iface-auto,dhcp,auto-dhcp,failover-best-linked-routed-dns,route,arp,dns,tcp,http-get,http-post,https-get-experimental,https-post-experimental,http-trace,http-debug tls=clienthello,aes128gcm,chacha20poly1305,handshake,cert-list,first-cert-sha256,first-cert-pin,server-finished,client-finished-material,client-finished-send,application-data-experimental ai=chat-http,chat-https-experimental-pin-required,chat-https-bearer-experimental-pin-required,response-preview,route-policy ai-facts=runtime-readonly maint=poll,status,pending,digest,verify,verify-hmac,local-key,pull-exec,ota-stage-pull-http,ota-stage-pull-https-experimental,ota-stage-persist,ota-extlinux-switch,ota-policy,ota-state,loop,config,paths,host-name,https,tls-pin,manual-config-run,ack-intent,remote-event,https-event,local-audit svc=manifest-readonly,service-facts,service-health,app-manifest,service-unit-manifest,service-plan,service-graph,service-runtime,service-supervisor-contract wifi=pcie,firmware,firmware-crc,firmware-load,mmio-snapshot,mmio-fingerprint,driver-gate,rtw88-profile,trace,pcie-init,pcie-init-high,pcie-init-linux,pcie-init-dt,enum,station-planned,ap-planned sd=probe,writer,ab-persist,extlinux db=page-store,catalog,wal,fixed-table,btree,btree-delete,table-namespace,event-log,blob-backup,blob-restore"
-    );
+    let _ = write!(out, "{CAPS_FULL_QUERY_SUMMARY}");
 }
 
 struct ServiceManifestEntry {
@@ -28190,14 +28192,14 @@ fn net_handle_persist_packet(
 }
 
 struct NetReplyBuf {
-    bytes: [u8; 1200],
+    bytes: [u8; NET_REPLY_BYTES],
     len: usize,
 }
 
 impl NetReplyBuf {
     fn new() -> Self {
         Self {
-            bytes: [0; 1200],
+            bytes: [0; NET_REPLY_BYTES],
             len: 0,
         }
     }
