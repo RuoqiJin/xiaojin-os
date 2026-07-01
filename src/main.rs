@@ -7863,10 +7863,18 @@ fn write_maint_status_query_summary<W: Write>(default_index: usize, query: &str,
 fn write_maint_pending_query_summary<W: Write>(default_index: usize, query: &str, out: &mut W) {
     let mut parts = query.split_whitespace();
     let _maint = parts.next();
-    if parts.next() != Some("pending") {
+    let Some(command) = parts.next() else {
         let _ = write!(out, "XJQ ERR maint-pending-usage");
         return;
-    }
+    };
+    let compact = match command {
+        "pending" => false,
+        "pending-summary" => true,
+        _ => {
+            let _ = write!(out, "XJQ ERR maint-pending-usage");
+            return;
+        }
+    };
     let Some(first) = parts.next() else {
         let _ = write!(out, "XJQ ERR maint-pending-usage");
         return;
@@ -7897,7 +7905,11 @@ fn write_maint_pending_query_summary<W: Write>(default_index: usize, query: &str
         return;
     };
 
-    write_maint_pending_summary(out, index, host, port, path);
+    if compact {
+        write_maint_pending_compact_summary(out, index, host, port, path);
+    } else {
+        write_maint_pending_summary(out, index, host, port, path);
+    }
 }
 
 fn write_maint_audit_query_summary<W: Write>(default_index: usize, query: &str, out: &mut W) {
@@ -17457,6 +17469,45 @@ fn write_maint_pending_summary<W: Write>(
         }
         Err(error) => {
             let _ = write!(out, "XJQ ERR maint-pending {}", error.as_str());
+        }
+    }
+}
+
+fn write_maint_pending_compact_summary<W: Write>(
+    out: &mut W,
+    index: usize,
+    host: &str,
+    port: u16,
+    path: &str,
+) {
+    match net_http_get(index, host, port, path, HTTP_TIMEOUT_MS) {
+        Ok(result) => {
+            let Some(body) = find_http_body_start(&result.sample[..result.sample_len])
+                .map(|start| &result.sample[start..result.sample_len])
+            else {
+                let _ = write!(out, "XJQ ERR maint-pending-summary no-body");
+                return;
+            };
+            let _ = write!(
+                out,
+                "XJQ OK maint-pending-summary iface={} host={} port={} status={} bytes={} ",
+                PCIE_CONTROLLERS[index].name,
+                host,
+                result.tcp.dst_port,
+                result.status_code,
+                result.response_bytes
+            );
+            write_maint_field(out, body, b"registered");
+            write_maint_field(out, body, b"commands_pending");
+            write_maint_field(out, body, b"commands_running");
+            write_maint_field(out, body, b"next_pending_command_id");
+            write_maint_field(out, body, b"next_pending_command_kind");
+            write_maint_field(out, body, b"next_pending_signature_present");
+            write_maint_field(out, body, b"next_pending_ota_payload_present");
+            write_maint_field(out, body, b"next_pending_public_query_present");
+        }
+        Err(error) => {
+            let _ = write!(out, "XJQ ERR maint-pending-summary {}", error.as_str());
         }
     }
 }
@@ -27452,6 +27503,8 @@ fn net_handle_query_packet(
                 write_maint_poll_query_summary(index, query, &mut reply);
             } else if query.starts_with("maint status ") {
                 write_maint_status_query_summary(index, query, &mut reply);
+            } else if query.starts_with("maint pending-summary ") {
+                write_maint_pending_query_summary(index, query, &mut reply);
             } else if query.starts_with("maint pending ") {
                 write_maint_pending_query_summary(index, query, &mut reply);
             } else if query.starts_with("maint audit ") {
