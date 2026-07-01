@@ -272,7 +272,9 @@ contract through `svc facts`, `svc health`, `svc apps`, `svc units`, `svc plan`,
 unit-manifest contract: it declares the future launch command, cwd, env surface,
 endpoint, health check, restart policy, run identity, resource envelope,
 storage, network boundary, and policy markers for `edge-cognition-core`,
-`model-runtime`, `maint-agent`, and XiaojinDB.
+`model-runtime`, `maint-agent`, and XiaojinDB. `svc apps` is the app-level
+permission contract: it binds each app to a principal and the storage, network,
+tool, model-cache, and database permissions the future supervisor must enforce.
 `svc plan` adds the current launchability view: kernel-integrated services are
 launchable now, while user-service and external-model units remain blocked
 behind the supervisor/runtime gates. `svc graph` adds the dependency and

@@ -3074,9 +3074,11 @@ struct AppManifestEntry {
     id: &'static str,
     service: &'static str,
     runtime: &'static str,
+    principal: &'static str,
     endpoint: &'static str,
     storage: &'static str,
     network: &'static str,
+    permissions: &'static str,
     policy: &'static str,
 }
 
@@ -3173,36 +3175,45 @@ const APP_MANIFEST: [AppManifestEntry; 4] = [
         id: "maint-agent",
         service: "maint-agent",
         runtime: "kernel-integrated",
+        principal: "kernel",
         endpoint: "gcp-maintainer",
         storage: "xiaojindb-event-log,bootstate,sd-ab",
         network: "wan-dhcp-default-route",
+        permissions: "net:maint,ota:ab,db:event-log,identity:device",
         policy: "signed-command-only",
     },
     AppManifestEntry {
         id: "xiaojindb",
         service: "xiaojindb",
         runtime: "kernel-integrated",
+        principal: "kernel",
         endpoint: "page-store",
         storage: "xiaojin-db.dat",
         network: "none",
+        permissions: "sd:db-file,wal,btree,event-log",
         policy: "kernel-owned-wal",
     },
     AppManifestEntry {
         id: "edge-cognition-core",
         service: "edge-cognition-server",
         runtime: "user-service",
+        principal: "xj-edge",
         endpoint: "127.0.0.1:8765",
         storage: "materials,knowledge.sqlite3,chat-history,user-memory.md",
         network: "localhost-http-stream",
+        permissions:
+            "fs:materials-ro,db:chat-history,user-memory-policy,net:localhost-http,tools:guarded",
         policy: "memory-write-veto,tool-guardrail",
     },
     AppManifestEntry {
         id: "model-runtime",
         service: "model-runtime",
         runtime: "external-adapter",
+        principal: "xj-model",
         endpoint: "127.0.0.1:11434-or-openai-compatible",
         storage: "model-cache",
         network: "localhost-or-remote-https",
+        permissions: "net:localhost-or-remote-https,cache:model,compute:bounded",
         policy: "health-check,resource-aware-routing",
     },
 ];
@@ -3521,13 +3532,15 @@ fn print_app_manifest(uart: &mut Uart) {
     for entry in APP_MANIFEST.iter() {
         let _ = writeln!(
             uart,
-            "  {} service={} runtime={} endpoint={} storage={} network={} policy={}",
+            "  {} service={} runtime={} principal={} endpoint={} storage={} network={} permissions={} policy={}",
             entry.id,
             entry.service,
             entry.runtime,
+            entry.principal,
             entry.endpoint,
             entry.storage,
             entry.network,
+            entry.permissions,
             entry.policy
         );
     }
@@ -3543,7 +3556,7 @@ fn write_app_manifest_summary<W: Write>(out: &mut W) {
     for (index, entry) in APP_MANIFEST.iter().enumerate() {
         let _ = write!(
             out,
-            " app{}={} service{}={} runtime{}={} endpoint{}={} storage{}={} network{}={} policy{}={}",
+            " app{}={} service{}={} runtime{}={} principal{}={} endpoint{}={} storage{}={} network{}={} permissions{}={} policy{}={}",
             index,
             entry.id,
             index,
@@ -3551,11 +3564,15 @@ fn write_app_manifest_summary<W: Write>(out: &mut W) {
             index,
             entry.runtime,
             index,
+            entry.principal,
+            index,
             entry.endpoint,
             index,
             entry.storage,
             index,
             entry.network,
+            index,
+            entry.permissions,
             index,
             entry.policy
         );
