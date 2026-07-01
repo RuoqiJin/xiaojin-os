@@ -23823,7 +23823,7 @@ fn tcp_error_is_transport_retryable(error: TcpError) -> bool {
     )
 }
 
-fn net_recover_https_chunk_transport(index: usize) {
+fn net_recover_transport(index: usize) {
     if index >= RTL_DEVICE_COUNT {
         return;
     }
@@ -23835,6 +23835,10 @@ fn net_recover_https_chunk_transport(index: usize) {
     let _ = net_send_gratuitous_arp(index, ARP_REQUEST);
     let _ = net_send_gratuitous_arp(index, ARP_REPLY);
     let _ = net_send_host_hello(index);
+}
+
+fn net_recover_https_chunk_transport(index: usize) {
+    net_recover_transport(index);
 }
 
 fn net_https_get(
@@ -26819,12 +26823,17 @@ fn net_send_tcp_packet(
         write_be16(tx, tcp + 16, csum);
     }
 
-    let tx_timeout_ms = if payload.is_empty() && flags & (TCP_FLAG_ACK | TCP_FLAG_RST) != 0 {
+    let is_control_cleanup = payload.is_empty() && flags & (TCP_FLAG_ACK | TCP_FLAG_RST) != 0;
+    let tx_timeout_ms = if is_control_cleanup {
         TCP_CONTROL_TX_TIMEOUT_MS
     } else {
         TCP_DATA_TX_TIMEOUT_MS
     };
-    rtl_send_prepared_frame(index, padded_len, tx_timeout_ms)
+    let sent = rtl_send_prepared_frame(index, padded_len, tx_timeout_ms);
+    if !sent && is_control_cleanup {
+        net_recover_transport(index);
+    }
+    sent
 }
 
 fn build_dns_a_query(name: &str, txid: u16, out: &mut [u8; DNS_PACKET_BYTES]) -> Option<usize> {
