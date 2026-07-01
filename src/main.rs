@@ -7366,14 +7366,29 @@ fn write_ai_http_chat_query_summary<W: Write>(default_index: usize, query: &str,
         }
     };
 
-    match net_http_post(
+    let mut result = net_http_post(
         index,
         host,
         port,
         path,
         body.as_slice(),
         AI_HTTP_CHAT_TIMEOUT_MS,
-    ) {
+    );
+    if let Err(error) = result {
+        if http_error_is_transport_retryable(error) {
+            net_recover_transport(index);
+            result = net_http_post(
+                index,
+                host,
+                port,
+                path,
+                body.as_slice(),
+                AI_HTTP_CHAT_TIMEOUT_MS,
+            );
+        }
+    }
+
+    match result {
         Ok(result) => {
             let _ = write!(
                 out,
