@@ -257,8 +257,9 @@
     (stage service-health-readmodel
       :status implemented-readonly
       :implemented [svc-manifest svc-health svc-app-manifest svc-unit-manifest svc-plan svc-graph svc-runtime svc-supervisor-contract net-service-smoke net-service-supervisor-smoke]
+      :contract-markers [app-manifest-permission-policy service-unit-manifest service-plan service-graph service-runtime service-supervisor-contract]
       :next [service-supervisor-runtime app-launch crash-restart health-check-loop resource-limits]
-      :purpose "Expose AI-native service intent, app manifest, executable unit manifest, launchability plan, dependency/failure graph, runtime state read model, service-manager contract, and health over serial and UDP control before starting a real service manager, so edge-cognition-server, model-runtime, maint-agent, and XiaojinDB have a stable machine-readable contract.")
+      :purpose "Expose AI-native service intent, app manifest permission policy, executable unit manifest, launchability plan, dependency/failure graph, runtime state read model, service-manager contract, and health over serial and UDP control before starting a real service manager, so edge-cognition-server, model-runtime, maint-agent, and XiaojinDB have a stable machine-readable contract.")
     (stage remote-admin-shell
       :status planned
       :requires [identity-and-access signed-command-authz tcp-stream-state tls-or-ssh-crypto command-authorizer pty-or-command-session xiaojindb-audit-log]
