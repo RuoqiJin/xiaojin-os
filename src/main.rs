@@ -8625,7 +8625,7 @@ fn command_maint_ota_policy(uart: &mut Uart, confirm: Option<&str>) {
     uart.put_str("  switch extlinux-default\n");
     uart.put_str("  reboot network-psci-reset\n");
     uart.put_str(
-        "  confirm booted-network-listener,ota-facts,failover,service-health,supervisor\n",
+        "  confirm booted-network-listener,ota-facts,failover,service-health,app-manifest,supervisor\n",
     );
     uart.put_str("  rollback host-net-ota,previous-slot-preserved\n");
     uart.put_str("  audit xiaojindb-event-log\n");
@@ -8635,7 +8635,7 @@ fn command_maint_ota_policy(uart: &mut Uart, confirm: Option<&str>) {
 fn write_maint_ota_policy_summary<W: Write>(out: &mut W) {
     let _ = write!(
         out,
-        "maint-ota-policy version={MAINT_OTA_POLICY_VERSION} mode=readonly source=signed-maintainer-poll manifest=signed-required artifact=signed-command-bound verify=manifest-sha256,artifact-size,artifact-crc32,artifact-sha256 write=inactive-ab-slot-only switch=extlinux-default reboot=network-psci-reset confirm=booted-network-listener,ota-facts,failover,service-health,supervisor rollback=host-net-ota,previous-slot-preserved audit=xiaojindb-event-log safety=no-current-slot-without-override,no-confirm-before-boot"
+        "maint-ota-policy version={MAINT_OTA_POLICY_VERSION} mode=readonly source=signed-maintainer-poll manifest=signed-required artifact=signed-command-bound verify=manifest-sha256,artifact-size,artifact-crc32,artifact-sha256 write=inactive-ab-slot-only switch=extlinux-default reboot=network-psci-reset confirm=booted-network-listener,ota-facts,failover,service-health,app-manifest,supervisor rollback=host-net-ota,previous-slot-preserved audit=xiaojindb-event-log safety=no-current-slot-without-override,no-confirm-before-boot"
     );
 }
 
@@ -8652,7 +8652,9 @@ fn command_maint_ota_state(uart: &mut Uart, confirm: Option<&str>) {
     uart.put_str("  manifest-fields slot,artifact-id,size,crc32,sha256,command-digest,sequence\n");
     uart.put_str("  artifact-fields size,crc32,sha256\n");
     uart.put_str("  write-guard inactive-slot-only\n");
-    uart.put_str("  confirm-gate network-listener,ota-state,failover,service-supervisor\n");
+    uart.put_str(
+        "  confirm-gate network-listener,ota-state,failover,app-manifest,service-supervisor\n",
+    );
     uart.put_str("  rollback previous-slot-preserved\n");
     uart.put_str("  audit maint-events,xiaojindb\n");
     uart.put_str("  unsafe-states forbidden-current-slot-write,forbidden-confirm-before-reboot\n");
@@ -8661,7 +8663,7 @@ fn command_maint_ota_state(uart: &mut Uart, confirm: Option<&str>) {
 fn write_maint_ota_state_summary<W: Write>(out: &mut W) {
     let _ = write!(
         out,
-        "maint-ota-state version={MAINT_OTA_STATE_VERSION} mode=readonly current=idle transitions=poll,verify-command,pull-manifest,verify-manifest,pull-artifact,verify-artifact,write-inactive-slot,switch-extlinux,reboot,boot-confirm,commit-or-rollback manifest-fields=slot,artifact-id,size,crc32,sha256,command-digest,sequence artifact-fields=size,crc32,sha256 write-guard=inactive-slot-only confirm-gate=network-listener,ota-state,failover,service-supervisor rollback=previous-slot-preserved audit=maint-events,xiaojindb unsafe-states=forbidden-current-slot-write,forbidden-confirm-before-reboot"
+        "maint-ota-state version={MAINT_OTA_STATE_VERSION} mode=readonly current=idle transitions=poll,verify-command,pull-manifest,verify-manifest,pull-artifact,verify-artifact,write-inactive-slot,switch-extlinux,reboot,boot-confirm,commit-or-rollback manifest-fields=slot,artifact-id,size,crc32,sha256,command-digest,sequence artifact-fields=size,crc32,sha256 write-guard=inactive-slot-only confirm-gate=network-listener,ota-state,failover,app-manifest,service-supervisor rollback=previous-slot-preserved audit=maint-events,xiaojindb unsafe-states=forbidden-current-slot-write,forbidden-confirm-before-reboot"
     );
 }
 
