@@ -7679,7 +7679,7 @@ fn build_ai_chat_body(
     let mut body = HttpRequestBuf::new();
     write!(
         body,
-        "{{\"model\":\"{}\",\"messages\":[{{\"role\":\"user\",\"content\":\"{}\"}}],\"stream\":false}}",
+        "{{\"model\":\"{}\",\"messages\":[{{\"role\":\"system\",\"content\":\"You are a concise test assistant. Output only the requested answer.\"}},{{\"role\":\"user\",\"content\":\"{}\"}}],\"max_tokens\":256,\"temperature\":0,\"stream\":false}}",
         model, prompt
     )
     .map_err(|_| "body-too-long")?;
@@ -25287,6 +25287,22 @@ fn net_wait_tcp_response_from_mode(
                         TCP_FLAG_ACK,
                         &[],
                     );
+                    let now = read_cntpct();
+                    if now.wrapping_sub(start) >= timeout_ticks {
+                        if response.payload_bytes > 0 {
+                            return Some(Ok(response));
+                        }
+                        return None;
+                    }
+                    if response.payload_bytes > 0
+                        && now.wrapping_sub(last_progress) >= idle_ticks
+                        && (!require_tls_first_app_record
+                            || tls_sample_has_complete_first_application_record(
+                                http_response_full_sample(&response),
+                            ))
+                    {
+                        return Some(Ok(response));
+                    }
                     continue;
                 }
                 let remaining = HTTP_RESPONSE_MAX_BYTES.saturating_sub(response.payload_bytes);
@@ -25379,6 +25395,22 @@ fn net_wait_tcp_response_from_mode(
                     TCP_FLAG_ACK,
                     &[],
                 );
+                let now = read_cntpct();
+                if now.wrapping_sub(start) >= timeout_ticks {
+                    if response.payload_bytes > 0 {
+                        return Some(Ok(response));
+                    }
+                    return None;
+                }
+                if response.payload_bytes > 0
+                    && now.wrapping_sub(last_progress) >= idle_ticks
+                    && (!require_tls_first_app_record
+                        || tls_sample_has_complete_first_application_record(
+                            http_response_full_sample(&response),
+                        ))
+                {
+                    return Some(Ok(response));
+                }
                 continue;
             }
 
