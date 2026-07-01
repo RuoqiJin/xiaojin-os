@@ -222,6 +222,8 @@ const DNS_MAX_NAME_LEN: usize = 96;
 const TCP_CLIENT_PORT_BASE: u16 = 49152;
 const TCP_CLIENT_PORT_MASK: u16 = 0x3fff;
 const TCP_CONNECT_TIMEOUT_MS: u64 = 4_000;
+const TCP_DATA_TX_TIMEOUT_MS: u64 = 100;
+const TCP_CONTROL_TX_TIMEOUT_MS: u64 = 20;
 const HTTP_TIMEOUT_MS: u64 = 5_000;
 const TLS_TIMEOUT_MS: u64 = 20_000;
 const HTTP_ARTIFACT_TIMEOUT_MS: u64 = 120_000;
@@ -26817,7 +26819,12 @@ fn net_send_tcp_packet(
         write_be16(tx, tcp + 16, csum);
     }
 
-    rtl_send_prepared_frame(index, padded_len, 100)
+    let tx_timeout_ms = if payload.is_empty() && flags & (TCP_FLAG_ACK | TCP_FLAG_RST) != 0 {
+        TCP_CONTROL_TX_TIMEOUT_MS
+    } else {
+        TCP_DATA_TX_TIMEOUT_MS
+    };
+    rtl_send_prepared_frame(index, padded_len, tx_timeout_ms)
 }
 
 fn build_dns_a_query(name: &str, txid: u16, out: &mut [u8; DNS_PACKET_BYTES]) -> Option<usize> {
