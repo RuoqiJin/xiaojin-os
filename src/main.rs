@@ -1614,6 +1614,8 @@ enum TlsError {
     HttpsArtifactAlert,
     HttpsArtifactFinIncomplete,
     HttpsArtifactIdleIncomplete,
+    HttpsTlsPinMissing,
+    HttpsTlsPinMismatch,
 }
 
 impl TlsError {
@@ -1643,6 +1645,8 @@ impl TlsError {
             Self::HttpsArtifactAlert => "https-artifact-alert",
             Self::HttpsArtifactFinIncomplete => "https-artifact-fin-incomplete",
             Self::HttpsArtifactIdleIncomplete => "https-artifact-idle-incomplete",
+            Self::HttpsTlsPinMissing => "https-tls-pin-missing",
+            Self::HttpsTlsPinMismatch => "https-tls-pin-mismatch",
         }
     }
 }
@@ -8592,6 +8596,7 @@ fn command_maint_ota_facts(uart: &mut Uart, confirm: Option<&str>) {
     uart.put_str("  manifest-transport http,https-experimental\n");
     uart.put_str("  artifact-path /artifact-pull/<artifact-id>/xiaojin-os.bin\n");
     uart.put_str("  artifact-transport http,https-experimental\n");
+    uart.put_str("  https-artifact-pin artifact_tls_pin_sha256-required\n");
     uart.put_str("  signature hmac-local-key\n");
     uart.put_str("  command-digest sha256\n");
     uart.put_str("  payload-digest sha256\n");
@@ -8605,7 +8610,7 @@ fn command_maint_ota_facts(uart: &mut Uart, confirm: Option<&str>) {
 fn write_maint_ota_facts_summary<W: Write>(out: &mut W) {
     let _ = write!(
         out,
-        "maint-ota version=xiaojin-maint-ota-v1 manifest=required manifest-transport=http,https-experimental artifact-path=/artifact-pull/<artifact-id>/xiaojin-os.bin artifact-transport=http,https-experimental signature=hmac-local-key command-digest=sha256 payload-digest=sha256 artifact-verify=size,crc32,sha256 persist=inactive-ab-slot extlinux-switch=yes event-log=xiaojindb rollback=host-net-ota"
+        "maint-ota version=xiaojin-maint-ota-v1 manifest=required manifest-transport=http,https-experimental artifact-path=/artifact-pull/<artifact-id>/xiaojin-os.bin artifact-transport=http,https-experimental https-artifact-pin=artifact_tls_pin_sha256-required signature=hmac-local-key command-digest=sha256 payload-digest=sha256 artifact-verify=size,crc32,sha256 persist=inactive-ab-slot extlinux-switch=yes event-log=xiaojindb rollback=host-net-ota"
     );
 }
 
@@ -8620,7 +8625,8 @@ fn command_maint_ota_policy(uart: &mut Uart, confirm: Option<&str>) {
     uart.put_str("  source signed-maintainer-poll\n");
     uart.put_str("  manifest signed-required\n");
     uart.put_str("  artifact signed-command-bound\n");
-    uart.put_str("  verify manifest-sha256,artifact-size,artifact-crc32,artifact-sha256\n");
+    uart.put_str("  https-artifact-pin artifact_tls_pin_sha256-required\n");
+    uart.put_str("  verify manifest-sha256,artifact-size,artifact-crc32,artifact-sha256,https-artifact-tls-pin\n");
     uart.put_str("  write inactive-ab-slot-only\n");
     uart.put_str("  switch extlinux-default\n");
     uart.put_str("  reboot network-psci-reset\n");
@@ -8635,7 +8641,7 @@ fn command_maint_ota_policy(uart: &mut Uart, confirm: Option<&str>) {
 fn write_maint_ota_policy_summary<W: Write>(out: &mut W) {
     let _ = write!(
         out,
-        "maint-ota-policy version={MAINT_OTA_POLICY_VERSION} mode=readonly source=signed-maintainer-poll manifest=signed-required artifact=signed-command-bound verify=manifest-sha256,artifact-size,artifact-crc32,artifact-sha256 write=inactive-ab-slot-only switch=extlinux-default reboot=network-psci-reset confirm=booted-network-listener,ota-facts,failover,service-health,app-manifest,supervisor rollback=host-net-ota,previous-slot-preserved audit=xiaojindb-event-log safety=no-current-slot-without-override,no-confirm-before-boot"
+        "maint-ota-policy version={MAINT_OTA_POLICY_VERSION} mode=readonly source=signed-maintainer-poll manifest=signed-required artifact=signed-command-bound https-artifact-pin=artifact_tls_pin_sha256-required verify=manifest-sha256,artifact-size,artifact-crc32,artifact-sha256,https-artifact-tls-pin write=inactive-ab-slot-only switch=extlinux-default reboot=network-psci-reset confirm=booted-network-listener,ota-facts,failover,service-health,app-manifest,supervisor rollback=host-net-ota,previous-slot-preserved audit=xiaojindb-event-log safety=no-current-slot-without-override,no-confirm-before-boot"
     );
 }
 
@@ -8650,7 +8656,7 @@ fn command_maint_ota_state(uart: &mut Uart, confirm: Option<&str>) {
     uart.put_str("  current idle\n");
     uart.put_str("  transitions poll,verify-command,pull-manifest,verify-manifest,pull-artifact,verify-artifact,write-inactive-slot,switch-extlinux,reboot,boot-confirm,commit-or-rollback\n");
     uart.put_str("  manifest-fields slot,artifact-id,size,crc32,sha256,command-digest,sequence\n");
-    uart.put_str("  artifact-fields size,crc32,sha256\n");
+    uart.put_str("  artifact-fields size,crc32,sha256,https-tls-pin-sha256\n");
     uart.put_str("  write-guard inactive-slot-only\n");
     uart.put_str(
         "  confirm-gate network-listener,ota-state,failover,app-manifest,service-supervisor\n",
@@ -8663,7 +8669,7 @@ fn command_maint_ota_state(uart: &mut Uart, confirm: Option<&str>) {
 fn write_maint_ota_state_summary<W: Write>(out: &mut W) {
     let _ = write!(
         out,
-        "maint-ota-state version={MAINT_OTA_STATE_VERSION} mode=readonly current=idle transitions=poll,verify-command,pull-manifest,verify-manifest,pull-artifact,verify-artifact,write-inactive-slot,switch-extlinux,reboot,boot-confirm,commit-or-rollback manifest-fields=slot,artifact-id,size,crc32,sha256,command-digest,sequence artifact-fields=size,crc32,sha256 write-guard=inactive-slot-only confirm-gate=network-listener,ota-state,failover,app-manifest,service-supervisor rollback=previous-slot-preserved audit=maint-events,xiaojindb unsafe-states=forbidden-current-slot-write,forbidden-confirm-before-reboot"
+        "maint-ota-state version={MAINT_OTA_STATE_VERSION} mode=readonly current=idle transitions=poll,verify-command,pull-manifest,verify-manifest,pull-artifact,verify-artifact,write-inactive-slot,switch-extlinux,reboot,boot-confirm,commit-or-rollback manifest-fields=slot,artifact-id,size,crc32,sha256,command-digest,sequence,artifact-tls-pin artifact-fields=size,crc32,sha256,https-tls-pin-sha256 write-guard=inactive-slot-only confirm-gate=network-listener,ota-state,failover,app-manifest,service-supervisor rollback=previous-slot-preserved audit=maint-events,xiaojindb unsafe-states=forbidden-current-slot-write,forbidden-confirm-before-reboot"
     );
 }
 
@@ -19066,6 +19072,7 @@ fn write_maint_pull_exec_ota_stage_summary<W: Write>(
                     plan.artifact_port,
                     plan.artifact_path,
                     plan.artifact_host,
+                    plan.artifact_tls_pin_sha256.as_ref(),
                     addr,
                     plan.image_bytes,
                     plan.chunk_bytes,
@@ -19078,6 +19085,7 @@ fn write_maint_pull_exec_ota_stage_summary<W: Write>(
                     plan.artifact_port,
                     plan.artifact_path,
                     plan.artifact_host,
+                    plan.artifact_tls_pin_sha256.as_ref(),
                     addr,
                     plan.image_bytes,
                     HTTP_ARTIFACT_TIMEOUT_MS,
@@ -19308,6 +19316,7 @@ struct MaintOtaStagePlan<'a> {
     artifact_host: &'a str,
     artifact_port: u16,
     artifact_path: &'a str,
+    artifact_tls_pin_sha256: Option<[u8; 32]>,
     chunk_bytes: u32,
     image_bytes: u32,
     image_crc32: u32,
@@ -19354,6 +19363,15 @@ fn parse_maint_ota_stage_payload(payload: &[u8]) -> Option<MaintOtaStagePlan<'_>
     let artifact_url = json_get_string(json, "artifact_url")?;
     let (artifact_scheme, artifact_host, artifact_port, artifact_path) =
         parse_maint_artifact_url(artifact_url)?;
+    let artifact_tls_pin_sha256 = match artifact_scheme {
+        MaintOtaArtifactScheme::Http => {
+            json_get_string(json, "artifact_tls_pin_sha256").and_then(parse_sha256_hex_array)
+        }
+        MaintOtaArtifactScheme::Https => Some(parse_sha256_hex_array(json_get_string(
+            json,
+            "artifact_tls_pin_sha256",
+        )?)?),
+    };
     let chunk_bytes = json_get_u64(json, "chunk_bytes").unwrap_or(0);
     if chunk_bytes > 0 && (chunk_bytes < 128 || chunk_bytes > 16 * 1024) {
         return None;
@@ -19364,6 +19382,7 @@ fn parse_maint_ota_stage_payload(payload: &[u8]) -> Option<MaintOtaStagePlan<'_>
         artifact_host,
         artifact_port,
         artifact_path,
+        artifact_tls_pin_sha256,
         chunk_bytes: chunk_bytes as u32,
         image_bytes,
         image_crc32,
@@ -19429,8 +19448,20 @@ fn maint_ota_stage_payload_invalid_reason(payload: &[u8]) -> &'static str {
     let Some(artifact_url) = json_get_string(json, "artifact_url") else {
         return "artifact-url-missing";
     };
-    if parse_maint_artifact_url(artifact_url).is_none() {
+    let Some((artifact_scheme, _, _, _)) = parse_maint_artifact_url(artifact_url) else {
         return "artifact-url-value";
+    };
+    if matches!(artifact_scheme, MaintOtaArtifactScheme::Https) {
+        let Some(pin) = json_get_string(json, "artifact_tls_pin_sha256") else {
+            return "artifact-tls-pin-missing";
+        };
+        if parse_sha256_hex_array(pin).is_none() {
+            return "artifact-tls-pin-value";
+        }
+    } else if let Some(pin) = json_get_string(json, "artifact_tls_pin_sha256") {
+        if parse_sha256_hex_array(pin).is_none() {
+            return "artifact-tls-pin-value";
+        }
     }
     if let Some(chunk_bytes) = json_get_u64(json, "chunk_bytes") {
         if chunk_bytes > 0 && (chunk_bytes < 128 || chunk_bytes > 16 * 1024) {
@@ -23017,6 +23048,7 @@ fn net_https_download_artifact(
     dst_port: u16,
     path: &str,
     sni: &str,
+    tls_pin_sha256: Option<&[u8; 32]>,
     addr: u64,
     expected_size: u32,
     timeout_ms: u64,
@@ -23031,6 +23063,7 @@ fn net_https_download_artifact(
         dst_port,
         path,
         sni,
+        tls_pin_sha256,
         addr,
         expected_size,
         timeout_ms,
@@ -23044,6 +23077,7 @@ fn net_https_download_artifact_unchecked_target(
     dst_port: u16,
     path: &str,
     sni: &str,
+    tls_pin_sha256: Option<&[u8; 32]>,
     addr: u64,
     expected_size: u32,
     timeout_ms: u64,
@@ -23171,6 +23205,16 @@ fn net_https_download_artifact_unchecked_target(
     if !decrypt.handshake.server_finished_verified {
         let _ = net_tcp_reset(index, session);
         return Err(TlsError::ClientFinishedNotReady);
+    }
+    if let Some(expected_pin) = tls_pin_sha256 {
+        let Some(actual_pin) = decrypt.handshake.first_certificate_sha256 else {
+            let _ = net_tcp_reset(index, session);
+            return Err(TlsError::HttpsTlsPinMissing);
+        };
+        if actual_pin != *expected_pin {
+            let _ = net_tcp_reset(index, session);
+            return Err(TlsError::HttpsTlsPinMismatch);
+        }
     }
     let Some(application_schedule) =
         tls13_application_key_schedule(&shared_secret, &application_transcript_hash, cipher_suite)
@@ -23475,6 +23519,7 @@ fn net_https_download_artifact_chunked(
     dst_port: u16,
     path: &str,
     sni: &str,
+    tls_pin_sha256: Option<&[u8; 32]>,
     addr: u64,
     expected_size: u32,
     chunk_bytes: u32,
@@ -23544,6 +23589,7 @@ fn net_https_download_artifact_chunked(
                 dst_port,
                 path,
                 sni,
+                tls_pin_sha256,
                 chunk_addr,
                 take,
                 chunk_timeout_ms,
