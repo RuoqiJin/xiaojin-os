@@ -398,6 +398,7 @@ const MAINT_CONFIG_TLS_PIN_CHUNKS: usize =
 const MAINT_CONFIG_DEFAULT_POLL_PATH: &str = "/xiaojin-maintainer/device-pull/r5c-lab/poll.txt";
 const MAINT_CONFIG_DEFAULT_EVENT_PATH: &str = "/xiaojin-maintainer/device-pull/r5c-lab/events";
 const MAINT_OTA_POLICY_VERSION: &str = "xiaojin-maint-ota-policy-v1";
+const MAINT_OTA_STATE_VERSION: &str = "xiaojin-maint-ota-state-v1";
 const DB_WAL_KIND_TEST: u32 = 1;
 const DB_WAL_KIND_PUT: u32 = 2;
 const DB_WAL_KIND_BPUT: u32 = 3;
@@ -2995,6 +2996,7 @@ fn print_caps(uart: &mut Uart) {
     uart.put_str("  maint ota-stage-persist yes\n");
     uart.put_str("  maint ota-extlinux-switch yes\n");
     uart.put_str("  maint ota-policy-readonly yes\n");
+    uart.put_str("  maint ota-state-readonly yes\n");
     uart.put_str("  maint loop yes\n");
     uart.put_str("  maint ack-intent yes\n");
     uart.put_str("  maint config-host-name yes\n");
@@ -3047,14 +3049,14 @@ fn print_caps(uart: &mut Uart) {
 fn write_caps_query_summary<W: Write>(out: &mut W) {
     let _ = write!(
         out,
-        "XJQ OK caps net-dev=yes net-reload=immediate net-ifaces=yes net-roles=yes iface-auto=yes dhcp=yes auto-dhcp=yes failover=best-linked-routed-dns route=yes arp=yes dns=yes tcp-connect=yes http-get=yes http-post=yes https-get=experimental https-post=experimental tls-clienthello=yes tls-aes128gcm-decrypt=yes tls-handshake-parse=yes tls-certificate-list-parse=yes tls-first-certificate-sha256=yes tls-server-finished-verify=yes tls-application-data=experimental ai-chat=http,https-experimental,https-bearer-experimental,response-preview ai-facts=runtime-readonly ai-route=policy-readonly maint-poll=yes maint-status=yes maint-event=yes maint-pending=yes maint-pending-summary=yes maint-command-digest=yes maint-command-verify=yes maint-command-verify-hmac=yes maint-local-hmac-key=yes maint-pull-exec=yes maint-ota-stage-pull=http,https-experimental maint-ota-stage-persist=yes maint-ota-extlinux-switch=yes maint-ota-policy=readonly maint-config=yes maint-config-paths=yes maint-config-host-name=yes maint-config-https=yes maint-config-tls-pin=yes maint-https-event=yes identity=yes svc=manifest-readonly,health-readonly,app-manifest-readonly,unit-manifest-readonly,plan-readonly,graph-readonly,runtime-readonly,supervisor-contract-readonly query=yes reboot=yes sd-writer=yes ab-persist=yes boot-slot=extlinux db=page-store,catalog,wal,fixed-table,btree,event-log"
+        "XJQ OK caps net-dev=yes net-reload=immediate net-ifaces=yes net-roles=yes iface-auto=yes dhcp=yes auto-dhcp=yes failover=best-linked-routed-dns route=yes arp=yes dns=yes tcp-connect=yes http-get=yes http-post=yes https-get=experimental https-post=experimental tls-clienthello=yes tls-aes128gcm-decrypt=yes tls-handshake-parse=yes tls-certificate-list-parse=yes tls-first-certificate-sha256=yes tls-server-finished-verify=yes tls-application-data=experimental ai-chat=http,https-experimental,https-bearer-experimental,response-preview ai-facts=runtime-readonly ai-route=policy-readonly maint-poll=yes maint-status=yes maint-event=yes maint-pending=yes maint-pending-summary=yes maint-command-digest=yes maint-command-verify=yes maint-command-verify-hmac=yes maint-local-hmac-key=yes maint-pull-exec=yes maint-ota-stage-pull=http,https-experimental maint-ota-stage-persist=yes maint-ota-extlinux-switch=yes maint-ota-policy=readonly maint-ota-state=readonly maint-config=yes maint-config-paths=yes maint-config-host-name=yes maint-config-https=yes maint-config-tls-pin=yes maint-https-event=yes identity=yes svc=manifest-readonly,health-readonly,app-manifest-readonly,unit-manifest-readonly,plan-readonly,graph-readonly,runtime-readonly,supervisor-contract-readonly query=yes reboot=yes sd-writer=yes ab-persist=yes boot-slot=extlinux db=page-store,catalog,wal,fixed-table,btree,event-log"
     );
 }
 
 fn write_caps_full_query_summary<W: Write>(out: &mut W) {
     let _ = write!(
         out,
-        "XJQ OK caps-full net=dev,reload-immediate,ifaces,iface-auto,dhcp,auto-dhcp,failover-best-linked-routed-dns,route,arp,dns,tcp,http-get,http-post,https-get-experimental,https-post-experimental,http-trace,http-debug tls=clienthello,aes128gcm,chacha20poly1305,handshake,cert-list,first-cert-sha256,first-cert-pin,server-finished,client-finished-material,client-finished-send,application-data-experimental ai=chat-http,chat-https-experimental,chat-https-bearer-experimental,response-preview,route-policy ai-facts=runtime-readonly maint=poll,status,pending,digest,verify,verify-hmac,local-key,pull-exec,ota-stage-pull-http,ota-stage-pull-https-experimental,ota-stage-persist,ota-extlinux-switch,ota-policy,loop,config,paths,host-name,https,tls-pin,manual-config-run,ack-intent,remote-event,https-event,local-audit svc=manifest-readonly,service-facts,service-health,app-manifest,service-unit-manifest,service-plan,service-graph,service-runtime,service-supervisor-contract wifi=pcie,firmware,firmware-crc,firmware-load,mmio-snapshot,mmio-fingerprint,driver-gate,rtw88-profile,trace,pcie-init,pcie-init-high,pcie-init-linux,pcie-init-dt,enum,station-planned,ap-planned sd=probe,writer,ab-persist,extlinux db=page-store,catalog,wal,fixed-table,btree,btree-delete,table-namespace,event-log,blob-backup,blob-restore"
+        "XJQ OK caps-full net=dev,reload-immediate,ifaces,iface-auto,dhcp,auto-dhcp,failover-best-linked-routed-dns,route,arp,dns,tcp,http-get,http-post,https-get-experimental,https-post-experimental,http-trace,http-debug tls=clienthello,aes128gcm,chacha20poly1305,handshake,cert-list,first-cert-sha256,first-cert-pin,server-finished,client-finished-material,client-finished-send,application-data-experimental ai=chat-http,chat-https-experimental,chat-https-bearer-experimental,response-preview,route-policy ai-facts=runtime-readonly maint=poll,status,pending,digest,verify,verify-hmac,local-key,pull-exec,ota-stage-pull-http,ota-stage-pull-https-experimental,ota-stage-persist,ota-extlinux-switch,ota-policy,ota-state,loop,config,paths,host-name,https,tls-pin,manual-config-run,ack-intent,remote-event,https-event,local-audit svc=manifest-readonly,service-facts,service-health,app-manifest,service-unit-manifest,service-plan,service-graph,service-runtime,service-supervisor-contract wifi=pcie,firmware,firmware-crc,firmware-load,mmio-snapshot,mmio-fingerprint,driver-gate,rtw88-profile,trace,pcie-init,pcie-init-high,pcie-init-linux,pcie-init-dt,enum,station-planned,ap-planned sd=probe,writer,ab-persist,extlinux db=page-store,catalog,wal,fixed-table,btree,btree-delete,table-namespace,event-log,blob-backup,blob-restore"
     );
 }
 
@@ -5956,6 +5958,7 @@ fn command_maint<'a>(uart: &mut Uart, parts: &mut core::str::SplitWhitespace<'a>
         ),
         Some("ota-facts") | Some("ota-status") => command_maint_ota_facts(uart, parts.next()),
         Some("ota-policy") | Some("ota-lifecycle") => command_maint_ota_policy(uart, parts.next()),
+        Some("ota-state") | Some("ota-plan") => command_maint_ota_state(uart, parts.next()),
         Some("config-pull-exec") => command_maint_config_pull_exec(uart, parts.next()),
         Some("loop") => command_maint_loop(
             uart,
@@ -6030,6 +6033,7 @@ fn command_maint<'a>(uart: &mut Uart, parts: &mut core::str::SplitWhitespace<'a>
             uart.put_str("  maint ota-facts [confirm]\n");
             uart.put_str("  maint ota-policy [confirm]\n");
             uart.put_str("  maint ota-status [confirm]\n");
+            uart.put_str("  maint ota-state [confirm]\n");
             uart.put_str("  maint config-pull-exec confirm\n");
             uart.put_str(
                 "  maint loop <pcie3x1|pcie3x2|auto|0|1> <host|ip> <port> <poll-path> <event-path> <count> <interval-ms> confirm\n",
@@ -8599,6 +8603,32 @@ fn write_maint_ota_policy_summary<W: Write>(out: &mut W) {
     let _ = write!(
         out,
         "maint-ota-policy version={MAINT_OTA_POLICY_VERSION} mode=readonly source=signed-maintainer-poll manifest=signed-required artifact=signed-command-bound verify=manifest-sha256,artifact-size,artifact-crc32,artifact-sha256 write=inactive-ab-slot-only switch=extlinux-default reboot=network-psci-reset confirm=booted-network-listener,ota-facts,failover,service-health,supervisor rollback=host-net-ota,previous-slot-preserved audit=xiaojindb-event-log safety=no-current-slot-without-override,no-confirm-before-boot"
+    );
+}
+
+fn command_maint_ota_state(uart: &mut Uart, confirm: Option<&str>) {
+    if !matches!(confirm, None | Some("confirm")) {
+        uart.put_str("usage: maint ota-state [confirm]\n");
+        return;
+    }
+    uart.put_str("maintainer OTA state machine:\n");
+    let _ = writeln!(uart, "  version {MAINT_OTA_STATE_VERSION}");
+    uart.put_str("  mode readonly\n");
+    uart.put_str("  current idle\n");
+    uart.put_str("  transitions poll,verify-command,pull-manifest,verify-manifest,pull-artifact,verify-artifact,write-inactive-slot,switch-extlinux,reboot,boot-confirm,commit-or-rollback\n");
+    uart.put_str("  manifest-fields slot,artifact-id,size,crc32,sha256,command-digest,sequence\n");
+    uart.put_str("  artifact-fields size,crc32,sha256\n");
+    uart.put_str("  write-guard inactive-slot-only\n");
+    uart.put_str("  confirm-gate network-listener,ota-state,failover,service-supervisor\n");
+    uart.put_str("  rollback previous-slot-preserved\n");
+    uart.put_str("  audit maint-events,xiaojindb\n");
+    uart.put_str("  unsafe-states forbidden-current-slot-write,forbidden-confirm-before-reboot\n");
+}
+
+fn write_maint_ota_state_summary<W: Write>(out: &mut W) {
+    let _ = write!(
+        out,
+        "maint-ota-state version={MAINT_OTA_STATE_VERSION} mode=readonly current=idle transitions=poll,verify-command,pull-manifest,verify-manifest,pull-artifact,verify-artifact,write-inactive-slot,switch-extlinux,reboot,boot-confirm,commit-or-rollback manifest-fields=slot,artifact-id,size,crc32,sha256,command-digest,sequence artifact-fields=size,crc32,sha256 write-guard=inactive-slot-only confirm-gate=network-listener,ota-state,failover,service-supervisor rollback=previous-slot-preserved audit=maint-events,xiaojindb unsafe-states=forbidden-current-slot-write,forbidden-confirm-before-reboot"
     );
 }
 
@@ -19550,6 +19580,10 @@ fn is_public_xj_query(query: &[u8]) -> bool {
         "maint ota-lifecycle confirm",
         "maint ota-status",
         "maint ota-status confirm",
+        "maint ota-state",
+        "maint ota-state confirm",
+        "maint ota-plan",
+        "maint ota-plan confirm",
         "sd extlinux",
         "sd extlinux confirm",
     ]
@@ -19690,6 +19724,13 @@ fn write_public_xj_query_result<W: Write>(query: &str, out: &mut W) -> bool {
     {
         let _ = write!(out, "XJQ OK ");
         write_maint_ota_policy_summary(out);
+    } else if query.eq_ignore_ascii_case("maint ota-state")
+        || query.eq_ignore_ascii_case("maint ota-state confirm")
+        || query.eq_ignore_ascii_case("maint ota-plan")
+        || query.eq_ignore_ascii_case("maint ota-plan confirm")
+    {
+        let _ = write!(out, "XJQ OK ");
+        write_maint_ota_state_summary(out);
     } else if query.eq_ignore_ascii_case("sd extlinux")
         || query.eq_ignore_ascii_case("sd extlinux confirm")
     {
@@ -27313,6 +27354,13 @@ fn net_handle_query_packet(
             {
                 let _ = write!(reply, "XJQ OK ");
                 write_maint_ota_policy_summary(&mut reply);
+            } else if query.eq_ignore_ascii_case("maint ota-state")
+                || query.eq_ignore_ascii_case("maint ota-state confirm")
+                || query.eq_ignore_ascii_case("maint ota-plan")
+                || query.eq_ignore_ascii_case("maint ota-plan confirm")
+            {
+                let _ = write!(reply, "XJQ OK ");
+                write_maint_ota_state_summary(&mut reply);
             } else if query.starts_with("maint key-set ") {
                 write_maint_key_set_query_summary(query, &mut reply);
             } else if query.eq_ignore_ascii_case("maint key-clear")

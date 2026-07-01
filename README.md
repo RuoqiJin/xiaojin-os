@@ -416,6 +416,11 @@ UART `xload` as the recovery path until the network path is stable.
     Ethernet, writes it into the inactive preallocated slot, and readback-checks
     CRC. Boot target switching, bootstate updates, automatic confirmation, and
     rollback are still follow-on stages.
+13. Maintainer OTA contracts: `maint ota-facts`, `maint ota-policy`, and
+    `maint ota-state` expose the signed-manifest/artifact requirements,
+    inactive-slot write guard, extlinux switch, reboot-confirm, rollback, audit,
+    and state-machine transitions needed before the board performs unattended
+    GCP VM pull-exec OTA.
 
 Useful first probes after booting the latest kernel:
 
