@@ -270,8 +270,9 @@ The AI-native service layer currently exposes a read-only service-manager
 contract through `svc facts`, `svc health`, `svc apps`, `svc units`, `svc plan`,
 `svc graph`, `svc runtime`, and `svc supervisor`. `svc units` is the executable
 unit-manifest contract: it declares the future launch command, cwd, env surface,
-endpoint, health check, restart policy, storage, network boundary, and policy
-markers for `edge-cognition-core`, `model-runtime`, `maint-agent`, and XiaojinDB.
+endpoint, health check, restart policy, run identity, resource envelope,
+storage, network boundary, and policy markers for `edge-cognition-core`,
+`model-runtime`, `maint-agent`, and XiaojinDB.
 `svc plan` adds the current launchability view: kernel-integrated services are
 launchable now, while user-service and external-model units remain blocked
 behind the supervisor/runtime gates. `svc graph` adds the dependency and
