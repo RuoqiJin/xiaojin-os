@@ -152,7 +152,7 @@
       :purpose "Let Xiaojin OS poll the GCP maintainer, verify a narrow signed public xj_query command, execute it locally, write XiaojinDB audit events, persist a bounded maintainer endpoint config, and run bounded device-side loops from UART, compact Ethernet XJQ control, saved config, or one listener-start maintenance tick before scheduled autonomous maintenance is enabled.")
     (stage udp-query-control
       :status implemented-readonly
-      :implemented [xjq-caps-query xjq-net-ips-query xjq-net-dns-query xjq-net-tcp-query xjq-net-http-query xjq-maint-status-query xjq-maint-ota-facts-query rtl-dma-rx-watchdog xjq-wifi-facts-query xjq-wifi-status-query xjq-sd-facts-query xjq-sd-regs-query xjq-sd-read0-query xjq-sd-bpb-query xjq-sd-root-query xjq-sd-slots-query xjq-db-page-store-query xjq-db-table-query xjq-db-btree-query xjq-db-event-log-query]
+      :implemented [xjq-caps-query xjq-net-ips-query xjq-net-dns-query xjq-net-tcp-query xjq-net-http-query xjq-ai-route-policy-query xjq-maint-status-query xjq-maint-ota-facts-query rtl-dma-rx-watchdog xjq-wifi-facts-query xjq-wifi-status-query xjq-sd-facts-query xjq-sd-regs-query xjq-sd-read0-query xjq-sd-bpb-query xjq-sd-root-query xjq-sd-slots-query xjq-db-page-store-query xjq-db-table-query xjq-db-btree-query xjq-db-event-log-query]
       :next [ab-bootstate-writer extlinux-default-switch rollback-confirmation]
       :purpose "Let xjctl ask short board-control questions over Ethernet, so storage/OTA/DB bring-up no longer requires the UART shell for every probe.")
     (stage net-persist
@@ -266,7 +266,7 @@
       :purpose "Provide an SSH-like or SSH-compatible secure management surface for operators, while keeping the local LAN hot-update and recovery path available.")
     (stage maintainer-ai-bridge
       :status host-verified
-      :implemented [ai-facts xjq-ai-facts ai-response-preview maintainer-ai-smoke net-ai-bridge-smoke net-ai-chat net-ai-router-smoke]
+      :implemented [ai-facts ai-route-policy xjq-ai-facts xjq-ai-route-policy ai-response-preview maintainer-ai-smoke net-ai-bridge-smoke net-ai-chat net-ai-router-smoke]
       :verified [gcp-maintainer-ai-chat-openai-compatible gpt-5.5-smoke-ok]
       :policy "Use the maintainer bridge as the first board-output model path; native board HTTPS router calls remain experimental until TLS is safe-mode isolated."
       :purpose "Let Xiaojin OS ask an OpenAI-compatible model through the maintainer/XJP Router bridge and return a short model response over serial or UDP control."))
