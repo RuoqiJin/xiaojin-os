@@ -2748,6 +2748,7 @@ fn print_help(uart: &mut Uart) {
     uart.put_str("  svc units            show service-manager unit manifest facts\n");
     uart.put_str("  svc plan             show service launch plan and blockers\n");
     uart.put_str("  svc graph            show service dependency graph and failure policy\n");
+    uart.put_str("  svc runtime          show service runtime state read model\n");
     uart.put_str("  svc supervisor       show service-manager supervisor contract\n");
     uart.put_str("  mem                  show current memory map facts\n");
     uart.put_str("  regs                 show selected CPU registers\n");
@@ -3007,6 +3008,7 @@ fn print_caps(uart: &mut Uart) {
     uart.put_str("  svc unit-manifest-readonly yes\n");
     uart.put_str("  svc plan-readonly yes\n");
     uart.put_str("  svc graph-readonly yes\n");
+    uart.put_str("  svc runtime-readonly yes\n");
     uart.put_str("  svc supervisor-contract-readonly yes\n");
     uart.put_str("  identity facts yes\n");
     uart.put_str("  rng development-hmac-drbg yes\n");
@@ -3040,14 +3042,14 @@ fn print_caps(uart: &mut Uart) {
 fn write_caps_query_summary<W: Write>(out: &mut W) {
     let _ = write!(
         out,
-        "XJQ OK caps net-dev=yes net-reload=immediate net-ifaces=yes net-roles=yes iface-auto=yes dhcp=yes auto-dhcp=yes failover=best-linked-routed-dns route=yes arp=yes dns=yes tcp-connect=yes http-get=yes http-post=yes https-get=experimental https-post=experimental tls-clienthello=yes tls-aes128gcm-decrypt=yes tls-handshake-parse=yes tls-certificate-list-parse=yes tls-first-certificate-sha256=yes tls-server-finished-verify=yes tls-application-data=experimental ai-chat=http,https-experimental,https-bearer-experimental,response-preview ai-facts=runtime-readonly maint-poll=yes maint-status=yes maint-event=yes maint-pending=yes maint-pending-summary=yes maint-command-digest=yes maint-command-verify=yes maint-command-verify-hmac=yes maint-local-hmac-key=yes maint-pull-exec=yes maint-ota-stage-pull=http,https-experimental maint-ota-stage-persist=yes maint-ota-extlinux-switch=yes maint-config=yes maint-config-paths=yes maint-config-host-name=yes maint-config-https=yes maint-config-tls-pin=yes maint-https-event=yes identity=yes svc=manifest-readonly,health-readonly,app-manifest-readonly,unit-manifest-readonly,plan-readonly,graph-readonly,supervisor-contract-readonly query=yes reboot=yes sd-writer=yes ab-persist=yes boot-slot=extlinux db=page-store,catalog,wal,fixed-table,btree,event-log"
+        "XJQ OK caps net-dev=yes net-reload=immediate net-ifaces=yes net-roles=yes iface-auto=yes dhcp=yes auto-dhcp=yes failover=best-linked-routed-dns route=yes arp=yes dns=yes tcp-connect=yes http-get=yes http-post=yes https-get=experimental https-post=experimental tls-clienthello=yes tls-aes128gcm-decrypt=yes tls-handshake-parse=yes tls-certificate-list-parse=yes tls-first-certificate-sha256=yes tls-server-finished-verify=yes tls-application-data=experimental ai-chat=http,https-experimental,https-bearer-experimental,response-preview ai-facts=runtime-readonly maint-poll=yes maint-status=yes maint-event=yes maint-pending=yes maint-pending-summary=yes maint-command-digest=yes maint-command-verify=yes maint-command-verify-hmac=yes maint-local-hmac-key=yes maint-pull-exec=yes maint-ota-stage-pull=http,https-experimental maint-ota-stage-persist=yes maint-ota-extlinux-switch=yes maint-config=yes maint-config-paths=yes maint-config-host-name=yes maint-config-https=yes maint-config-tls-pin=yes maint-https-event=yes identity=yes svc=manifest-readonly,health-readonly,app-manifest-readonly,unit-manifest-readonly,plan-readonly,graph-readonly,runtime-readonly,supervisor-contract-readonly query=yes reboot=yes sd-writer=yes ab-persist=yes boot-slot=extlinux db=page-store,catalog,wal,fixed-table,btree,event-log"
     );
 }
 
 fn write_caps_full_query_summary<W: Write>(out: &mut W) {
     let _ = write!(
         out,
-        "XJQ OK caps-full net=dev,reload-immediate,ifaces,iface-auto,dhcp,auto-dhcp,failover-best-linked-routed-dns,route,arp,dns,tcp,http-get,http-post,https-get-experimental,https-post-experimental,http-trace,http-debug tls=clienthello,aes128gcm,chacha20poly1305,handshake,cert-list,first-cert-sha256,first-cert-pin,server-finished,client-finished-material,client-finished-send,application-data-experimental ai=chat-http,chat-https-experimental,chat-https-bearer-experimental,response-preview ai-facts=runtime-readonly maint=poll,status,pending,digest,verify,verify-hmac,local-key,pull-exec,ota-stage-pull-http,ota-stage-pull-https-experimental,ota-stage-persist,ota-extlinux-switch,loop,config,paths,host-name,https,tls-pin,manual-config-run,ack-intent,remote-event,https-event,local-audit svc=manifest-readonly,service-facts,service-health,app-manifest,service-unit-manifest,service-plan,service-graph,service-supervisor-contract wifi=pcie,firmware,firmware-crc,firmware-load,mmio-snapshot,mmio-fingerprint,driver-gate,rtw88-profile,trace,pcie-init,pcie-init-high,pcie-init-linux,pcie-init-dt,enum,station-planned,ap-planned sd=probe,writer,ab-persist,extlinux db=page-store,catalog,wal,fixed-table,btree,btree-delete,table-namespace,event-log,blob-backup,blob-restore"
+        "XJQ OK caps-full net=dev,reload-immediate,ifaces,iface-auto,dhcp,auto-dhcp,failover-best-linked-routed-dns,route,arp,dns,tcp,http-get,http-post,https-get-experimental,https-post-experimental,http-trace,http-debug tls=clienthello,aes128gcm,chacha20poly1305,handshake,cert-list,first-cert-sha256,first-cert-pin,server-finished,client-finished-material,client-finished-send,application-data-experimental ai=chat-http,chat-https-experimental,chat-https-bearer-experimental,response-preview ai-facts=runtime-readonly maint=poll,status,pending,digest,verify,verify-hmac,local-key,pull-exec,ota-stage-pull-http,ota-stage-pull-https-experimental,ota-stage-persist,ota-extlinux-switch,loop,config,paths,host-name,https,tls-pin,manual-config-run,ack-intent,remote-event,https-event,local-audit svc=manifest-readonly,service-facts,service-health,app-manifest,service-unit-manifest,service-plan,service-graph,service-runtime,service-supervisor-contract wifi=pcie,firmware,firmware-crc,firmware-load,mmio-snapshot,mmio-fingerprint,driver-gate,rtw88-profile,trace,pcie-init,pcie-init-high,pcie-init-linux,pcie-init-dt,enum,station-planned,ap-planned sd=probe,writer,ab-persist,extlinux db=page-store,catalog,wal,fixed-table,btree,btree-delete,table-namespace,event-log,blob-backup,blob-restore"
     );
 }
 
@@ -3103,11 +3105,21 @@ struct ServiceGraphEntry {
     transition: &'static str,
 }
 
+struct ServiceRuntimeEntry {
+    id: &'static str,
+    desired: &'static str,
+    observed: &'static str,
+    supervisor: &'static str,
+    reason: &'static str,
+    health: &'static str,
+}
+
 const SERVICE_MANIFEST_VERSION: &str = "xiaojin-service-manifest-v1";
 const APP_MANIFEST_VERSION: &str = "xiaojin-app-manifest-v1";
 const SERVICE_UNIT_MANIFEST_VERSION: &str = "xiaojin-service-unit-manifest-v1";
 const SERVICE_PLAN_VERSION: &str = "xiaojin-service-plan-v1";
 const SERVICE_GRAPH_VERSION: &str = "xiaojin-service-graph-v1";
+const SERVICE_RUNTIME_VERSION: &str = "xiaojin-service-runtime-v1";
 const SERVICE_SUPERVISOR_VERSION: &str = "xiaojin-service-supervisor-v1";
 const SERVICE_MANIFEST: [ServiceManifestEntry; 4] = [
     ServiceManifestEntry {
@@ -3307,6 +3319,40 @@ const SERVICE_GRAPH: [ServiceGraphEntry; 4] = [
         transition: "adapter-health+budget",
     },
 ];
+const SERVICE_RUNTIME: [ServiceRuntimeEntry; 4] = [
+    ServiceRuntimeEntry {
+        id: "maint-agent",
+        desired: "running",
+        observed: "running",
+        supervisor: "kernel-integrated",
+        reason: "none",
+        health: "ok",
+    },
+    ServiceRuntimeEntry {
+        id: "xiaojindb",
+        desired: "running",
+        observed: "running",
+        supervisor: "kernel-integrated",
+        reason: "none",
+        health: "ok",
+    },
+    ServiceRuntimeEntry {
+        id: "edge-cognition-core",
+        desired: "stopped",
+        observed: "blocked",
+        supervisor: "planned",
+        reason: "user-service-runtime",
+        health: "not-started",
+    },
+    ServiceRuntimeEntry {
+        id: "model-runtime",
+        desired: "stopped",
+        observed: "blocked",
+        supervisor: "planned",
+        reason: "model-runtime-adapter",
+        health: "not-started",
+    },
+];
 
 fn command_service(uart: &mut Uart, action: Option<&str>) {
     match action {
@@ -3328,11 +3374,14 @@ fn command_service(uart: &mut Uart, action: Option<&str>) {
         Some("graph") | Some("dependency-graph") | Some("deps") => {
             print_service_graph(uart);
         }
+        Some("runtime") | Some("runtime-state") | Some("state") => {
+            print_service_runtime(uart);
+        }
         Some("supervisor") | Some("contract") | Some("supervisor-contract") => {
             print_service_supervisor(uart);
         }
         _ => {
-            uart.put_str("usage: svc facts|health|apps|units|plan|graph|supervisor\n");
+            uart.put_str("usage: svc facts|health|apps|units|plan|graph|runtime|supervisor\n");
         }
     }
 }
@@ -3644,6 +3693,50 @@ fn write_service_graph_summary<W: Write>(out: &mut W) {
             entry.failure,
             index,
             entry.transition
+        );
+    }
+}
+
+fn print_service_runtime(uart: &mut Uart) {
+    let _ = writeln!(
+        uart,
+        "service runtime: version={} mode=readonly executor=planned count={}",
+        SERVICE_RUNTIME_VERSION,
+        SERVICE_RUNTIME.len()
+    );
+    uart.put_str("  state-source static-contract,kernel-integrated-services\n");
+    for entry in SERVICE_RUNTIME.iter() {
+        let _ = writeln!(
+            uart,
+            "  {} desired={} observed={} supervisor={} reason={} health={}",
+            entry.id, entry.desired, entry.observed, entry.supervisor, entry.reason, entry.health
+        );
+    }
+}
+
+fn write_service_runtime_summary<W: Write>(out: &mut W) {
+    let _ = write!(
+        out,
+        "svc-runtime version={} mode=readonly executor=planned state-source=static-contract,kernel-integrated-services count={}",
+        SERVICE_RUNTIME_VERSION,
+        SERVICE_RUNTIME.len()
+    );
+    for (index, entry) in SERVICE_RUNTIME.iter().enumerate() {
+        let _ = write!(
+            out,
+            " unit{}={} desired{}={} observed{}={} supervisor{}={} reason{}={} health{}={}",
+            index,
+            entry.id,
+            index,
+            entry.desired,
+            index,
+            entry.observed,
+            index,
+            entry.supervisor,
+            index,
+            entry.reason,
+            index,
+            entry.health
         );
     }
 }
@@ -19341,6 +19434,9 @@ fn is_public_xj_query(query: &[u8]) -> bool {
         "svc graph",
         "svc dependency-graph",
         "svc deps",
+        "svc runtime",
+        "svc runtime-state",
+        "svc state",
         "svc supervisor",
         "svc contract",
         "svc supervisor-contract",
@@ -19356,6 +19452,9 @@ fn is_public_xj_query(query: &[u8]) -> bool {
         "service graph",
         "service dependency-graph",
         "service deps",
+        "service runtime",
+        "service runtime-state",
+        "service state",
         "service supervisor",
         "service contract",
         "service supervisor-contract",
@@ -19440,6 +19539,15 @@ fn write_public_xj_query_result<W: Write>(query: &str, out: &mut W) -> bool {
     {
         let _ = write!(out, "XJQ OK ");
         write_service_graph_summary(out);
+    } else if query.eq_ignore_ascii_case("svc runtime")
+        || query.eq_ignore_ascii_case("svc runtime-state")
+        || query.eq_ignore_ascii_case("svc state")
+        || query.eq_ignore_ascii_case("service runtime")
+        || query.eq_ignore_ascii_case("service runtime-state")
+        || query.eq_ignore_ascii_case("service state")
+    {
+        let _ = write!(out, "XJQ OK ");
+        write_service_runtime_summary(out);
     } else if query.eq_ignore_ascii_case("svc supervisor")
         || query.eq_ignore_ascii_case("svc contract")
         || query.eq_ignore_ascii_case("svc supervisor-contract")
@@ -26969,6 +27077,15 @@ fn net_handle_query_packet(
             {
                 let _ = write!(reply, "XJQ OK ");
                 write_service_graph_summary(&mut reply);
+            } else if query.eq_ignore_ascii_case("svc runtime")
+                || query.eq_ignore_ascii_case("svc runtime-state")
+                || query.eq_ignore_ascii_case("svc state")
+                || query.eq_ignore_ascii_case("service runtime")
+                || query.eq_ignore_ascii_case("service runtime-state")
+                || query.eq_ignore_ascii_case("service state")
+            {
+                let _ = write!(reply, "XJQ OK ");
+                write_service_runtime_summary(&mut reply);
             } else if query.eq_ignore_ascii_case("svc supervisor")
                 || query.eq_ignore_ascii_case("svc contract")
                 || query.eq_ignore_ascii_case("svc supervisor-contract")
