@@ -8679,7 +8679,9 @@ fn command_maint_ota_facts(uart: &mut Uart, confirm: Option<&str>) {
     uart.put_str("  version xiaojin-maint-ota-v1\n");
     uart.put_str("  manifest required\n");
     uart.put_str("  manifest-transport http,https-experimental\n");
-    uart.put_str("  artifact-path /artifact-pull/<artifact-id>/xiaojin-os.bin\n");
+    uart.put_str(
+        "  artifact-path /artifact-pull/<artifact-id>/xiaojin-os.bin or /xiaojin-maintainer/artifact-pull/<artifact-id>/xiaojin-os.bin\n",
+    );
     uart.put_str("  artifact-transport http,https-experimental\n");
     uart.put_str("  https-artifact-pin artifact_tls_pin_sha256-required\n");
     uart.put_str("  signature hmac-local-key\n");
@@ -8696,7 +8698,7 @@ fn command_maint_ota_facts(uart: &mut Uart, confirm: Option<&str>) {
 fn write_maint_ota_facts_summary<W: Write>(out: &mut W) {
     let _ = write!(
         out,
-        "maint-ota version=xiaojin-maint-ota-v1 manifest=required manifest-transport=http,https-experimental artifact-path=/artifact-pull/<artifact-id>/xiaojin-os.bin artifact-transport=http,https-experimental https-artifact-pin=artifact_tls_pin_sha256-required signature=hmac-local-key command-digest=sha256 payload-digest=sha256 artifact-verify=size,crc32,sha256 persist=inactive-ab-slot extlinux-switch=yes rescue-policy={MAINT_OTA_RESCUE_POLICY} event-log=xiaojindb rollback=host-net-ota"
+        "maint-ota version=xiaojin-maint-ota-v1 manifest=required manifest-transport=http,https-experimental artifact-path=/artifact-pull/<artifact-id>/xiaojin-os.bin artifact-path-prefix=/xiaojin-maintainer artifact-transport=http,https-experimental https-artifact-pin=artifact_tls_pin_sha256-required signature=hmac-local-key command-digest=sha256 payload-digest=sha256 artifact-verify=size,crc32,sha256 persist=inactive-ab-slot extlinux-switch=yes rescue-policy={MAINT_OTA_RESCUE_POLICY} event-log=xiaojindb rollback=host-net-ota"
     );
 }
 
@@ -18828,12 +18830,19 @@ fn valid_maint_manifest_path(path: &str) -> bool {
 }
 
 fn valid_maint_artifact_path(path: &str) -> bool {
-    const PREFIX: &str = "/artifact-pull/";
+    const PREFIXES: [&str; 2] = ["/artifact-pull/", "/xiaojin-maintainer/artifact-pull/"];
     const SUFFIX: &str = "/xiaojin-os.bin";
-    if !path.starts_with(PREFIX) || !path.ends_with(SUFFIX) || path.len() > 192 {
+    if !path.ends_with(SUFFIX) || path.len() > 192 {
         return false;
     }
-    let artifact_id = &path[PREFIX.len()..path.len() - SUFFIX.len()];
+    let Some(prefix) = PREFIXES
+        .iter()
+        .copied()
+        .find(|prefix| path.starts_with(prefix))
+    else {
+        return false;
+    };
+    let artifact_id = &path[prefix.len()..path.len() - SUFFIX.len()];
     !artifact_id.is_empty()
         && artifact_id.len() <= 96
         && artifact_id
