@@ -8698,7 +8698,7 @@ fn command_maint_ota_facts(uart: &mut Uart, confirm: Option<&str>) {
 fn write_maint_ota_facts_summary<W: Write>(out: &mut W) {
     let _ = write!(
         out,
-        "maint-ota version=xiaojin-maint-ota-v1 manifest=required manifest-transport=http,https-experimental artifact-path=/artifact-pull/<artifact-id>/xiaojin-os.bin artifact-path-prefix=/xiaojin-maintainer artifact-transport=http,https-experimental https-artifact-pin=artifact_tls_pin_sha256-required signature=hmac-local-key command-digest=sha256 payload-digest=sha256 artifact-verify=size,crc32,sha256 persist=inactive-ab-slot extlinux-switch=yes rescue-policy={MAINT_OTA_RESCUE_POLICY} event-log=xiaojindb rollback=host-net-ota"
+        "maint-ota version=xiaojin-maint-ota-v1 manifest=required manifest-transport=http,https-experimental manifest-path-prefix=/xiaojin-maintainer artifact-path=/artifact-pull/<artifact-id>/xiaojin-os.bin artifact-path-prefix=/xiaojin-maintainer artifact-transport=http,https-experimental https-artifact-pin=artifact_tls_pin_sha256-required signature=hmac-local-key command-digest=sha256 payload-digest=sha256 artifact-verify=size,crc32,sha256 persist=inactive-ab-slot extlinux-switch=yes rescue-policy={MAINT_OTA_RESCUE_POLICY} event-log=xiaojindb rollback=host-net-ota"
     );
 }
 
@@ -18821,8 +18821,15 @@ fn fetch_maint_ota_manifest_payload(
 }
 
 fn valid_maint_manifest_path(path: &str) -> bool {
-    path.starts_with("/device-pull/")
-        && path.ends_with("/ota-manifest.txt")
+    const PREFIXES: [&str; 2] = ["/device-pull/", "/xiaojin-maintainer/device-pull/"];
+    let Some(_) = PREFIXES
+        .iter()
+        .copied()
+        .find(|prefix| path.starts_with(prefix))
+    else {
+        return false;
+    };
+    path.ends_with("/ota-manifest.txt")
         && path.len() <= 192
         && path
             .bytes()
@@ -18909,8 +18916,22 @@ fn parse_maint_ota_manifest_payload_body(
     };
     let artifact_url = manifest_ascii_field(artifact_url, MAINT_OTA_ARTIFACT_URL_BYTES)
         .ok_or("manifest-artifact-url")?;
-    if parse_maint_artifact_url(artifact_url).is_none() {
+    let Some((artifact_scheme, _, _, _)) = parse_maint_artifact_url(artifact_url) else {
         return Err("manifest-artifact-url-value");
+    };
+    let artifact_tls_pin_sha256 = find_maint_text_field(body, b"artifact_tls_pin_sha256");
+    let artifact_tls_pin_sha256 = match artifact_tls_pin_sha256 {
+        Some(pin) => {
+            if !is_sha256_hex(pin) {
+                return Err("manifest-artifact-tls-pin-value");
+            }
+            Some(manifest_ascii_field(pin, 64).ok_or("manifest-artifact-tls-pin-ascii")?)
+        }
+        None => None,
+    };
+    if matches!(artifact_scheme, MaintOtaArtifactScheme::Https) && artifact_tls_pin_sha256.is_none()
+    {
+        return Err("manifest-artifact-tls-pin-missing");
     }
     let Some(image_bytes) = find_maint_text_field(body, b"image_bytes") else {
         return Err("manifest-image-bytes-missing");
@@ -18957,20 +18978,31 @@ fn parse_maint_ota_manifest_payload_body(
         return Err("manifest-rescue-policy");
     }
     let mut canonical = NetReplyBuf::new();
-    let chunk_ok = if let Some(chunk_bytes) = chunk_bytes {
-        write!(
+    let chunk_ok = match (artifact_tls_pin_sha256, chunk_bytes) {
+        (Some(pin), Some(chunk_bytes)) => write!(
+            canonical,
+            "{{\"action\":\"stage\",\"arch\":\"{XIAOJIN_ARCH_ID}\",\"artifact_tls_pin_sha256\":\"{pin}\",\"artifact_url\":\"{artifact_url}\",\"board_id\":\"{XIAOJIN_BOARD_ID}\",\"chunk_bytes\":{chunk_bytes},\"device_id\":\"{XIAOJIN_DEVICE_ID}\",\"format\":\"xiaojin-ota-command-v1\",\"image_bytes\":{image_bytes},\"image_crc32\":\"{image_crc32}\",\"image_sha256\":\"{image_sha256}\",\"rescue_policy\":\"{MAINT_OTA_RESCUE_POLICY}\",\"slot\":\"{}\"}}",
+            AsciiBytes(slot)
+        )
+        .is_ok(),
+        (Some(pin), None) => write!(
+            canonical,
+            "{{\"action\":\"stage\",\"arch\":\"{XIAOJIN_ARCH_ID}\",\"artifact_tls_pin_sha256\":\"{pin}\",\"artifact_url\":\"{artifact_url}\",\"board_id\":\"{XIAOJIN_BOARD_ID}\",\"device_id\":\"{XIAOJIN_DEVICE_ID}\",\"format\":\"xiaojin-ota-command-v1\",\"image_bytes\":{image_bytes},\"image_crc32\":\"{image_crc32}\",\"image_sha256\":\"{image_sha256}\",\"rescue_policy\":\"{MAINT_OTA_RESCUE_POLICY}\",\"slot\":\"{}\"}}",
+            AsciiBytes(slot)
+        )
+        .is_ok(),
+        (None, Some(chunk_bytes)) => write!(
             canonical,
             "{{\"action\":\"stage\",\"arch\":\"{XIAOJIN_ARCH_ID}\",\"artifact_url\":\"{artifact_url}\",\"board_id\":\"{XIAOJIN_BOARD_ID}\",\"chunk_bytes\":{chunk_bytes},\"device_id\":\"{XIAOJIN_DEVICE_ID}\",\"format\":\"xiaojin-ota-command-v1\",\"image_bytes\":{image_bytes},\"image_crc32\":\"{image_crc32}\",\"image_sha256\":\"{image_sha256}\",\"rescue_policy\":\"{MAINT_OTA_RESCUE_POLICY}\",\"slot\":\"{}\"}}",
             AsciiBytes(slot)
         )
-        .is_ok()
-    } else {
-        write!(
+        .is_ok(),
+        (None, None) => write!(
             canonical,
             "{{\"action\":\"stage\",\"arch\":\"{XIAOJIN_ARCH_ID}\",\"artifact_url\":\"{artifact_url}\",\"board_id\":\"{XIAOJIN_BOARD_ID}\",\"device_id\":\"{XIAOJIN_DEVICE_ID}\",\"format\":\"xiaojin-ota-command-v1\",\"image_bytes\":{image_bytes},\"image_crc32\":\"{image_crc32}\",\"image_sha256\":\"{image_sha256}\",\"rescue_policy\":\"{MAINT_OTA_RESCUE_POLICY}\",\"slot\":\"{}\"}}",
             AsciiBytes(slot)
         )
-        .is_ok()
+        .is_ok(),
     };
     if !chunk_ok {
         return Err("manifest-payload-too-long");
