@@ -569,6 +569,7 @@ static mut NETLOAD_STATE: NetLoadState = NetLoadState::empty();
 static mut DB_BLOB_IMPORT_STATE: DbBlobImportState = DbBlobImportState::empty();
 static mut LAST_NET_IMAGE: NetImageState = NetImageState::empty();
 static mut LAST_HTTPS_ARTIFACT_DIAG: HttpsArtifactDiag = HttpsArtifactDiag::empty();
+static mut LAST_MAINT_OTA_STATE: MaintOtaRuntimeState = MaintOtaRuntimeState::empty();
 static mut SD_IDMAC_DESC: SdDmaDescStorage = SdDmaDescStorage(SdIdmacDesc::zero());
 static mut SD_BLOCK_BUFFER: SdBlockStorage = SdBlockStorage([0; SD_BLOCK_BYTES]);
 static mut SD_WRITE_BUFFER: SdBlockStorage = SdBlockStorage([0; SD_BLOCK_BYTES]);
@@ -1173,6 +1174,129 @@ impl HttpsArtifactDiag {
             header_done: false,
             fin: false,
         }
+    }
+}
+
+#[derive(Clone, Copy)]
+struct MaintOtaRuntimeState {
+    valid: bool,
+    active: bool,
+    stage: &'static str,
+    result: &'static str,
+    error: &'static str,
+    command_sha_present: bool,
+    command_sha: [u8; 32],
+    slot: u8,
+    artifact_scheme: &'static str,
+    image_bytes: u32,
+    downloaded_bytes: u32,
+    crc32: u32,
+    db_sequence: u64,
+}
+
+impl MaintOtaRuntimeState {
+    const fn empty() -> Self {
+        Self {
+            valid: false,
+            active: false,
+            stage: "idle",
+            result: "none",
+            error: "",
+            command_sha_present: false,
+            command_sha: [0; 32],
+            slot: b'-',
+            artifact_scheme: "none",
+            image_bytes: 0,
+            downloaded_bytes: 0,
+            crc32: 0,
+            db_sequence: 0,
+        }
+    }
+}
+
+fn maint_ota_state_start(command_sha: &[u8]) {
+    let command_digest = str::from_utf8(command_sha)
+        .ok()
+        .and_then(parse_sha256_hex_array);
+    unsafe {
+        LAST_MAINT_OTA_STATE = MaintOtaRuntimeState {
+            valid: true,
+            active: true,
+            stage: "verify-command",
+            result: "running",
+            command_sha_present: command_digest.is_some(),
+            command_sha: command_digest.unwrap_or([0; 32]),
+            ..MaintOtaRuntimeState::empty()
+        };
+    }
+}
+
+fn maint_ota_state_stage(stage: &'static str) {
+    unsafe {
+        LAST_MAINT_OTA_STATE.valid = true;
+        LAST_MAINT_OTA_STATE.active = true;
+        LAST_MAINT_OTA_STATE.stage = stage;
+        LAST_MAINT_OTA_STATE.result = "running";
+        LAST_MAINT_OTA_STATE.error = "";
+    }
+}
+
+fn maint_ota_state_plan(plan: &MaintOtaStagePlan<'_>) {
+    unsafe {
+        LAST_MAINT_OTA_STATE.valid = true;
+        LAST_MAINT_OTA_STATE.active = true;
+        LAST_MAINT_OTA_STATE.stage = "pull-artifact";
+        LAST_MAINT_OTA_STATE.result = "running";
+        LAST_MAINT_OTA_STATE.error = "";
+        LAST_MAINT_OTA_STATE.slot = plan.slot;
+        LAST_MAINT_OTA_STATE.artifact_scheme = plan.artifact_scheme.as_str();
+        LAST_MAINT_OTA_STATE.image_bytes = plan.image_bytes;
+        LAST_MAINT_OTA_STATE.downloaded_bytes = 0;
+        LAST_MAINT_OTA_STATE.crc32 = 0;
+        LAST_MAINT_OTA_STATE.db_sequence = 0;
+    }
+}
+
+fn maint_ota_state_downloaded(download: &HttpArtifactResult) {
+    unsafe {
+        LAST_MAINT_OTA_STATE.valid = true;
+        LAST_MAINT_OTA_STATE.active = true;
+        LAST_MAINT_OTA_STATE.stage = "verify-artifact";
+        LAST_MAINT_OTA_STATE.result = "running";
+        LAST_MAINT_OTA_STATE.downloaded_bytes = download.body_bytes;
+        LAST_MAINT_OTA_STATE.crc32 = download.crc32;
+    }
+}
+
+fn maint_ota_state_error(stage: &'static str, error: &'static str) {
+    unsafe {
+        LAST_MAINT_OTA_STATE.valid = true;
+        LAST_MAINT_OTA_STATE.active = false;
+        LAST_MAINT_OTA_STATE.stage = stage;
+        LAST_MAINT_OTA_STATE.result = "error";
+        LAST_MAINT_OTA_STATE.error = error;
+    }
+}
+
+fn maint_ota_state_persisted(slot: u8, crc32: u32) {
+    unsafe {
+        LAST_MAINT_OTA_STATE.valid = true;
+        LAST_MAINT_OTA_STATE.active = true;
+        LAST_MAINT_OTA_STATE.stage = "switch-extlinux";
+        LAST_MAINT_OTA_STATE.result = "running";
+        LAST_MAINT_OTA_STATE.slot = slot;
+        LAST_MAINT_OTA_STATE.crc32 = crc32;
+    }
+}
+
+fn maint_ota_state_complete(db_sequence: u64) {
+    unsafe {
+        LAST_MAINT_OTA_STATE.valid = true;
+        LAST_MAINT_OTA_STATE.active = false;
+        LAST_MAINT_OTA_STATE.stage = "complete";
+        LAST_MAINT_OTA_STATE.result = "ok";
+        LAST_MAINT_OTA_STATE.error = "";
+        LAST_MAINT_OTA_STATE.db_sequence = db_sequence;
     }
 }
 
@@ -8739,10 +8863,47 @@ fn command_maint_ota_state(uart: &mut Uart, confirm: Option<&str>) {
         uart.put_str("usage: maint ota-state [confirm]\n");
         return;
     }
+    let state = unsafe { LAST_MAINT_OTA_STATE };
+    let diag = unsafe { LAST_HTTPS_ARTIFACT_DIAG };
     uart.put_str("maintainer OTA state machine:\n");
     let _ = writeln!(uart, "  version {MAINT_OTA_STATE_VERSION}");
     uart.put_str("  mode readonly\n");
-    uart.put_str("  current idle\n");
+    let _ = writeln!(uart, "  current {}", state.stage);
+    let _ = writeln!(uart, "  result {}", state.result);
+    let _ = writeln!(uart, "  active {}", yes_no(state.active));
+    if state.valid {
+        let _ = writeln!(uart, "  slot {}", state.slot as char);
+        let _ = writeln!(uart, "  artifact-scheme {}", state.artifact_scheme);
+        let _ = writeln!(uart, "  image-bytes {}", state.image_bytes);
+        let _ = writeln!(uart, "  downloaded-bytes {}", state.downloaded_bytes);
+        let _ = writeln!(uart, "  crc32 0x{:08x}", state.crc32);
+        let _ = writeln!(uart, "  db-sequence {}", state.db_sequence);
+        if state.command_sha_present {
+            uart.put_str("  command-sha ");
+            write_sha256_hex(uart, &state.command_sha);
+            uart.put_str("\n");
+        }
+        if !state.error.is_empty() {
+            let _ = writeln!(uart, "  error {}", state.error);
+        }
+    }
+    if diag.expected_size > 0 {
+        let _ = writeln!(
+            uart,
+            "  chunk offset={} size={} attempt={} status={} received={} expected={} error={}",
+            diag.chunk_offset,
+            diag.chunk_size,
+            diag.chunk_attempt,
+            diag.status_code,
+            diag.received,
+            diag.expected_size,
+            if diag.error.is_empty() {
+                "none"
+            } else {
+                diag.error
+            }
+        );
+    }
     uart.put_str("  transitions poll,verify-command,pull-manifest,verify-manifest,pull-artifact,verify-artifact,write-inactive-slot,switch-extlinux,reboot,boot-confirm,commit-or-rollback\n");
     uart.put_str("  manifest-fields slot,artifact-id,size,crc32,sha256,command-digest,sequence\n");
     uart.put_str("  artifact-fields size,crc32,sha256,https-tls-pin-sha256\n");
@@ -8757,9 +8918,45 @@ fn command_maint_ota_state(uart: &mut Uart, confirm: Option<&str>) {
 }
 
 fn write_maint_ota_state_summary<W: Write>(out: &mut W) {
+    let state = unsafe { LAST_MAINT_OTA_STATE };
+    let diag = unsafe { LAST_HTTPS_ARTIFACT_DIAG };
     let _ = write!(
         out,
-        "maint-ota-state version={MAINT_OTA_STATE_VERSION} mode=readonly current=idle transitions=poll,verify-command,pull-manifest,verify-manifest,pull-artifact,verify-artifact,write-inactive-slot,switch-extlinux,reboot,boot-confirm,commit-or-rollback manifest-fields=slot,artifact-id,size,crc32,sha256,command-digest,sequence,artifact-tls-pin,rescue-policy artifact-fields=size,crc32,sha256,https-tls-pin-sha256 write-guard=inactive-slot-only rescue-gate={MAINT_OTA_RESCUE_POLICY} confirm-gate=network-listener,ota-state,failover,app-manifest,service-supervisor rollback=previous-slot-preserved audit=maint-events,xiaojindb unsafe-states=forbidden-current-slot-write,forbidden-confirm-before-reboot"
+        "maint-ota-state version={MAINT_OTA_STATE_VERSION} mode=readonly current={} active={} result={} slot={} artifact-scheme={} image-bytes={} downloaded-bytes={} crc32=0x{:08x} db-sequence={} error={} command-sha=",
+        state.stage,
+        yes_no(state.active),
+        state.result,
+        state.slot as char,
+        state.artifact_scheme,
+        state.image_bytes,
+        state.downloaded_bytes,
+        state.crc32,
+        state.db_sequence,
+        if state.error.is_empty() {
+            "none"
+        } else {
+            state.error
+        }
+    );
+    if state.command_sha_present {
+        write_sha256_hex(out, &state.command_sha);
+    } else {
+        let _ = write!(out, "none");
+    }
+    let _ = write!(
+        out,
+        " chunk-offset={} chunk-size={} chunk-attempt={} chunk-status={} chunk-received={} chunk-expected={} chunk-error={} transitions=poll,verify-command,pull-manifest,verify-manifest,pull-artifact,verify-artifact,write-inactive-slot,switch-extlinux,reboot,boot-confirm,commit-or-rollback manifest-fields=slot,artifact-id,size,crc32,sha256,command-digest,sequence,artifact-tls-pin,rescue-policy artifact-fields=size,crc32,sha256,https-tls-pin-sha256 write-guard=inactive-slot-only rescue-gate={MAINT_OTA_RESCUE_POLICY} confirm-gate=network-listener,ota-state,failover,app-manifest,service-supervisor rollback=previous-slot-preserved audit=maint-events,xiaojindb unsafe-states=forbidden-current-slot-write,forbidden-confirm-before-reboot",
+        diag.chunk_offset,
+        diag.chunk_size,
+        diag.chunk_attempt,
+        diag.status_code,
+        diag.received,
+        diag.expected_size,
+        if diag.error.is_empty() {
+            "none"
+        } else {
+            diag.error
+        }
     );
 }
 
@@ -19062,7 +19259,9 @@ fn write_maint_pull_exec_ota_stage_summary<W: Write>(
     ota_payload_hex: Option<&[u8]>,
     ota_payload_sha: Option<&[u8]>,
 ) {
+    maint_ota_state_start(command_sha);
     if !is_sha256_hex(payload_sha) || !is_sha256_hex(command_sha) {
+        maint_ota_state_error("verify-command", "bad-digest");
         let _ = write!(out, "XJQ ERR maint-pull-exec ota-bad-digest");
         return;
     }
@@ -19071,6 +19270,7 @@ fn write_maint_pull_exec_ota_stage_summary<W: Write>(
     let mut manifest_error = None;
     if matches!(ota_manifest_present, Some(value) if ascii_eq(value, b"yes")) {
         if let Some(path) = ota_manifest_path {
+            maint_ota_state_stage("pull-manifest");
             match fetch_maint_ota_manifest_payload(
                 index,
                 host,
@@ -19096,6 +19296,7 @@ fn write_maint_pull_exec_ota_stage_summary<W: Write>(
     if payload_len.is_none()
         && !matches!(ota_payload_present, Some(value) if ascii_eq(value, b"yes"))
     {
+        maint_ota_state_error("pull-manifest", manifest_error.unwrap_or("payload-missing"));
         let _ = write!(out, "XJQ ERR maint-pull-exec ota-payload-missing");
         if let Some(error) = manifest_error {
             let _ = write!(out, " manifest-error={error}");
@@ -19104,6 +19305,7 @@ fn write_maint_pull_exec_ota_stage_summary<W: Write>(
     }
     if payload_len.is_none() {
         let Some(ota_payload_hex) = ota_payload_hex else {
+            maint_ota_state_error("verify-manifest", "missing-payload-hex");
             let _ = write!(out, "XJQ ERR maint-pull-exec ota-missing-payload-hex");
             if let Some(error) = manifest_error {
                 let _ = write!(out, " manifest-error={error}");
@@ -19111,6 +19313,7 @@ fn write_maint_pull_exec_ota_stage_summary<W: Write>(
             return;
         };
         let Some(len) = decode_hex_to_buf(ota_payload_hex, &mut payload_buf) else {
+            maint_ota_state_error("verify-manifest", "bad-payload-hex");
             let _ = write!(out, "XJQ ERR maint-pull-exec ota-bad-payload-hex");
             if let Some(error) = manifest_error {
                 let _ = write!(out, " manifest-error={error}");
@@ -19122,6 +19325,7 @@ fn write_maint_pull_exec_ota_stage_summary<W: Write>(
         if let Some(ota_payload_sha) = ota_payload_sha {
             let ota_digest = sha256_digest(payload);
             if !sha256_hex_matches(&ota_digest, ota_payload_sha) {
+                maint_ota_state_error("verify-manifest", "payload-sha-mismatch");
                 let _ = write!(out, "XJQ ERR maint-pull-exec ota-payload-sha-mismatch");
                 if let Some(error) = manifest_error {
                     let _ = write!(out, " manifest-error={error}");
@@ -19132,6 +19336,10 @@ fn write_maint_pull_exec_ota_stage_summary<W: Write>(
     }
     let payload = &payload_buf[..payload_len.unwrap_or(0)];
     let Some(payload_digest) = maint_ota_stage_payload_digest(payload) else {
+        maint_ota_state_error(
+            "verify-manifest",
+            maint_ota_stage_payload_invalid_reason(payload),
+        );
         let _ = write!(
             out,
             "XJQ ERR maint-pull-exec ota-payload-invalid reason={}",
@@ -19140,6 +19348,7 @@ fn write_maint_pull_exec_ota_stage_summary<W: Write>(
         return;
     };
     if !sha256_hex_matches(&payload_digest, payload_sha) {
+        maint_ota_state_error("verify-command", "payload-mismatch");
         let _ = write!(
             out,
             "XJQ ERR maint-pull-exec ota-payload-mismatch calculated="
@@ -19155,6 +19364,7 @@ fn write_maint_pull_exec_ota_stage_summary<W: Write>(
         return;
     };
     if !sha256_hex_matches(&command_digest, command_sha) {
+        maint_ota_state_error("verify-command", "command-mismatch");
         let _ = write!(
             out,
             "XJQ ERR maint-pull-exec ota-command-mismatch calculated="
@@ -19183,14 +19393,17 @@ fn write_maint_pull_exec_ota_stage_summary<W: Write>(
             MaintHmacCheckInput::Calculated(digest) => digest,
         };
     if !matches!(signature_present, Some(value) if ascii_eq(value, b"yes")) {
+        maint_ota_state_error("verify-command", "signature-missing");
         let _ = write!(out, "XJQ ERR maint-pull-exec ota-signature-missing");
         return;
     }
     let Some(signature_sha) = signature_sha else {
+        maint_ota_state_error("verify-command", "signature-sha-missing");
         let _ = write!(out, "XJQ ERR maint-pull-exec ota-signature-sha-missing");
         return;
     };
     if !sha256_hex_matches(&signature_calculated, signature_sha) {
+        maint_ota_state_error("verify-command", "signature-mismatch");
         let _ = write!(
             out,
             "XJQ ERR maint-pull-exec ota-signature-mismatch calculated="
@@ -19200,10 +19413,13 @@ fn write_maint_pull_exec_ota_stage_summary<W: Write>(
     }
 
     let Some(plan) = parse_maint_ota_stage_payload(payload) else {
+        maint_ota_state_error("verify-manifest", "plan-invalid");
         let _ = write!(out, "XJQ ERR maint-pull-exec ota-plan-invalid");
         return;
     };
+    maint_ota_state_plan(&plan);
     let Some(addr) = choose_xload_auto_addr(plan.image_bytes as u64) else {
+        maint_ota_state_error("pull-artifact", "no-safe-slot");
         let _ = write!(out, "XJQ ERR maint-pull-exec ota-no-safe-slot");
         return;
     };
@@ -19232,6 +19448,7 @@ fn write_maint_pull_exec_ota_stage_summary<W: Write>(
         } {
             Ok(download) => download,
             Err(error) => {
+                maint_ota_state_error("pull-artifact", error.as_str());
                 let _ = write!(
                     out,
                     "XJQ ERR maint-pull-exec ota-download {}",
@@ -19265,6 +19482,7 @@ fn write_maint_pull_exec_ota_stage_summary<W: Write>(
             match result {
                 Ok(download) => download,
                 Err(error) => {
+                    maint_ota_state_error("pull-artifact", error.as_str());
                     let _ = write!(
                         out,
                         "XJQ ERR maint-pull-exec ota-download-https {}",
@@ -19276,7 +19494,9 @@ fn write_maint_pull_exec_ota_stage_summary<W: Write>(
             }
         }
     };
+    maint_ota_state_downloaded(&download);
     if download.status_code != 200 {
+        maint_ota_state_error("verify-artifact", "http-status");
         let _ = write!(
             out,
             "XJQ ERR maint-pull-exec ota-http-status status={}",
@@ -19285,6 +19505,7 @@ fn write_maint_pull_exec_ota_stage_summary<W: Write>(
         return;
     }
     if download.body_bytes != plan.image_bytes {
+        maint_ota_state_error("verify-artifact", "size");
         let _ = write!(
             out,
             "XJQ ERR maint-pull-exec ota-size expected={} actual={}",
@@ -19293,6 +19514,7 @@ fn write_maint_pull_exec_ota_stage_summary<W: Write>(
         return;
     }
     if download.crc32 != plan.image_crc32 {
+        maint_ota_state_error("verify-artifact", "crc");
         let _ = write!(
             out,
             "XJQ ERR maint-pull-exec ota-crc expected=0x{:08x} actual=0x{:08x}",
@@ -19301,6 +19523,7 @@ fn write_maint_pull_exec_ota_stage_summary<W: Write>(
         return;
     }
     if download.sha256 != plan.image_sha256 {
+        maint_ota_state_error("verify-artifact", "sha");
         let _ = write!(out, "XJQ ERR maint-pull-exec ota-sha expected=");
         write_sha256_hex(out, &plan.image_sha256);
         let _ = write!(out, " actual=");
@@ -19317,9 +19540,11 @@ fn write_maint_pull_exec_ota_stage_summary<W: Write>(
     unsafe {
         LAST_NET_IMAGE = image;
     }
+    maint_ota_state_stage("write-inactive-slot");
     let actual_crc = match persist_last_image_to_slot(plan.slot, image) {
         Ok(actual_crc) => actual_crc,
         Err(error) => {
+            maint_ota_state_error("write-inactive-slot", error.as_str());
             let _ = write!(
                 out,
                 "XJQ ERR maint-pull-exec ota-persist {}",
@@ -19335,7 +19560,9 @@ fn write_maint_pull_exec_ota_stage_summary<W: Write>(
             return;
         }
     };
+    maint_ota_state_persisted(plan.slot, actual_crc);
     if let Err(error) = switch_extlinux_default_slot(plan.slot) {
+        maint_ota_state_error("switch-extlinux", error.as_str());
         let _ = write!(
             out,
             "XJQ ERR maint-pull-exec ota-boot-slot {}",
@@ -19387,6 +19614,7 @@ fn write_maint_pull_exec_ota_stage_summary<W: Write>(
         event.as_slice(),
     ) {
         Ok((_info, _catalog, meta, db_event)) => {
+            maint_ota_state_complete(db_event.sequence as u64);
             let result_digest = sha256_digest(event.as_slice());
             let report = event_path.map(|event_path| {
                 post_maint_pull_exec_event_for_transport(
@@ -27508,12 +27736,36 @@ fn net_handle_query_packet(
     payload: &[u8],
 ) -> bool {
     if !net_query_try_enter() {
+        if net_query_payload_is_maint_ota_state(payload) {
+            let mut reply = NetReplyBuf::new();
+            let _ = write!(reply, "XJQ OK ");
+            write_maint_ota_state_summary(&mut reply);
+            return net_send_udp_reply(index, dst_mac, src_ip, src_port, reply.as_slice());
+        }
         return false;
     }
 
     let sent = net_handle_query_packet_active(index, dst_mac, src_ip, src_port, payload);
     net_query_leave();
     sent
+}
+
+fn net_query_payload_is_maint_ota_state(payload: &[u8]) -> bool {
+    if payload.len() < NETCONTROL_QUERY_MAGIC.len() {
+        return false;
+    }
+    let query_payload = &payload[NETCONTROL_QUERY_MAGIC.len()..];
+    if query_payload.len() > NETCONTROL_QUERY_BYTES {
+        return false;
+    }
+    let Ok(query) = str::from_utf8(query_payload) else {
+        return false;
+    };
+    let query = query.trim();
+    query.eq_ignore_ascii_case("maint ota-state")
+        || query.eq_ignore_ascii_case("maint ota-state confirm")
+        || query.eq_ignore_ascii_case("maint ota-plan")
+        || query.eq_ignore_ascii_case("maint ota-plan confirm")
 }
 
 fn net_handle_query_packet_active(
