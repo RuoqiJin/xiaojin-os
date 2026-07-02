@@ -226,11 +226,10 @@ const TCP_DATA_TX_TIMEOUT_MS: u64 = 100;
 const TCP_CONTROL_TX_TIMEOUT_MS: u64 = 20;
 const HTTP_TIMEOUT_MS: u64 = 5_000;
 const TLS_TIMEOUT_MS: u64 = 20_000;
-const HTTP_ARTIFACT_TIMEOUT_MS: u64 = 120_000;
+const MAINT_OTA_ARTIFACT_TIMEOUT_MS: u64 = 600_000;
 const HTTPS_ARTIFACT_CHUNK_TIMEOUT_MS: u64 = 10_000;
 const HTTPS_ARTIFACT_CHUNKED_MAX_TOTAL_TIMEOUT_MS: u64 = 30 * 60 * 1000;
 const HTTPS_ARTIFACT_OTA_CHUNK_BYTES: u32 = 16 * 1024;
-const HTTPS_ARTIFACT_OTA_TIMEOUT_MS: u64 = 180_000;
 const TLS_CLIENT_HELLO_RETRIES: u32 = 4;
 const TLS_CLIENT_HELLO_RETRY_TIMEOUT_MS: u64 = 2_500;
 const TLS_CLIENT_HELLO_RETRY_DELAY_MS: u64 = 50;
@@ -19218,7 +19217,7 @@ fn write_maint_pull_exec_ota_stage_summary<W: Write>(
                 addr,
                 plan.image_bytes,
                 plan.chunk_bytes,
-                HTTP_ARTIFACT_TIMEOUT_MS,
+                MAINT_OTA_ARTIFACT_TIMEOUT_MS,
             )
         } else {
             net_http_download_artifact(
@@ -19228,7 +19227,7 @@ fn write_maint_pull_exec_ota_stage_summary<W: Write>(
                 plan.artifact_path,
                 addr,
                 plan.image_bytes,
-                HTTP_ARTIFACT_TIMEOUT_MS,
+                MAINT_OTA_ARTIFACT_TIMEOUT_MS,
             )
         } {
             Ok(download) => download,
@@ -19261,7 +19260,7 @@ fn write_maint_pull_exec_ota_stage_summary<W: Write>(
                 addr,
                 plan.image_bytes,
                 chunk_bytes,
-                HTTPS_ARTIFACT_OTA_TIMEOUT_MS,
+                MAINT_OTA_ARTIFACT_TIMEOUT_MS,
             );
             match result {
                 Ok(download) => download,
