@@ -228,8 +228,9 @@ const HTTP_TIMEOUT_MS: u64 = 5_000;
 const TLS_TIMEOUT_MS: u64 = 20_000;
 const HTTP_ARTIFACT_TIMEOUT_MS: u64 = 120_000;
 const HTTPS_ARTIFACT_CHUNK_TIMEOUT_MS: u64 = 10_000;
-const HTTPS_ARTIFACT_CHUNKED_TOTAL_TIMEOUT_MS: u64 = 90_000;
 const HTTPS_ARTIFACT_CHUNKED_MAX_TOTAL_TIMEOUT_MS: u64 = 30 * 60 * 1000;
+const HTTPS_ARTIFACT_OTA_CHUNK_BYTES: u32 = 16 * 1024;
+const HTTPS_ARTIFACT_OTA_TIMEOUT_MS: u64 = 180_000;
 const TLS_CLIENT_HELLO_RETRIES: u32 = 4;
 const TLS_CLIENT_HELLO_RETRY_TIMEOUT_MS: u64 = 2_500;
 const TLS_CLIENT_HELLO_RETRY_DELAY_MS: u64 = 50;
@@ -19242,32 +19243,26 @@ fn write_maint_pull_exec_ota_stage_summary<W: Write>(
             }
         },
         MaintOtaArtifactScheme::Https => {
-            let result = if plan.chunk_bytes > 0 {
-                net_https_download_artifact_chunked(
-                    index,
-                    plan.artifact_host,
-                    plan.artifact_port,
-                    plan.artifact_path,
-                    plan.artifact_host,
-                    plan.artifact_tls_pin_sha256.as_ref(),
-                    addr,
-                    plan.image_bytes,
-                    plan.chunk_bytes,
-                    HTTP_ARTIFACT_TIMEOUT_MS,
-                )
-            } else {
-                net_https_download_artifact(
-                    index,
-                    plan.artifact_host,
-                    plan.artifact_port,
-                    plan.artifact_path,
-                    plan.artifact_host,
-                    plan.artifact_tls_pin_sha256.as_ref(),
-                    addr,
-                    plan.image_bytes,
-                    HTTP_ARTIFACT_TIMEOUT_MS,
-                )
-            };
+            // Full-stream HTTPS currently stalls on larger payloads in the
+            // bare-metal TCP/TLS path. Use bounded range pulls, but ignore tiny
+            // manifest chunk hints so OTA does not require hundreds of TLS
+            // sessions.
+            let chunk_bytes = core::cmp::min(
+                plan.image_bytes,
+                core::cmp::max(plan.chunk_bytes, HTTPS_ARTIFACT_OTA_CHUNK_BYTES),
+            );
+            let result = net_https_download_artifact_chunked(
+                index,
+                plan.artifact_host,
+                plan.artifact_port,
+                plan.artifact_path,
+                plan.artifact_host,
+                plan.artifact_tls_pin_sha256.as_ref(),
+                addr,
+                plan.image_bytes,
+                chunk_bytes,
+                HTTPS_ARTIFACT_OTA_TIMEOUT_MS,
+            );
             match result {
                 Ok(download) => download,
                 Err(error) => {
@@ -23288,6 +23283,7 @@ fn net_https_request(
     })
 }
 
+#[allow(dead_code)]
 fn net_https_download_artifact(
     index: usize,
     host: &str,
@@ -23626,20 +23622,7 @@ fn net_http_download_artifact_chunked(
     } else {
         timeout_ms
     };
-    let chunks = ((expected_size as u64)
-        .saturating_add(chunk_bytes as u64)
-        .saturating_sub(1))
-        / chunk_bytes as u64;
-    let dynamic_total_timeout_ms = chunks
-        .saturating_mul(chunk_timeout_ms.saturating_add(250))
-        .saturating_add(30_000);
-    let total_timeout_ms = core::cmp::min(
-        HTTPS_ARTIFACT_CHUNKED_MAX_TOTAL_TIMEOUT_MS,
-        core::cmp::max(
-            core::cmp::max(timeout_ms, HTTPS_ARTIFACT_CHUNKED_TOTAL_TIMEOUT_MS),
-            dynamic_total_timeout_ms,
-        ),
-    );
+    let total_timeout_ms = core::cmp::min(timeout_ms, HTTPS_ARTIFACT_CHUNKED_MAX_TOTAL_TIMEOUT_MS);
     let freq = read_cntfrq();
     let Some(total_timeout_ticks) = ms_to_ticks(total_timeout_ms, freq) else {
         return Err(HttpError::ResponseTimeout);
@@ -23758,7 +23741,7 @@ fn net_http_download_artifact_chunked(
     })
 }
 
-#[allow(clippy::too_many_arguments)]
+#[allow(dead_code, clippy::too_many_arguments)]
 fn net_https_download_artifact_chunked(
     index: usize,
     host: &str,
@@ -23780,20 +23763,7 @@ fn net_https_download_artifact_chunked(
     } else {
         timeout_ms
     };
-    let chunks = ((expected_size as u64)
-        .saturating_add(chunk_bytes as u64)
-        .saturating_sub(1))
-        / chunk_bytes as u64;
-    let dynamic_total_timeout_ms = chunks
-        .saturating_mul(chunk_timeout_ms.saturating_add(250))
-        .saturating_add(30_000);
-    let total_timeout_ms = core::cmp::min(
-        HTTPS_ARTIFACT_CHUNKED_MAX_TOTAL_TIMEOUT_MS,
-        core::cmp::max(
-            core::cmp::max(timeout_ms, HTTPS_ARTIFACT_CHUNKED_TOTAL_TIMEOUT_MS),
-            dynamic_total_timeout_ms,
-        ),
-    );
+    let total_timeout_ms = core::cmp::min(timeout_ms, HTTPS_ARTIFACT_CHUNKED_MAX_TOTAL_TIMEOUT_MS);
     let freq = read_cntfrq();
     let Some(total_timeout_ticks) = ms_to_ticks(total_timeout_ms, freq) else {
         https_artifact_diag_mark_chunk_error(TlsError::ResponseTimeout.as_str(), expected_size);
@@ -23866,6 +23836,11 @@ fn net_https_download_artifact_chunked(
             }
             if tls_error_is_transport_retryable(error) {
                 net_recover_https_chunk_transport(index);
+            } else {
+                if https_artifact_diag_error_is_empty() {
+                    https_artifact_diag_mark_chunk_error(error.as_str(), expected_size);
+                }
+                return Err(error);
             }
         }
         offset = offset.saturating_add(take);
@@ -23891,6 +23866,7 @@ fn net_https_download_artifact_chunked(
     })
 }
 
+#[allow(dead_code)]
 fn tls_error_is_transport_retryable(error: TlsError) -> bool {
     match error {
         TlsError::Tcp(error) => tcp_error_is_transport_retryable(error),
