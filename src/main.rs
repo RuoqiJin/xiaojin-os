@@ -233,7 +233,7 @@ const HTTPS_ARTIFACT_CHUNKED_MAX_TOTAL_TIMEOUT_MS: u64 = 30 * 60 * 1000;
 const TLS_CLIENT_HELLO_RETRIES: u32 = 4;
 const TLS_CLIENT_HELLO_RETRY_TIMEOUT_MS: u64 = 2_500;
 const TLS_CLIENT_HELLO_RETRY_DELAY_MS: u64 = 50;
-const AI_HTTP_CHAT_TIMEOUT_MS: u64 = 30_000;
+const AI_HTTP_CHAT_TIMEOUT_MS: u64 = 120_000;
 const HTTP_IDLE_TIMEOUT_MS: u64 = 500;
 const HTTP_ARTIFACT_IDLE_TIMEOUT_MS: u64 = 15_000;
 const TLS_HANDSHAKE_IDLE_TIMEOUT_MS: u64 = 2_000;
@@ -564,6 +564,7 @@ static mut NET_POLL_TOTALS: [NetPollStats; RTL_DEVICE_COUNT] =
 static mut NET_ARP_CACHE: [ArpCacheEntry; RTL_DEVICE_COUNT] =
     [ArpCacheEntry::empty(); RTL_DEVICE_COUNT];
 static mut TCP_CLIENT_PORT_OFFSETS: [u16; RTL_DEVICE_COUNT] = [0, 0x2000];
+static mut NET_QUERY_ACTIVE: bool = false;
 static mut NETLOAD_STATE: NetLoadState = NetLoadState::empty();
 static mut DB_BLOB_IMPORT_STATE: DbBlobImportState = DbBlobImportState::empty();
 static mut LAST_NET_IMAGE: NetImageState = NetImageState::empty();
@@ -583,6 +584,23 @@ static mut TLS_HANDSHAKE_TRANSCRIPT_SCRATCH: TlsHandshakeTranscriptScratch =
     TlsHandshakeTranscriptScratch([0; TLS_HANDSHAKE_TRANSCRIPT_BYTES]);
 static mut PROBE_ACTIVE: u8 = 0;
 static mut PROBE_FAULTED: u8 = 0;
+
+fn net_query_try_enter() -> bool {
+    unsafe {
+        if NET_QUERY_ACTIVE {
+            false
+        } else {
+            NET_QUERY_ACTIVE = true;
+            true
+        }
+    }
+}
+
+fn net_query_leave() {
+    unsafe {
+        NET_QUERY_ACTIVE = false;
+    }
+}
 
 fn probe_flag_set(flag: *mut u8, value: bool) {
     unsafe {
@@ -27467,6 +27485,22 @@ fn net_handle_dhcp_control_packet(
 }
 
 fn net_handle_query_packet(
+    index: usize,
+    dst_mac: [u8; 6],
+    src_ip: [u8; 4],
+    src_port: u16,
+    payload: &[u8],
+) -> bool {
+    if !net_query_try_enter() {
+        return false;
+    }
+
+    let sent = net_handle_query_packet_active(index, dst_mac, src_ip, src_port, payload);
+    net_query_leave();
+    sent
+}
+
+fn net_handle_query_packet_active(
     index: usize,
     dst_mac: [u8; 6],
     src_ip: [u8; 4],
